@@ -1,0 +1,340 @@
+# TEKNOFEST 2025 - Su Altı Roket Aracı
+## Hardware Pin Mapping Standardı v1.0
+
+Bu dokuman, tüm sistemde kullanılan pin bağlantılarının standardını tanımlar. **TÜM KODLAR BU STANDARDA GÖRE YAZILMIŞTIR.**
+
+---
+
+## 🔌 **PIXHAWK PX4 PIX 2.4.8 Pin Mapping**
+
+### **MAIN OUTPUT (PWM Çıkışları)**
+```
+MAIN 1  → Ana Motor (DEGZ M5 + DEGZ BLU 30A ESC)
+MAIN 2  → Rezerve (Gelecek geliştirmeler için)
+MAIN 3  → Rezerve 
+MAIN 4  → Rezerve
+MAIN 5  → Rezerve
+MAIN 6  → Rezerve
+MAIN 7  → Rezerve
+MAIN 8  → Rezerve
+```
+
+### **AUX OUTPUT (Auxiliary PWM Çıkışları)**
+```
+AUX 1   → Fin Servo 1 - Ön Sol (X Düzeninde) (DS3230MG 30kg)
+AUX 2   → Fin Servo 2 - Ön Sağ (X Düzeninde) (DS3230MG 30kg)  
+AUX 3   → Fin Servo 3 - Arka Sol (X Düzeninde) (DS3230MG 30kg)
+AUX 4   → Fin Servo 4 - Arka Sağ (X Düzeninde) (DS3230MG 30kg)
+AUX 5   → Elevator Servo - Derinlik Kontrolü (DS3230MG 30kg)
+AUX 6   → Payload Bay Servo - Roket Bölmesi Kapağı
+AUX 7   → Separation Mechanism - Ayrılma Mekanizması
+AUX 8   → Rezerve (Gelecek geliştirmeler)
+```
+
+### **I2C Port**
+```
+I2C SCL → D300 Derinlik Sensörü SCL
+I2C SDA → D300 Derinlik Sensörü SDA  
+I2C VCC → +5V (D300 için)
+I2C GND → Ground
+```
+
+### **Power Module**
+```
+Power Module → 6S 22.2V LiPo Batarya (1800mAh 65C)
+              → Akım sensörü entegreli
+              → Voltaj monitörleme
+```
+
+---
+
+## 📟 **RASPBERRY PI 4B GPIO Pin Mapping**
+
+### **GPIO Pinleri (BCM Numaralama)**
+```
+GPIO 2  → I2C SDA (D300 Derinlik Sensörü) - Internal I2C
+GPIO 3  → I2C SCL (D300 Derinlik Sensörü) - Internal I2C
+GPIO 4  → Status LED Red (Kırmızı Durum LED)
+GPIO 5  → Status LED Green (Yeşil Durum LED)
+GPIO 6  → Status LED Blue (Mavi Durum LED)
+GPIO 13 → Buzzer PWM Output (Sesli Uyarı/Müzik)
+GPIO 16 → External Warning LED (Harici Uyarı LED)
+GPIO 18 → Power Button Input (16A P1Z EC Metal Buton)
+GPIO 19 → Emergency Stop Button Input (Acil Kesme)
+GPIO 20 → System Status LED (Ana Sistem Durumu)
+GPIO 21 → System Power Relay Control (40A Relay)
+GPIO 22 → Payload Bay Status Input (Sensör)
+GPIO 23 → Water Detection Input (Su Algılama)
+GPIO 24 → Mission Status LED (Görev Durumu LED)
+GPIO 25 → External Buzzer Output (Dış Buzzer)
+GPIO 26 → RGB LED Strip Control (WS2812B Strip)
+GPIO 27 → Spare GPIO (Rezerve)
+```
+
+### **Güç Sistemi**
+```
+5V   → Pixhawk güç beslemesi
+5V   → D300 sensör güç beslemesi  
+3.3V → GPIO pull-up dirençleri
+GND  → Ortak topraklama
+USB  → Pixhawk MAVLink bağlantısı
+```
+
+---
+
+## ⚡ **GÜÇ SİSTEMİ ŞEMASI**
+
+### **Ana Güç Dağılımı**
+```
+┌─────────────────┐
+│ 6S LiPo Batarya │ (22.2V, 1800mAh, 65C = ~117A peak)
+│    80A sürekli  │
+└─────────┬───────┘
+          │
+    ┌─────▼─────┐
+    │ 40A Relay │ ◄── GPIO 21 (Raspberry Pi)
+    │(Acil Kesme│     16A P1Z EC Buton (GPIO 18)
+    │ Kontrolü) │     Acil Stop Buton (GPIO 19)
+    └─────┬─────┘
+          │
+    ┌─────▼─────┐
+    │Power Dist.│
+    │   Module  │
+    └─┬─┬─┬─┬─┬─┘
+      │ │ │ │ │
+      │ │ │ │ └── +5V → Raspberry Pi
+      │ │ │ └──── +5V → Pixhawk  
+      │ │ └────── +5V → D300 Sensör
+      │ └──────── +5V → Servo güç rayı
+      └────────── MAIN 1 → ESC (30A)
+```
+
+### **Güvenlik Sistemi**
+- **40A Relay**: Ana sistem gücü kesintisi için
+- **16A Metal Buton**: Sistem on/off kontrolü 
+- **Acil Stop**: Anında tüm motor durdurmak için
+- **80A Peak Current**: Bataryadan gelen maksimum akım
+
+---
+
+## 🔧 **SERVO KANAL DETAYLARI**
+
+### **Fin Control Matrix - X Konfigürasyonu (AUX 1-4)**
+```
+   Ön Sol (AUX 1) ────────────── Ön Sağ (AUX 2)
+       │   \                 /   │
+       │    \               /    │
+       │     \             /     │
+       │      \           /      │
+       │       \         /       │
+       │        \       /        │
+       │         \     /         │
+       │          \ X /          │
+       │          / X \          │
+       │         /     \         │
+       │        /       \        │
+       │       /         \       │
+       │      /           \      │
+       │     /             \     │
+       │    /               \    │
+       │   /                 \   │
+  Arka Sol (AUX 3) ────────────── Arka Sağ (AUX 4)
+
+X-Konfigürasyon Kontrol Matrisi:
+Roll Control  → AUX 1 & AUX 3 vs AUX 2 & AUX 4 (Çapraz Differential)
+Pitch Control → AUX 1 & AUX 2 vs AUX 3 & AUX 4 (Ön/Arka Differential)  
+Yaw Control   → AUX 1 & AUX 4 vs AUX 2 & AUX 3 (X-Diagonal)
+```
+
+### **PWM Signal Specs**
+```
+PWM Frequency: 50Hz (20ms period)
+PWM Range:     1000-2000 μs
+Neutral:       1500 μs
+Min:           1000 μs (Full Left/Down)
+Max:           2000 μs (Full Right/Up)
+```
+
+---
+
+## 📡 **SENSOR INTERFACES**
+
+### **D300 Derinlik Sensörü (I2C)**
+```
+I2C Address: 0x77 (Default)
+Voltage:     3.3V - 5V
+Interface:   I2C (100kHz - 400kHz)
+Data Rate:   10Hz maksimum
+Resolution:  Depth: 0.01m, Temp: 0.01°C
+Range:       0-300m depth, -20°C to +85°C
+
+Raspberry Pi I2C Connection:
+GPIO 2 (SDA) ── SDA Pin
+GPIO 3 (SCL) ── SCL Pin  
+5V           ── VCC Pin
+GND          ── GND Pin
+```
+
+### **Pixhawk Internal Sensors**
+```
+IMU:         MPU6000 (Gyro + Accelerometer)
+Magnetometer: HMC5883L
+Barometer:   MS5611 (Backup depth reference)
+GPS:         External GPS module (Serial)
+```
+
+---
+
+## 🚨 **ACİL GÜVENLİK SİSTEMİ**
+
+### **40A Relay Kontrol Sistemi**
+```
+Relay Kapasitesi: 40A @ 24VDC
+Kontrol Voltajı:  3.3V (GPIO 21)
+Ana Devreleme:    6S LiPo → Tüm sistem
+Kesme Süresi:     <50ms
+Fail-Safe:        Power loss = Relay açık
+```
+
+### **Buton Hiyerarşisi**
+```
+1. 16A Metal Buton (GPIO 18):
+   - Sistem açma/kapama
+   - 90 saniye güvenlik gecikmesi
+   - Soft shutdown
+
+2. Acil Stop Buton (GPIO 19):
+   - Anında motor durdurma
+   - 40A relay açma
+   - Hardware level shutdown
+   - Emergency surface protocol
+```
+
+---
+
+## 📋 **SOFTWARE CHANNEL MAPPING**
+
+### **Python Code Standards**
+```python
+# Motor Channels
+MOTOR_CHANNEL = 1           # MAIN 1
+
+# Servo Channels - X Konfigürasyonu
+SERVO_FIN_FRONT_LEFT = 1    # AUX 1 - Ön Sol
+SERVO_FIN_FRONT_RIGHT = 2   # AUX 2 - Ön Sağ  
+SERVO_FIN_REAR_LEFT = 3     # AUX 3 - Arka Sol
+SERVO_FIN_REAR_RIGHT = 4    # AUX 4 - Arka Sağ
+SERVO_ELEVATOR = 5          # AUX 5 - Derinlik Kontrolü
+SERVO_PAYLOAD_BAY = 6       # AUX 6 - Roket Bölmesi
+SERVO_SEPARATION = 7        # AUX 7 - Ayrılma Mekanizması
+
+# GPIO Pins - Kontrol
+GPIO_POWER_BUTTON = 18      # Güç Butonu
+GPIO_EMERGENCY_STOP = 19    # Acil Kesme 
+GPIO_POWER_RELAY = 21       # Ana Güç Rölesi
+GPIO_PAYLOAD_SENSOR = 22    # Payload Durumu
+GPIO_WATER_DETECT = 23      # Su Algılama
+
+# GPIO Pins - LED ve Buzzer
+GPIO_LED_RED = 4            # Kırmızı LED
+GPIO_LED_GREEN = 5          # Yeşil LED  
+GPIO_LED_BLUE = 6           # Mavi LED
+GPIO_BUZZER_PWM = 13        # PWM Buzzer
+GPIO_WARNING_LED = 16       # Uyarı LED
+GPIO_SYSTEM_LED = 20        # Sistem LED
+GPIO_MISSION_LED = 24       # Görev LED
+GPIO_EXT_BUZZER = 25        # Dış Buzzer
+GPIO_RGB_STRIP = 26         # RGB LED Strip
+
+# I2C Sensors
+I2C_D300_ADDRESS = 0x77     # D300 Derinlik Sensörü
+
+# X-Fin Kontrol Matrisi
+FIN_MATRIX = {
+    'roll_positive': [SERVO_FIN_FRONT_LEFT, SERVO_FIN_REAR_LEFT],    # Sol finler
+    'roll_negative': [SERVO_FIN_FRONT_RIGHT, SERVO_FIN_REAR_RIGHT],  # Sağ finler
+    'pitch_positive': [SERVO_FIN_FRONT_LEFT, SERVO_FIN_FRONT_RIGHT], # Ön finler
+    'pitch_negative': [SERVO_FIN_REAR_LEFT, SERVO_FIN_REAR_RIGHT],   # Arka finler
+    'yaw_positive': [SERVO_FIN_FRONT_LEFT, SERVO_FIN_REAR_RIGHT],    # X-Diagonal 1
+    'yaw_negative': [SERVO_FIN_FRONT_RIGHT, SERVO_FIN_REAR_LEFT]     # X-Diagonal 2
+}
+```
+
+### **MAVLink Channel Usage**
+```python
+# MAVLink servo command format:
+# mavutil.mavlink.MAV_CMD_DO_SET_SERVO
+# Parametreler: (channel, pwm_value, 0, 0, 0, 0, 0)
+
+# Motor ESC komutları:
+# Channel 1 = MAIN 1 output
+# PWM 1000-2000 range (1500 = neutral/stop)
+```
+
+---
+
+## 🔍 **BAĞLANTI TEST PROTOKOLÜ**
+
+### **1. Güç Sistemi Testi**
+```bash
+# Voltaj kontrolleri
+echo "Testing main power..."
+# 22.2V nominal, 19.8V minimum cutoff
+# Current draw: <5A idle, <30A operational
+```
+
+### **2. GPIO Test Sequence** 
+```bash
+# Raspberry Pi GPIO test
+sudo python3 -c "import RPi.GPIO as GPIO; GPIO.setmode(GPIO.BCM); GPIO.setup(18, GPIO.IN); print(GPIO.input(18))"
+```
+
+### **3. I2C Device Detection**
+```bash
+# D300 sensör tespiti
+i2cdetect -y 1
+# 0x77 adresinde D300 görünmeli
+```
+
+### **4. Pixhawk Connection Test**
+```bash
+# MAVLink bağlantı testi
+python3 -c "from pymavlink import mavutil; m=mavutil.mavlink_connection('tcp:127.0.0.1:5777'); m.wait_heartbeat(); print('OK')"
+```
+
+---
+
+## ⚠️ **KRITIK UYARILAR**
+
+### **Güç Sistemi**
+- ⚡ **80A pil akımına karşı 40A relay kullanımı**: Relay motor akımını değil, sistem gücünü keser
+- ⚡ **ESC 30A**, motor max 25A çeker, güvenli margin var
+- ⚡ **16A buton**, sadece 3.3V GPIO sinyali taşır, ana akım relay üzerinden
+- ⚡ **Termal koruma**: ESC ve motor sıcaklık monitörleme gerekli
+
+### **Su Geçirgenlik**  
+- 💧 Tüm bağlantılar IP67+ standart
+- 💧 D300 sensör inherently waterproof
+- 💧 GPIO bağlantıları waterproof connector ile
+- 💧 Test depth: Minimum 3m, operasyonel 2m
+
+### **Software Fail-Safes**
+- 🛡️ MAVLink heartbeat timeout: 30 saniye
+- 🛡️ GPIO button debounce: 50ms minimum
+- 🛡️ Emergency surface depth trigger: >5m
+- 🛡️ Low battery cutoff: <19.8V (3.3V/cell)
+
+---
+
+## 📖 **REFERANS LINKLER**
+
+- **DEGZ BLU 30A ESC**: https://www.mucif.com/urunler/degz-blu-30a-esc-fircasiz-motor-surucu
+- **DS3230MG Servo**: https://www.motorobit.com/ds3230mg-30kg-su-gecirmez-dijital-servo-motor  
+- **DEGZ M5 Motor**: https://www.mucif.com/urunler/degz-m5-su-gecirmez-su-alti-motoru
+- **D300 Depth Sensor**: https://www.mucif.com/urunler/d300-derinlik-ve-su-sicakligi-sensoru
+- **Metal Buton**: https://www.motorobit.com/16a-p1z-ec-16mm-duz-anahtarli-isikli-power-metal-buton-yesil
+- **LiPo Batarya**: https://www.motorobit.com/222v-6s-1800mah-65c-lipo-batarya
+
+---
+
+**⚠️ Bu pin mapping standardı tüm sistem kodlarında kullanılmaktadır. Değişiklik yapmadan önce tüm referansları kontrol edin!** 
