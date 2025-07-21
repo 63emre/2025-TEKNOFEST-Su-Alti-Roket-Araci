@@ -1,0 +1,561 @@
+{
+  "name": "TEKNOFEST Su Altı Roket Aracı Setup",
+  "description": "2025 TEKNOFEST yarışması için su altı roket aracı otomatik kurulum",
+  "version": "1.0.0",
+  "author": "TEKNOFEST Takım",
+  "vehicle_type": "ROV",
+  "setup_steps": [
+    {
+      "id": "welcome",
+      "title": "🚀 TEKNOFEST Su Altı Roket Aracı",
+      "type": "info",
+      "content": {
+        "message": "Bu sihirbaz aracınızı TEKNOFEST 2025 yarışması için hazırlayacak.",
+        "details": [
+          "✅ Raspberry Pi 4B + Pixhawk PX4 PIX 2.4.8",
+          "✅ 4x DS3230MG Su Geçirmez Servo",
+          "✅ DEGZ M5 Motor + 30A ESC",
+          "✅ D300 Derinlik Sensörü",
+          "✅ Custom X-Configuration Frame"
+        ]
+      }
+    },
+    {
+      "id": "hardware_check",
+      "title": "🔧 Hardware Kontrol",
+      "type": "hardware_detection",
+      "checks": [
+        {
+          "name": "Pixhawk Connection",
+          "type": "mavlink_heartbeat",
+          "required": true,
+          "timeout": 10
+        },
+        {
+          "name": "D300 Depth Sensor",
+          "type": "i2c_device",
+          "address": "0x77",
+          "required": true
+        },
+        {
+          "name": "Servo Channels 1-5",
+          "type": "servo_test",
+          "channels": [1, 2, 3, 4, 5],
+          "required": true
+        },
+        {
+          "name": "Main Motor (Ch 8)",
+          "type": "esc_test",
+          "channel": 8,
+          "required": true
+        },
+        {
+          "name": "GPIO Emergency Button",
+          "type": "gpio_test",
+          "pin": 18,
+          "required": false
+        }
+      ]
+    },
+    {
+      "id": "frame_config",
+      "title": "🛠️ Frame Konfigürasyonu",
+      "type": "parameter_setup",
+      "parameters": [
+        {
+          "name": "FRAME_CLASS",
+          "value": 2,
+          "description": "ROV frame class"
+        },
+        {
+          "name": "FRAME_TYPE",
+          "value": 12,
+          "description": "Custom frame type"
+        },
+        {
+          "name": "SERVO1_FUNCTION",
+          "value": 73,
+          "description": "Motor1 (Fin Front Left)"
+        },
+        {
+          "name": "SERVO2_FUNCTION", 
+          "value": 74,
+          "description": "Motor2 (Fin Front Right)"
+        },
+        {
+          "name": "SERVO3_FUNCTION",
+          "value": 75,
+          "description": "Motor3 (Fin Rear Left)"
+        },
+        {
+          "name": "SERVO4_FUNCTION",
+          "value": 76,
+          "description": "Motor4 (Fin Rear Right)"
+        },
+        {
+          "name": "SERVO5_FUNCTION",
+          "value": 77,
+          "description": "Elevator (Depth control)"
+        },
+        {
+          "name": "SERVO8_FUNCTION",
+          "value": 70,
+          "description": "Main thruster"
+        }
+      ]
+    },
+    {
+      "id": "sensor_calibration",
+      "title": "🧭 Sensör Kalibrasyonu",
+      "type": "calibration_sequence",
+      "calibrations": [
+        {
+          "name": "Accelerometer Calibration",
+          "type": "accel_cal",
+          "instructions": "Aracı 6 farklı pozisyonda tutun (level, nose up/down, left/right, upside down)",
+          "required": true
+        },
+        {
+          "name": "Compass Calibration",
+          "type": "compass_cal",
+          "instructions": "Aracı tüm eksenlerde yavaşça döndürün",
+          "required": true
+        },
+        {
+          "name": "Pressure Sensor Calibration", 
+          "type": "baro_cal",
+          "instructions": "Aracın su yüzeyinde olduğundan emin olun",
+          "required": true
+        },
+        {
+          "name": "ESC Calibration",
+          "type": "esc_cal",
+          "instructions": "Motor ESC kalibrasyonu yapılacak",
+          "required": true,
+          "channels": [8]
+        }
+      ]
+    },
+    {
+      "id": "underwater_params",
+      "title": "🌊 Su Altı Parametreleri",
+      "type": "parameter_setup",
+      "parameters": [
+        {
+          "name": "PILOT_SPEED_UP",
+          "value": 50,
+          "description": "Yukarı hareket hızı (cm/s)"
+        },
+        {
+          "name": "PILOT_SPEED_DN",
+          "value": 50,
+          "description": "Aşağı hareket hızı (cm/s)"
+        },
+        {
+          "name": "PILOT_ACCEL_Z",
+          "value": 100,
+          "description": "Dikey ivme (cm/s²)"
+        },
+        {
+          "name": "PSC_POSZ_P",
+          "value": 5.0,
+          "description": "Pozisyon Z P gain"
+        },
+        {
+          "name": "PSC_VELZ_P", 
+          "value": 8.0,
+          "description": "Velocity Z P gain"
+        },
+        {
+          "name": "PSC_ACCZ_P",
+          "value": 0.5,
+          "description": "Acceleration Z P gain"
+        },
+        {
+          "name": "PSC_ACCZ_I",
+          "value": 1.5,
+          "description": "Acceleration Z I gain"
+        },
+        {
+          "name": "PSC_ACCZ_D",
+          "value": 0.0,
+          "description": "Acceleration Z D gain"
+        }
+      ]
+    },
+    {
+      "id": "safety_config",
+      "title": "🛡️ Güvenlik Ayarları",
+      "type": "parameter_setup",
+      "parameters": [
+        {
+          "name": "BATT_LOW_VOLT",
+          "value": 19.8,
+          "description": "Düşük batarya voltajı (6S için 3.3V/hücre)"
+        },
+        {
+          "name": "BATT_CRT_VOLT",
+          "value": 18.6,
+          "description": "Kritik batarya voltajı (6S için 3.1V/hücre)"
+        },
+        {
+          "name": "BATT_LOW_MAH",
+          "value": 1440,
+          "description": "Düşük batarya kapasitesi (mAh) - %80 of 1800mAh"
+        },
+        {
+          "name": "FS_BATT_ENABLE",
+          "value": 1,
+          "description": "Batarya fail-safe etkin"
+        },
+        {
+          "name": "FS_LEAK_ENABLE",
+          "value": 1,
+          "description": "Su kaçağı fail-safe etkin"
+        },
+        {
+          "name": "FENCE_ENABLE",
+          "value": 1,
+          "description": "Geofence etkin"
+        },
+        {
+          "name": "FENCE_TYPE",
+          "value": 7,
+          "description": "Fence type (alt+circle)"
+        },
+        {
+          "name": "FENCE_ALT_MIN",
+          "value": -10,
+          "description": "Minimum altitude (max depth 10m)"
+        },
+        {
+          "name": "FENCE_RADIUS",
+          "value": 100,
+          "description": "Maximum horizontal distance (100m)"
+        }
+      ]
+    },
+    {
+      "id": "mission_modes",
+      "title": "🎯 Görev Modları",
+      "type": "flight_mode_setup", 
+      "modes": [
+        {
+          "channel": 1,
+          "name": "Manual",
+          "mode": "Manual",
+          "description": "Manuel kontrol modu"
+        },
+        {
+          "channel": 2,
+          "name": "Depth Hold",
+          "mode": "AltHold", 
+          "description": "Derinlik tutma modu"
+        },
+        {
+          "channel": 3,
+          "name": "Stabilize",
+          "mode": "Stabilize",
+          "description": "Stabilizasyon modu"
+        },
+        {
+          "channel": 4,
+          "name": "Auto Mission",
+          "mode": "Auto",
+          "description": "Otomatik görev modu"
+        },
+        {
+          "channel": 5,
+          "name": "Position Hold",
+          "mode": "PosHold",
+          "description": "Pozisyon tutma"
+        },
+        {
+          "channel": 6,
+          "name": "Surface",
+          "mode": "Surface",
+          "description": "Yüzeye çıkış modu"
+        }
+      ]
+    },
+    {
+      "id": "lua_script_upload",
+      "title": "📜 Custom Lua Script",
+      "type": "file_upload",
+      "files": [
+        {
+          "name": "pixhawk_underwater_frame.lua",
+          "destination": "/APM/scripts/pixhawk_underwater_frame.lua",
+          "description": "TEKNOFEST özel underwater frame scripti",
+          "required": true
+        }
+      ],
+      "parameters": [
+        {
+          "name": "SCR_ENABLE",
+          "value": 1,
+          "description": "Lua scripting etkinleştir"
+        },
+        {
+          "name": "SCR_VM_I_COUNT",
+          "value": 50000,
+          "description": "Script instruction count"
+        },
+        {
+          "name": "SCR_HEAP_SIZE",
+          "value": 64000,
+          "description": "Script heap size (bytes)"
+        }
+      ]
+    },
+    {
+      "id": "communication_setup", 
+      "title": "📡 İletişim Ayarları",
+      "type": "parameter_setup",
+      "parameters": [
+        {
+          "name": "SERIAL0_PROTOCOL",
+          "value": 2,
+          "description": "USB port mavlink protocol"
+        },
+        {
+          "name": "SERIAL0_BAUD",
+          "value": 115200,
+          "description": "USB baud rate"
+        },
+        {
+          "name": "SR0_EXT_STAT",
+          "value": 2,
+          "description": "Extended status rate (Hz)"
+        },
+        {
+          "name": "SR0_EXTRA1",
+          "value": 4,
+          "description": "Extra1 stream rate (Hz)"
+        },
+        {
+          "name": "SR0_EXTRA2",
+          "value": 4,
+          "description": "Extra2 stream rate (Hz)"
+        },
+        {
+          "name": "SR0_EXTRA3",
+          "value": 2,
+          "description": "Extra3 stream rate (Hz)"
+        },
+        {
+          "name": "SR0_POSITION",
+          "value": 2,
+          "description": "Position stream rate (Hz)"
+        },
+        {
+          "name": "SR0_RC_CHAN",
+          "value": 5,
+          "description": "RC channel stream rate (Hz)"
+        },
+        {
+          "name": "SR0_RAW_SENS",
+          "value": 2,
+          "description": "Raw sensor stream rate (Hz)"
+        }
+      ]
+    },
+    {
+      "id": "final_tests",
+      "title": "🧪 Final Testler",
+      "type": "system_test",
+      "tests": [
+        {
+          "name": "Motor Test",
+          "description": "Tüm motorları test et",
+          "type": "motor_test_sequence",
+          "channels": [1, 2, 3, 4, 5, 8],
+          "duration": 3,
+          "power": 20
+        },
+        {
+          "name": "Depth Hold Test",
+          "description": "Derinlik tutma testi",
+          "type": "mode_test",
+          "mode": "AltHold",
+          "duration": 10
+        },
+        {
+          "name": "Stabilization Test", 
+          "description": "Stabilizasyon testi",
+          "type": "attitude_test",
+          "duration": 10
+        },
+        {
+          "name": "GPS Test",
+          "description": "GPS konumu testi",
+          "type": "gps_test",
+          "min_satellites": 6,
+          "timeout": 30
+        },
+        {
+          "name": "Battery Monitor Test",
+          "description": "Batarya monitörü testi",
+          "type": "battery_test",
+          "expected_voltage": 22.2,
+          "tolerance": 2.0
+        }
+      ]
+    },
+    {
+      "id": "mission_planning",
+      "title": "🗺️ Görev Planlama",
+      "type": "mission_setup",
+      "content": {
+        "message": "TEKNOFEST görevleri için waypoint'leri ayarlayın",
+        "templates": [
+          {
+            "name": "Görev 1: Seyir + Geri Dönüş", 
+            "description": "10m düz seyir, 50m uzaklaşma, geri dönüş",
+            "waypoints": [
+              {
+                "type": "TAKEOFF",
+                "depth": -2.0,
+                "description": "2m derinliğe in"
+              },
+              {
+                "type": "WAYPOINT", 
+                "relative_position": [10, 0],
+                "depth": -2.0,
+                "description": "10m düz seyir"
+              },
+              {
+                "type": "WAYPOINT",
+                "relative_position": [50, 0], 
+                "depth": -2.0,
+                "description": "50m uzaklaş"
+              },
+              {
+                "type": "RTL",
+                "depth": -2.0,
+                "description": "Başlangıca dön"
+              },
+              {
+                "type": "LAND",
+                "depth": 0.0,
+                "description": "Yüzeye çık"
+              }
+            ]
+          },
+          {
+            "name": "Görev 2: Roket Atışı",
+            "description": "Atış bölgesine git, +30° eğim, roket fırlat",
+            "waypoints": [
+              {
+                "type": "TAKEOFF",
+                "depth": -2.0,
+                "description": "2m derinliğe in"
+              },
+              {
+                "type": "WAYPOINT",
+                "relative_position": [0, 0],
+                "depth": -2.0,
+                "description": "Atış bölgesi"
+              },
+              {
+                "type": "LAND", 
+                "depth": 0.0,
+                "pitch": 30.0,
+                "description": "Yüzeye +30° eğimle çık"
+              },
+              {
+                "type": "DO_SET_SERVO",
+                "channel": 6,
+                "pwm": 2000,
+                "description": "Payload bay aç"
+              },
+              {
+                "type": "DO_SET_SERVO",
+                "channel": 7, 
+                "pwm": 2000,
+                "description": "Roket fırlat"
+              }
+            ]
+          }
+        ]
+      }
+    },
+    {
+      "id": "completion",
+      "title": "🎉 Kurulum Tamamlandı!",
+      "type": "completion",
+      "content": {
+        "message": "TEKNOFEST Su Altı Roket Aracınız kullanıma hazır!",
+        "next_steps": [
+          "🔋 Batarya seviyesini kontrol edin (>22V)",
+          "🌊 Su geçirgenlik testini yapın",
+          "📡 Telemetri bağlantısını test edin", 
+          "🎯 Görev planını yükleyin",
+          "🚀 Test sürüşü yapın",
+          "📹 Kabiliyet videosunu çekin"
+        ],
+        "support": {
+          "documentation": "README.md",
+          "test_scripts": "Test/ klasörü",
+          "demo_scripts": "Kabiliyet Videosu/ klasörü"
+        }
+      }
+    }
+  ],
+  "post_setup_actions": [
+    {
+      "name": "Parameter Backup",
+      "description": "Tüm parametreleri yedekle",
+      "action": "param_backup",
+      "filename": "teknofest_params_backup.param"
+    },
+    {
+      "name": "Reboot System",
+      "description": "Sistemi yeniden başlat",
+      "action": "reboot",
+      "delay": 5
+    },
+    {
+      "name": "Health Check",
+      "description": "Sistem sağlığını kontrol et",
+      "action": "health_check",
+      "timeout": 30
+    }
+  ],
+  "troubleshooting": {
+    "common_issues": [
+      {
+        "issue": "Pixhawk bağlantı hatası",
+        "solutions": [
+          "USB kablosunu kontrol edin",
+          "BlueOS'un Pixhawk'ı algıladığından emin olun",
+          "Farklı USB port deneyin"
+        ]
+      },
+      {
+        "issue": "Servo tepki vermiyor",
+        "solutions": [
+          "Servo güç kaynağını kontrol edin",
+          "PWM kablo bağlantılarını kontrol edin", 
+          "SERVO_FUNCTION parametrelerini kontrol edin"
+        ]
+      },
+      {
+        "issue": "Derinlik sensörü okumuyor",
+        "solutions": [
+          "I2C bağlantılarını kontrol edin (GPIO 2/3)",
+          "D300 sensörün 0x77 adresinde olduğunu doğrulayın",
+          "i2cdetect -y 1 komutuyla sensörü kontrol edin"
+        ]
+      },
+      {
+        "issue": "Motor arming yapamıyor",
+        "solutions": [
+          "Kalibrasyonların tamamlandığından emin olun",
+          "Güvenlik kontrol anahtarını kontrol edin",
+          "Batarya voltajının yeterli olduğunu kontrol edin"
+        ]
+      }
+    ]
+  }
+} 
