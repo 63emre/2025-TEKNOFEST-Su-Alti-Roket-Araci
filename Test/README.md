@@ -4,20 +4,35 @@ Bu klasör, su altı roket aracının tüm alt sistemlerini test etmek için gel
 
 ## 🔧 Sistem Gereksinimleri
 
-### Donanım
-- **Raspberry Pi 4B** (BlueOS yüklü)
-- **Pixhawk 2.4.8** (USB bağlı)
-- **4x DS3230MG Servo** (30kg, su geçirmez)
-- **DEGZ M5 Su Altı Motor** + ESC (30A)
-- **GPIO Buton** (16mm metal, ışıklı)
-- **22.2V 6S LiPo Batarya**
+### Donanım - HARDWARE_PIN_MAPPING.md Standardına Uygun
+- **Raspberry Pi 4B** (BlueOS yüklü) - GPIO kontrol sistemi
+- **Pixhawk PX4 PIX 2.4.8** (USB MAVLink bağlantısı) - Ana uçuş kontrol
+- **4x DS3230MG Servo** (30kg, su geçirmez) - X-konfigürasyon finler (AUX 1-4)  
+- **DEGZ M5 Su Altı Motor** + **DEGZ BLU 30A ESC** (MAIN 1)
+- **D300 Derinlik/Sıcaklık Sensörü** (I2C 0x77) - GPIO 2,3
+- **16A P1Z EC Metal Buton** (GPIO 18) - Güç kontrolü
+- **40A Güç Röle Sistemi** (GPIO 21) - Acil kesme
+- **RGB LED Sistem** (GPIO 4,5,6) - Durum gösterimi  
+- **Status LED'ler** (GPIO 16,20,24) - Sistem durumu
+- **PWM Buzzer** (GPIO 13,25) - Sesli uyarı sistemi
+- **22.2V 6S LiPo Batarya** (1800mAh, 65C) - 80A sürekli akım
 
 ### Yazılım Bağımlılıkları
 ```bash
-pip install pymavlink
-pip install RPi.GPIO
-pip install numpy
-pip install time
+# Temel sistemler
+pip install pymavlink        # MAVLink protokolü
+pip install RPi.GPIO         # Raspberry Pi GPIO kontrolü
+pip install numpy            # Numerik hesaplamalar
+pip install smbus2           # I2C haberleşme (D300 sensör)
+
+# Test ve analiz
+pip install matplotlib       # Veri görselleştirme
+pip install scipy            # Sinyal işleme
+pip install json             # Veri kaydetme
+pip install threading       # Çoklu işlem
+
+# Pin mapping referansı
+# Tüm pin tanımları HARDWARE_PIN_MAPPING.md'de standardize edilmiştir
 ```
 
 ## 📋 Test Scriptleri
@@ -45,21 +60,49 @@ pip install time
 
 ## 🚀 Kullanım
 
+### Temel Test Sırası
 ```bash
-# 1. MAVLink bağlantısını test et
+# 1. Pin mapping ve bağlantı kontrolü (ÖNEMLİ!)
+cat HARDWARE_PIN_MAPPING.md
+
+# 2. MAVLink bağlantısını test et
 python test_mavlink_connection.py
 
-# 2. GPIO buton sistemini test et  
+# 3. GPIO buton sistemini test et (90sn güvenlik gecikmesi)  
 python test_gpio_button.py
 
-# 3. Servo sistemini kalibre et
+# 4. D300 derinlik sensörü testi (I2C)
+python test_d300_depth_sensor.py
+
+# 5. LED ve buzzer sistemi testi  
+python test_led_buzzer.py
+
+# 6. X-konfigürasyon servo sistemi (AUX 1-4)
 python test_servo_control.py
 
-# 4. Motor kontrolünü test et
+# 7. Motor kontrolü (MAIN 1)
 python test_motor_control.py
 
-# 5. Tam sistem testi
+# 8. Stabilizasyon algoritması (X-fin mixing)
+python test_stabilization.py
+
+# 9. Tam sistem entegrasyon testi
 python test_full_system.py
+```
+
+### X-Konfigürasyon Fin Sistemi
+```
+   Ön Sol (AUX1) ──────── Ön Sağ (AUX2)
+       \                     /
+        \       X-FIN       /
+         \   KONFİGÜR.    /
+          \               /
+           \             /
+  Arka Sol (AUX3) ──────── Arka Sağ (AUX4)
+
+Roll:  Sol finler ↔ Sağ finler  
+Pitch: Ön finler ↔ Arka finler
+Yaw:   X-Diagonal kontrol
 ```
 
 ## ⚠️ GÜVENLİK UYARILARI

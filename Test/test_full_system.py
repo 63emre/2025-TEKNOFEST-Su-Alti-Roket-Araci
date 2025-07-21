@@ -16,12 +16,15 @@ sys.path.append(os.path.dirname(__file__))
 try:
     from test_mavlink_connection import MAVLinkTester
     from test_gpio_button import SafetyButtonSystem
+    from test_led_buzzer import LEDBuzzerTester
+    from test_d300_depth_sensor import D300DepthSensor
     from test_servo_control import ServoController
     from test_motor_control import MotorController
     from test_stabilization import StabilizationController
     from test_depth_hold import DepthController
 except ImportError as e:
     print(f"❌ Test modülü import hatası: {e}")
+    print("🔧 Pin mapping standardı: HARDWARE_PIN_MAPPING.md dosyasını kontrol edin!")
     sys.exit(1)
 
 class FullSystemTester:
@@ -29,9 +32,11 @@ class FullSystemTester:
         self.test_results = {}
         self.start_time = None
         
-        # Test bileşenleri
+        # Test bileşenleri - HARDWARE_PIN_MAPPING.md standardına uygun
         self.mavlink_tester = None
         self.safety_system = None
+        self.led_buzzer_tester = None
+        self.d300_sensor = None
         self.servo_controller = None
         self.motor_controller = None
         self.stabilization_controller = None

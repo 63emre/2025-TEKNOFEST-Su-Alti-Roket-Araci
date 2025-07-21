@@ -53,32 +53,41 @@ Bu klasör, TEKNOFEST yarışması için gerekli **Kabiliyet Gösterim Videosu**
 ```
 1. 📋 Sistem Tanıtımı (30sn)
    - Aracın genel görünümü
-   - Ana bileşenler tanıtımı
+   - X-konfigürasyon fin sistemi
+   - Ana bileşenler (D300, LED, Buzzer)
+   - Pin mapping standardı
 
 2. 🔧 Acil Durdurma Testi (30sn)
-   - Sistem açma
-   - Acil durdurma butonu testi
-   - Güvenli kapanış
+   - 16A power button ile açılış
+   - 90 saniye güvenlik gecikmesi
+   - GPIO 19 acil durdurma testi
+   - 40A relay ile güvenli kapanış
 
-3. 💧 Sızdırmazlık Testi (60sn)
-   - 1m+ derinlikte statik test
-   - Hareket halinde test
-   - Kapak mekanizması testi
+3. 💧 Sızdırmazlık Testi (90sn)
+   - D300 sensör ile derinlik ölçümü (≥1m)
+   - X-fin sistemi ile statik test
+   - Hareket halinde test (fin manevralar)
+   - Payload bay kapak mekanizması testi
 
-4. 🚀 Hareket Kabiliyeti (90sn)
-   - Düz seyir
-   - Sağ/sol dönüşler
-   - Yukarı/aşağı manevralar
-   - Yüzeye çıkış
+4. 🚀 Hareket Kabiliyeti (120sn)
+   - X-fin roll kontrolü (sol-sağ finler)
+   - X-fin pitch kontrolü (ön-arka finler)  
+   - X-diagonal yaw kontrolü
+   - MAIN 1 motor ile düz seyir
+   - RGB LED durum gösterimi
+   - Yüzeye çıkış (burun kapağı kapalı)
 
-5. 🎯 Roket Ayrılma (30sn)
-   - Su yüzeyinde pozisyonlama
-   - Sinyal alımı
-   - Ayrılma mekanizması
+5. 🎯 Roket Ayrılma (45sn)
+   - Güvenli atış bölgesine navigasyon
+   - +30° pitch açısı (X-fin kontrolü)
+   - AUX 6 payload bay açılması
+   - AUX 7 separation mechanism
+   - LED/buzzer ile onay sinyali
 
-6. 📊 Sonuçlar (30sn)
-   - Test özeti
-   - Performans göstergeleri
+6. 📊 Sonuçlar (15sn)
+   - Test başarı oranları
+   - D300 sensör verileri
+   - Sistem performans göstergeleri
 ```
 
 ### 📹 Kamera Pozisyonları
@@ -89,13 +98,32 @@ Bu klasör, TEKNOFEST yarışması için gerekli **Kabiliyet Gösterim Videosu**
 
 ## 🛠️ Kullanım
 
-### Hazırlık
+### Sistem Hazırlık
 ```bash
+# Pin mapping kontrolü (ÖNEMLİ!)
+cat ../HARDWARE_PIN_MAPPING.md
+
 # Telemetri sistemi başlat
 python video_telemetry_overlay.py &
 
 # Video kayıt sistemi hazırla  
 python video_sequence_manager.py
+```
+
+### Hardware Gereksinimleri - Pin Standardı
+```
+🔌 PIXHAWK PIN MAPPING:
+  MAIN 1-8: Ana motor (DEGZ M5) MAIN 1'de
+  AUX 1-4:  X-konfigürasyon finler (DS3230MG)
+  AUX 5-7:  Elevator, Payload, Separation
+
+🤖 RASPBERRY Pi GPIO:
+  GPIO 18:  Power Button (16A Metal)
+  GPIO 19:  Emergency Stop  
+  GPIO 21:  40A Relay Control
+  GPIO 2,3: D300 I2C (Derinlik Sensörü)
+  GPIO 4,5,6: RGB LED Status
+  GPIO 13,25: Buzzer System
 ```
 
 ### Test Çekimleri

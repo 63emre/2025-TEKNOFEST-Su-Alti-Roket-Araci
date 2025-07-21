@@ -57,27 +57,34 @@ Bu klasör, TEKNOFEST Su Altı Roket Aracı Yarışması'nın ana görevlerini g
 
 ## 🛠️ Sistem Gereksinimleri
 
-### Donanım
-- **Raspberry Pi 4B** (BlueOS)
-- **Pixhawk 2.4.8** (MAVLink bağlantısı)
-- **GPS modülü** (konumlandırma için)
-- **Basınç sensörü** (derinlik ölçümü)
-- **IMU sensörleri** (attitude kontrolü)
-- **4x Servo motor** (fin kontrolü)
-- **ESC + Motor** (itki sistemi)
+### Donanım - Pin Mapping Standardı (HARDWARE_PIN_MAPPING.md)
+- **Raspberry Pi 4B** (BlueOS) - GPIO kontrol sistemi
+- **Pixhawk PX4 PIX 2.4.8** (MAVLink tcp:127.0.0.1:5777)
+- **GPS modülü** (Pixhawk entegre) - konumlandırma için
+- **D300 Derinlik/Sıcaklık Sensörü** (I2C 0x77, GPIO 2,3) - derinlik ölçümü
+- **IMU sensörleri** (Pixhawk entegre MPU6000) - attitude kontrolü
+- **4x DS3230MG Servo** (X-konfigürasyon, AUX 1-4) - fin kontrolü
+- **DEGZ M5 Motor + DEGZ BLU 30A ESC** (MAIN 1) - itki sistemi
+- **40A Güç Röle Sistemi** (GPIO 21) - acil kesme kontrol
+- **LED/Buzzer Sistemi** (GPIO 4,5,6,13,16,20,24,25) - durum gösterimi
 
 ### Yazılım Bağımlılıkları
 ```bash
 # Temel gereksinimler
-pip install pymavlink
-pip install numpy
-pip install scipy
-pip install geopy
-pip install UTM
+pip install pymavlink        # MAVLink protokolü (Pixhawk)
+pip install RPi.GPIO         # GPIO kontrol (Raspberry Pi)
+pip install smbus2           # I2C haberleşme (D300 sensör)
+pip install numpy            # Numerik hesaplamalar
+pip install scipy            # PID kontrolcü ve filtreler
+pip install geopy            # GPS koordinat hesaplamaları
+pip install UTM              # Koordinat dönüşümleri
 
 # Görselleştirme (opsiyonel)
-pip install matplotlib
-pip install plotly
+pip install matplotlib       # Grafik çizim
+pip install plotly           # İnteraktif grafikler
+
+# Pin Mapping Referansı: HARDWARE_PIN_MAPPING.md
+# Tüm pin tanımları ve bağlantı şeması burada standardize edilmiştir
 ```
 
 ## 🚀 Kullanım
