@@ -7,41 +7,40 @@ Bu dokuman, tüm sistemde kullanılan pin bağlantılarının standardını tan�
 
 ## 🔌 **PIXHAWK PX4 PIX 2.4.8 Pin Mapping**
 
-### **MAIN OUTPUT (PWM Çıkışları)**
-```
-MAIN 1  → Ana Motor (DEGZ M5 + DEGZ BLU 30A ESC)
-MAIN 2  → Rezerve (Gelecek geliştirmeler için)
-MAIN 3  → Rezerve 
-MAIN 4  → Rezerve
-MAIN 5  → Rezerve
-MAIN 6  → Rezerve
-MAIN 7  → Rezerve
-MAIN 8  → Rezerve
-```
+  ### **MAIN OUTPUT (PWM Çıkışları)**
+  ```
+  MAIN 1  → Ana Motor (DEGZ M5 + DEGZ BLU 30A ESC)
+  MAIN 2  → Rezerve (Gelecek geliştirmeler için)
+  MAIN 3  → Rezerve 
+  MAIN 4  → Rezerve
+  MAIN 5  → Rezerve
+  MAIN 6  → Rezerve
+  MAIN 7  → Rezerve
+  MAIN 8  → Rezerve
+  ```
+  
+  ### **AUX OUTPUT (Auxiliary PWM Çıkışları)**
+  ```
+  AUX 1   → Fin Servo 1 - Ön Sol (X Düzeninde) (DS3230MG 30kg)
+  AUX 2   → Fin Servo 2 - Ön Sağ (X Düzeninde) (DS3230MG 30kg)  
+  AUX 3   → Fin Servo 3 - Arka Sol (X Düzeninde) (DS3230MG 30kg)
+  AUX 4   → Fin Servo 4 - Arka Sağ (X Düzeninde) (DS3230MG 30kg)
+  AUX 5  → Rezerve
+  AUX 6  → Rezerve
+  ```
+  
+  ### **I2C Port**
+  ```
+  I2C SCL → D300 Derinlik Sensörü SCL
+  I2C SDA → D300 Derinlik Sensörü SDA  
+  I2C VCC → +5V (D300 için)
+  I2C GND → Ground
+  ```
 
-### **AUX OUTPUT (Auxiliary PWM Çıkışları)**
+## **Power Module**
 ```
-AUX 1   → Fin Servo 1 - Ön Sol (X Düzeninde) (DS3230MG 30kg)
-AUX 2   → Fin Servo 2 - Ön Sağ (X Düzeninde) (DS3230MG 30kg)  
-AUX 3   → Fin Servo 3 - Arka Sol (X Düzeninde) (DS3230MG 30kg)
-AUX 4   → Fin Servo 4 - Arka Sağ (X Düzeninde) (DS3230MG 30kg)
-AUX 5   → Elevator Servo - Derinlik Kontrolü (DS3230MG 30kg)
-AUX 6   → Payload Bay Servo - Roket Bölmesi Kapağı
-AUX 7   → Separation Mechanism - Ayrılma Mekanizması
-AUX 8   → Rezerve (Gelecek geliştirmeler)
-```
-
-### **I2C Port**
-```
-I2C SCL → D300 Derinlik Sensörü SCL
-I2C SDA → D300 Derinlik Sensörü SDA  
-I2C VCC → +5V (D300 için)
-I2C GND → Ground
-```
-
-### **Power Module**
-```
-Power Module → 6S 22.2V LiPo Batarya (1800mAh 65C)
+Power Module → 22.2V DC to 5V DC
+              →  6S 22.2V LiPo Batarya (1800mAh 65C)
               → Akım sensörü entegreli
               → Voltaj monitörleme
 ```
@@ -50,34 +49,46 @@ Power Module → 6S 22.2V LiPo Batarya (1800mAh 65C)
 
 ## 📟 **RASPBERRY PI 4B GPIO Pin Mapping**
 
-### **GPIO Pinleri (BCM Numaralama)**
-```
-GPIO 2  → I2C SDA (D300 Derinlik Sensörü) - Internal I2C
-GPIO 3  → I2C SCL (D300 Derinlik Sensörü) - Internal I2C
-GPIO 4  → Status LED Red (Kırmızı Durum LED)
-GPIO 5  → Status LED Green (Yeşil Durum LED)
-GPIO 6  → Status LED Blue (Mavi Durum LED)
-GPIO 13 → Buzzer PWM Output (Sesli Uyarı/Müzik)
-GPIO 16 → External Warning LED (Harici Uyarı LED)
-GPIO 18 → Power Button Input (16A P1Z EC Metal Buton)
-GPIO 19 → Emergency Stop Button Input (Acil Kesme)
-GPIO 20 → System Status LED (Ana Sistem Durumu)
-GPIO 21 → System Power Relay Control (40A Relay)
-GPIO 22 → Payload Bay Status Input (Sensör)
-GPIO 23 → Water Detection Input (Su Algılama)
-GPIO 24 → Mission Status LED (Görev Durumu LED)
-GPIO 25 → External Buzzer Output (Dış Buzzer)
-GPIO 26 → RGB LED Strip Control (WS2812B Strip)
-GPIO 27 → Spare GPIO (Rezerve)
-```
+  ### **GPIO Pinleri (BCM Numaralama)**
+  ```
+  GPIO 2 → Pi Fan (+) (Rezerve)
+  GPIO 3 → Pi Fan (-) (Rezerve)
+  
+  GPIO 4  → Status LED Red (Kırmızı Durum LED)
+  GPIO 5  → Status LED Green (Yeşil Durum LED)
+  GPIO 6  → Status LED Blue (Mavi Durum LED)
+  
+  GPIO 7 → Buzzer PWM Output (Sesli Uyarı/Müzik)
+  GPIO 8 → External Warning LED (Harici Uyarı LED)
+  GPIO 9 → Power Button Input System ON/OFF (16A P1Z EC Metal Buton)
+  
+  GPIO 10 → System Status LED (Ana Sistem Durumu)
+  
+  GPIO 11 → Spare GPIO (Rezerve)
+  
+  
+  ```
 
-### **Güç Sistemi**
+## **Güç Sistemi**
 ```
-5V   → Pixhawk güç beslemesi
-5V   → D300 sensör güç beslemesi  
-3.3V → GPIO pull-up dirençleri
+Regülatörler
+5V → Pixhawk güç beslemesi - Power Input(2x 22.2V to 5V Power Module GM V1.0 (a-b))
+5V → Raspery Pi Beslemesi - USB-C (2x 22.2V to 5V 3A Regülatör (e-f))
+
+6.8V → Servo Güç Beslemesi (2x 22.2V to 6.8V 8A Regülatör (c-d))
+
+12V → Selonoid Beslemesi (1x 22.2V to 12V 8A Regülatör (g))
+12V -Ateşleme Sistemi (1x 22.2V to 12 V 8A Regülatör (g))
+
+
+Kart Üstünden Besleme
+3.3V → GPIO pull-up dirençleri ?
+22.2v → Ana Motor Besleme (ESC üzerinden)
 GND  → Ortak topraklama
 USB  → Pixhawk MAVLink bağlantısı
+
+Li-Polimer Pil Besleme
+100A Röle Besleme (2x9V Li-PO)
 ```
 
 ---
@@ -92,9 +103,9 @@ USB  → Pixhawk MAVLink bağlantısı
 └─────────┬───────┘
           │
     ┌─────▼─────┐
-    │ 40A Relay │ ◄── GPIO 21 (Raspberry Pi)
-    │(Acil Kesme│     16A P1Z EC Buton (GPIO 18)
-    │ Kontrolü) │     Acil Stop Buton (GPIO 19)
+    │ 100A Relay│ ◄── Acil Stop Buton 
+    │(Acil Kesme│  
+    │ Kontrolü) │    
     └─────┬─────┘
           │
     ┌─────▼─────┐
@@ -102,15 +113,15 @@ USB  → Pixhawk MAVLink bağlantısı
     │   Module  │
     └─┬─┬─┬─┬─┬─┘
       │ │ │ │ │
-      │ │ │ │ └── +5V → Raspberry Pi
-      │ │ │ └──── +5V → Pixhawk  
-      │ │ └────── +5V → D300 Sensör
-      │ └──────── +5V → Servo güç rayı
+      │ │ │ │ └── +5V 3A USB-C → Raspberry Pi
+      │ │ │ └──── +5V Pixhawk POWER PIN  → Pixhawk  
+      │ │ └────── +6.8V x 4 → Servo
+      │ └──────── +12V X 2 → Selenoid + Fırlatma Sistemi
       └────────── MAIN 1 → ESC (30A)
 ```
 
 ### **Güvenlik Sistemi**
-- **40A Relay**: Ana sistem gücü kesintisi için
+- **100A Relay**: Ana sistem gücü kesintisi için
 - **16A Metal Buton**: Sistem on/off kontrolü 
 - **Acil Stop**: Anında tüm motor durdurmak için
 - **80A Peak Current**: Bataryadan gelen maksimum akım
@@ -148,7 +159,7 @@ Yaw Control   → AUX 1 & AUX 4 vs AUX 2 & AUX 3 (X-Diagonal)
 
 ### **PWM Signal Specs**
 ```
-PWM Frequency: 50Hz (20ms period)
+PWM Frequency: 333Hz (3ms period)
 PWM Range:     1000-2000 μs
 Neutral:       1500 μs
 Min:           1000 μs (Full Left/Down)
@@ -189,8 +200,8 @@ GPS:         External GPS module (Serial)
 
 ### **40A Relay Kontrol Sistemi**
 ```
-Relay Kapasitesi: 40A @ 24VDC
-Kontrol Voltajı:  3.3V (GPIO 21)
+Relay Kapasitesi: 100A @ 24VDC
+Kontrol Voltajı:  9V (Li-PO pil)
 Ana Devreleme:    6S LiPo → Tüm sistem
 Kesme Süresi:     <50ms
 Fail-Safe:        Power loss = Relay açık
@@ -198,16 +209,17 @@ Fail-Safe:        Power loss = Relay açık
 
 ### **Buton Hiyerarşisi**
 ```
-1. 16A Metal Buton (GPIO 18):
+1. Acil Stop Buton (Enerjilendirme) (GPIO 19):
+   - Anında motor durdurma
+   - 100A relay kontrolü
+   - Power Line Level Kapama
+   - Emergency surface protocol
+2. 16A Metal Buton (GPIO 18):
    - Sistem açma/kapama
    - 90 saniye güvenlik gecikmesi
    - Soft shutdown
 
-2. Acil Stop Buton (GPIO 19):
-   - Anında motor durdurma
-   - 40A relay açma
-   - Hardware level shutdown
-   - Emergency surface protocol
+
 ```
 
 ---
