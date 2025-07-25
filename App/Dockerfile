@@ -40,7 +40,7 @@ EXPOSE 5000
 
 # Health check
 HEALTHCHECK --interval=30s --timeout=10s --start-period=5s --retries=3 \
-    CMD curl -f http://localhost:5000/api/status || exit 1
+    CMD python3 -c "import urllib.request; urllib.request.urlopen('http://localhost:5000')" || exit 1
 
 # Default command
 CMD ["python3", "web_gui.py"] 
