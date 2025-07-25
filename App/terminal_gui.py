@@ -4,13 +4,34 @@ TEKNOFEST Su Altı ROV - Terminal GUI
 Real-time Terminal Kontrol Uygulaması
 """
 
-import curses
+import sys
+import os
+
+# Windows curses desteği
+try:
+    import curses
+except ImportError:
+    print("❌ Windows'ta curses desteklenmiyor!")
+    print("💡 Alternatif çözümler:")
+    print("   1. Windows Terminal kullan")
+    print("   2. WSL (Windows Subsystem for Linux) kullan")
+    print("   3. pip install windows-curses deneyin")
+    try:
+        import subprocess
+        print("🔧 windows-curses yüklemeyi deniyorum...")
+        subprocess.check_call([sys.executable, "-m", "pip", "install", "windows-curses"])
+        import curses
+        print("✅ windows-curses başarıyla yüklendi!")
+    except Exception as e:
+        print(f"❌ Otomatik yükleme başarısız: {e}")
+        print("💡 Elle yüklemek için: pip install windows-curses")
+        print("💡 Alternatif: main_gui.py GUI uygulamasını kullan")
+        sys.exit(1)
+
 import threading
 import time
 import subprocess
 import json
-import os
-import sys
 from datetime import datetime
 
 # Local imports
