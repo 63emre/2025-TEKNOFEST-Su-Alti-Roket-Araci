@@ -332,6 +332,29 @@
             </div>
             
             <div class="section">
+                <h3>Uygulama Scriptleri</h3>
+                <button class="btn" onclick="runScript('servo_calibration')">Servo Kalibrasyon</button>
+                <button class="btn" onclick="runScript('motor_test')">Motor Testi</button>
+                <button class="btn" onclick="runScript('imu_calibration')">IMU Kalibrasyon</button>
+                <button class="btn" onclick="runScript('system_check')">Sistem Kontrolü</button>
+                <button class="btn" onclick="runScript('emergency_test')">Acil Durum Testi</button>
+            </div>
+            
+            <div class="section">
+                <h3>Manuel Servo Kontrolü</h3>
+                <div class="input-group">
+                    <select id="servo-select">
+                        <option value="front_left">Ön Sol</option>
+                        <option value="front_right">Ön Sağ</option>
+                        <option value="rear_left">Arka Sol</option>
+                        <option value="rear_right">Arka Sağ</option>
+                    </select>
+                    <input type="number" id="servo-position" placeholder="Pozisyon (0-180)" min="0" max="180" value="90">
+                    <button class="btn" onclick="controlServo()">Hareket Et</button>
+                </div>
+            </div>
+            
+            <div class="section">
                 <div class="keyboard-help">
                     <h4>⌨️ Klavye Kontrolleri</h4>
                     <div class="key-row"><span>W,A,S,D</span><span>Servo Kontrol</span></div>
@@ -381,6 +404,13 @@
                 <div><strong>Enlem:</strong> <span id="latitude">0.000000</span></div>
                 <div><strong>Boylam:</strong> <span id="longitude">0.000000</span></div>
                 <div><strong>Uydu Sayısı:</strong> <span id="satellites">0</span></div>
+            </div>
+            
+            <div class="section">
+                <h3>Derinlik Sensörü</h3>
+                <div><strong>Derinlik:</strong> <span id="depth-value">0.0m</span></div>
+                <div><strong>Sıcaklık:</strong> <span id="water-temp">20.0°C</span></div>
+                <div><strong>Basınç:</strong> <span id="pressure-value">1013.25 hPa</span></div>
             </div>
             
             <div class="section">
@@ -627,6 +657,13 @@
             if (data.vibration) {
                 updateVibrationDisplay(data.vibration.level, data.vibration.category);
             }
+            
+            // Depth sensor data
+            if (data.depth) {
+                document.getElementById('depth-value').textContent = data.depth.depth.toFixed(1) + 'm';
+                document.getElementById('water-temp').textContent = data.depth.temperature.toFixed(1) + '°C';
+                document.getElementById('pressure-value').textContent = data.depth.pressure.toFixed(2) + ' hPa';
+            }
         }
         
         function updateVibrationDisplay(level, category) {
@@ -777,6 +814,60 @@
             while (logArea.children.length > 100) {
                 logArea.removeChild(logArea.firstChild);
             }
+        }
+        
+        function runScript(scriptId) {
+            fetch(`/api/scripts/${scriptId}/run`, {
+                method: 'POST',
+                headers: {
+                    'Content-Type': 'application/json',
+                },
+            })
+            .then(response => response.json())
+            .then(data => {
+                if (data.success) {
+                    addLog(`[INFO] Script başlatıldı: ${scriptId}`);
+                } else {
+                    addLog(`[ERROR] Script başlatılamadı: ${scriptId}`);
+                }
+            })
+            .catch((error) => {
+                console.error('Script error:', error);
+                addLog(`[ERROR] Script hatası: ${scriptId}`);
+            });
+        }
+        
+        function controlServo() {
+            const servoId = document.getElementById('servo-select').value;
+            const position = parseInt(document.getElementById('servo-position').value);
+            
+            if (position < 0 || position > 180) {
+                addLog('[ERROR] Servo pozisyonu 0-180 arasında olmalı');
+                return;
+            }
+            
+            fetch('/api/servo/control', {
+                method: 'POST',
+                headers: {
+                    'Content-Type': 'application/json',
+                },
+                body: JSON.stringify({
+                    servo_id: servoId,
+                    position: position
+                })
+            })
+            .then(response => response.json())
+            .then(data => {
+                if (data.success) {
+                    addLog(`[INFO] Servo ${servoId} pozisyon ${position} gönderildi`);
+                } else {
+                    addLog(`[ERROR] Servo kontrol hatası: ${servoId}`);
+                }
+            })
+            .catch((error) => {
+                console.error('Servo error:', error);
+                addLog(`[ERROR] Servo iletişim hatası`);
+            });
         }
     </script>
 </body>

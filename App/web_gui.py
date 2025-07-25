@@ -17,6 +17,9 @@ import logging
 from mavlink_handler import MAVLinkHandler
 from navigation_engine import NavigationEngine
 from vibration_monitor import VibrationMonitor
+from control_module import ControlModule
+from gpio_controller import GPIOController
+from depth_sensor import D300DepthSensor
 
 # Logging setup
 logging.basicConfig(level=logging.INFO)
@@ -33,6 +36,9 @@ class ROVWebController:
         self.mavlink_handler = None
         self.navigation_engine = None
         self.vibration_monitor = None
+        self.control_module = None
+        self.gpio_controller = None
+        self.depth_sensor = None
         
         # Durum değişkenleri
         self.connection_status = False
@@ -59,11 +65,44 @@ class ROVWebController:
             # MAVLink handler
             self.mavlink_handler = MAVLinkHandler()
             
+            # MAVLink bağlantısını kur
+            logger.info("MAVLink bağlantısı kuruluyor...")
+            self.connection_status = self.mavlink_handler.connect()
+            
+            if self.connection_status:
+                logger.info("✅ MAVLink bağlantısı kuruldu!")
+            else:
+                logger.warning("⚠️ MAVLink bağlantısı kurulamadı, offline modda çalışılıyor")
+            
             # Navigation engine
             self.navigation_engine = NavigationEngine(self.mavlink_handler)
             
             # Vibration monitor
             self.vibration_monitor = VibrationMonitor(self.mavlink_handler)
+            
+            # Control module (manuel servo kontrolü)
+            try:
+                self.control_module = ControlModule(self.mavlink_handler)
+                logger.info("✅ Control module başlatıldı")
+            except Exception as e:
+                logger.warning(f"⚠️ Control module başlatılamadı: {e}")
+            
+            # GPIO controller
+            try:
+                self.gpio_controller = GPIOController()
+                logger.info("✅ GPIO controller başlatıldı")
+            except Exception as e:
+                logger.warning(f"⚠️ GPIO controller başlatılamadı: {e}")
+            
+            # Depth sensor
+            try:
+                self.depth_sensor = D300DepthSensor()
+                if self.depth_sensor.connect():
+                    logger.info("✅ Derinlik sensörü bağlandı")
+                else:
+                    logger.warning("⚠️ Derinlik sensörü bağlanamadı")
+            except Exception as e:
+                logger.warning(f"⚠️ Derinlik sensörü hatası: {e}")
             
             logger.info("✅ Sistem bileşenleri başarıyla yüklendi!")
             return True
@@ -108,6 +147,16 @@ class ROVWebController:
                 vibration_level = self.vibration_monitor.get_vibration_level()
                 vibration_category = self.vibration_monitor.get_vibration_category()
             
+            # Depth sensor data
+            depth_data = {'depth': 0.0, 'temperature': 20.0, 'pressure': 1013.25}
+            if self.depth_sensor:
+                try:
+                    depth_reading = self.depth_sensor.read_depth()
+                    if depth_reading:
+                        depth_data = depth_reading
+                except Exception as e:
+                    logger.debug(f"Depth sensor read error: {e}")
+            
             with self.data_lock:
                 self.telemetry_data = {
                     'timestamp': time.time(),
@@ -132,6 +181,12 @@ class ROVWebController:
                     'vibration': {
                         'level': vibration_level,
                         'category': vibration_category
+                    },
+                    'depth': {
+                        'depth': depth_data.get('depth', 0.0),
+                        'temperature': depth_data.get('temperature', 20.0),
+                        'pressure': depth_data.get('pressure', 1013.25),
+                        'connected': self.depth_sensor is not None
                     }
                 }
                 
@@ -241,6 +296,73 @@ class ROVWebController:
         logger.warning("🚨 EMERGENCY STOP!")
         return True
     
+    def run_script(self, script_id):
+        """Script çalıştır"""
+        try:
+            import subprocess
+            import os
+            
+            script_map = {
+                'servo_calibration': 'scripts/servo_calibration.py',
+                'motor_test': 'scripts/motor_test.py', 
+                'imu_calibration': 'scripts/imu_calibration.py',
+                'system_check': 'scripts/system_check.py',
+                'emergency_test': 'scripts/emergency_stop.py'
+            }
+            
+            if script_id not in script_map:
+                logger.error(f"Script bulunamadı: {script_id}")
+                return False
+            
+            script_path = script_map[script_id]
+            if not os.path.exists(script_path):
+                logger.error(f"Script dosyası yok: {script_path}")
+                return False
+            
+            # Script'i arka planda çalıştır
+            logger.info(f"Script çalıştırılıyor: {script_id}")
+            process = subprocess.Popen(['python3', script_path], 
+                                     stdout=subprocess.PIPE, 
+                                     stderr=subprocess.PIPE)
+            
+            return True
+            
+        except Exception as e:
+            logger.error(f"Script çalıştırma hatası: {e}")
+            return False
+    
+    def control_servo(self, servo_id, position):
+        """Manuel servo kontrolü"""
+        try:
+            if not self.control_module:
+                logger.warning("Control module mevcut değil")
+                return False
+            
+            # Servo pozisyonunu ayarla
+            success = self.control_module.set_servo_position(servo_id, position)
+            logger.info(f"Servo {servo_id} pozisyon {position} -> {success}")
+            return success
+            
+        except Exception as e:
+            logger.error(f"Servo kontrol hatası: {e}")
+            return False
+    
+    def control_gpio(self, pin, state):
+        """GPIO kontrolü"""
+        try:
+            if not self.gpio_controller:
+                logger.warning("GPIO controller mevcut değil")
+                return False
+            
+            # GPIO durumunu ayarla
+            success = self.gpio_controller.set_pin_state(pin, state)
+            logger.info(f"GPIO {pin} durum {state} -> {success}")
+            return success
+            
+        except Exception as e:
+            logger.error(f"GPIO kontrol hatası: {e}")
+            return False
+    
     def get_telemetry_data(self):
         """Telemetry verilerini döndür"""
         with self.data_lock:
@@ -312,6 +434,44 @@ def api_movement():
 def api_emergency():
     """Acil durum"""
     success = rov_controller.emergency_stop()
+    return jsonify({'success': success})
+
+@app.route('/api/scripts', methods=['GET'])
+def api_get_scripts():
+    """Mevcut scriptleri listele"""
+    scripts = [
+        {'id': 'servo_calibration', 'name': 'Servo Kalibrasyonu', 'description': 'Servo motorlarını kalibre et'},
+        {'id': 'motor_test', 'name': 'Motor Testi', 'description': 'Ana motor testini çalıştır'},
+        {'id': 'imu_calibration', 'name': 'IMU Kalibrasyonu', 'description': 'IMU sensörünü kalibre et'},
+        {'id': 'system_check', 'name': 'Sistem Kontrolü', 'description': 'Tam sistem kontrolü yap'},
+        {'id': 'emergency_test', 'name': 'Acil Durum Testi', 'description': 'Emergency stop sistemini test et'}
+    ]
+    return jsonify(scripts)
+
+@app.route('/api/scripts/<script_id>/run', methods=['POST'])
+def api_run_script(script_id):
+    """Script çalıştır"""
+    success = rov_controller.run_script(script_id)
+    return jsonify({'success': success})
+
+@app.route('/api/servo/control', methods=['POST'])
+def api_servo_control():
+    """Manuel servo kontrolü"""
+    data = request.get_json()
+    servo_id = data.get('servo_id')
+    position = data.get('position', 90)
+    
+    success = rov_controller.control_servo(servo_id, position)
+    return jsonify({'success': success})
+
+@app.route('/api/gpio/control', methods=['POST'])
+def api_gpio_control():
+    """GPIO kontrolü"""
+    data = request.get_json()
+    pin = data.get('pin')
+    state = data.get('state')
+    
+    success = rov_controller.control_gpio(pin, state)
     return jsonify({'success': success})
 
 # WebSocket Events
