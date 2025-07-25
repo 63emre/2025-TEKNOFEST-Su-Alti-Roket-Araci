@@ -5,6 +5,7 @@ I2C tabanlı derinlik ve sıcaklık sensörü
 """
 
 import time
+import json
 import smbus2
 import threading
 from collections import deque
@@ -12,10 +13,20 @@ from collections import deque
 class D300DepthSensor:
     """D300 Derinlik ve Sıcaklık Sensörü Sınıfı"""
     
-    def __init__(self, bus_num=1, address=0x77):
+    def __init__(self, bus_num=1, address=0x76, config_path="config/hardware_config.json"):
         """D300 sensörü başlat"""
-        self.bus_num = bus_num
-        self.address = address
+        # Config'den I2C ayarlarını yükle
+        try:
+            with open(config_path, 'r') as f:
+                config = json.load(f)
+            i2c_config = config.get("raspberry_pi", {}).get("i2c", {})
+            self.bus_num = i2c_config.get("bus_number", bus_num)
+            address_str = i2c_config.get("depth_sensor_address", f"0x{address:02x}")
+            self.address = int(address_str, 16)
+        except Exception as e:
+            print(f"⚠️ Config yükleme hatası, varsayılan değerler kullanılıyor: {e}")
+            self.bus_num = bus_num
+            self.address = address
         self.bus = None
         self.connected = False
         

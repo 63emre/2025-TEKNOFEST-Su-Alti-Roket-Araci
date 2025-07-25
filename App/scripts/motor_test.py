@@ -78,6 +78,9 @@ class MotorTest:
                     return True
                 else:
                     print("⚠️  Araç DISARM durumda - Motor testi güvenli değil")
+                    print("💡 Terminal GUI'de Space tuşu ile ARM edin!")
+                    print("💡 Veya MAVLink komutları ile ARM yapın")
+                    print("💡 ARM etmeden motor testi yapılamaz (güvenlik)")
                     return False
             else:
                 print("❌ ARM durumu kontrol edilemedi")

@@ -207,7 +207,8 @@ class TerminalROVGUI:
         commands = [
             "W/S: Pitch",     "A/D: Roll",        "Q/E: Yaw",
             "PgUp/PgDn: Motor", "Space: ARM/DISARM", "R/P: RAW/PID",
-            "1/2/3: GPS/IMU/HYB", "T: Test Scripts",  "ESC: Çıkış"
+            "1/2/3: GPS/IMU/HYB", "T: Test Scripts",  "C: Pin Config",
+            "ESC: Çıkış"
         ]
         
         row = cmd_row + 1
@@ -299,6 +300,10 @@ class TerminalROVGUI:
         # Test scriptleri
         elif key == ord('t'):
             self.show_test_menu()
+            
+        # Pin konfigürasyonu
+        elif key == ord('c'):
+            self.show_pin_config()
     
     def update_servo_control(self):
         """Real-time servo kontrolünü güncelle"""
@@ -474,6 +479,152 @@ class TerminalROVGUI:
         except Exception as e:
             self.log(f"❌ Script çalıştırma hatası: {e}")
     
+    def show_pin_config(self):
+        """Pin konfigürasyon menüsünü göster"""
+        config_window = curses.newwin(20, 70, 3, 5)
+        config_window.box()
+        config_window.addstr(1, 2, "🔧 PIN KONFİGÜRASYONU", curses.color_pair(4) | curses.A_BOLD)
+        
+        # Mevcut I2C ayarları
+        i2c_config = self.config.get("raspberry_pi", {}).get("i2c", {})
+        current_address = i2c_config.get("depth_sensor_address", "0x76")
+        current_bus = i2c_config.get("bus_number", 1)
+        
+        config_window.addstr(3, 4, f"Mevcut I2C Ayarları:")
+        config_window.addstr(4, 6, f"Bus: {current_bus}")
+        config_window.addstr(5, 6, f"D300 Adres: {current_address}")
+        
+        # GPIO ayarları
+        gpio_config = self.config.get("raspberry_pi", {}).get("gpio", {})
+        config_window.addstr(7, 4, f"GPIO Pinleri:")
+        row = 8
+        for pin_name, pin_num in gpio_config.items():
+            config_window.addstr(row, 6, f"{pin_name}: Pin {pin_num}")
+            row += 1
+        
+        # Seçenekler
+        config_window.addstr(15, 4, "Seçenekler:")
+        config_window.addstr(16, 6, "1: I2C Adresini Değiştir")
+        config_window.addstr(17, 6, "2: I2C Bus'u Değiştir")
+        config_window.addstr(18, 6, "ESC: Geri")
+        
+        config_window.refresh()
+        
+        # Pin ayarları seçimi bekle
+        while True:
+            key = config_window.getch()
+            if key == 27:  # ESC
+                break
+            elif key == ord('1'):
+                self.change_i2c_address(config_window)
+                break
+            elif key == ord('2'):
+                self.change_i2c_bus(config_window)
+                break
+        
+        config_window.clear()
+        config_window.refresh()
+        del config_window
+    
+    def change_i2c_address(self, parent_window):
+        """I2C adresini değiştir"""
+        # Input penceresi
+        input_window = curses.newwin(8, 50, 10, 15)
+        input_window.box()
+        input_window.addstr(1, 2, "I2C Adres Değiştir", curses.color_pair(4))
+        input_window.addstr(3, 2, "Yeni I2C adresi (hex): 0x")
+        input_window.addstr(5, 2, "Örnekler: 76, 77, 40, 48")
+        input_window.addstr(6, 2, "Enter: Kaydet, ESC: İptal")
+        
+        curses.echo()
+        curses.curs_set(1)
+        input_window.refresh()
+        
+        try:
+            # Hex değer gir
+            hex_input = input_window.getstr(3, 25, 2).decode('utf-8')
+            
+            if hex_input:
+                # Yeni adresi valide et
+                new_address = int(hex_input, 16)
+                new_address_str = f"0x{new_address:02x}"
+                
+                # Config'i güncelle
+                if "raspberry_pi" not in self.config:
+                    self.config["raspberry_pi"] = {}
+                if "i2c" not in self.config["raspberry_pi"]:
+                    self.config["raspberry_pi"]["i2c"] = {}
+                
+                self.config["raspberry_pi"]["i2c"]["depth_sensor_address"] = new_address_str
+                
+                # Config dosyasını kaydet
+                with open("config/hardware_config.json", 'w') as f:
+                    json.dump(self.config, f, indent=2)
+                
+                self.log(f"✅ I2C adresi {new_address_str} olarak güncellendi!")
+                
+                # Depth sensörü yeniden başlat
+                if self.depth_sensor:
+                    self.depth_sensor.disconnect()
+                    self.depth_sensor = D300DepthSensor()
+                    if self.depth_sensor.connect():
+                        self.log("✅ Depth sensörü yeni adresle bağlandı!")
+                    else:
+                        self.log("⚠️ Depth sensörü yeni adresle bağlanamadı")
+            
+        except ValueError:
+            self.log(f"❌ Geçersiz hex değer: {hex_input}")
+        except Exception as e:
+            self.log(f"❌ I2C adres değiştirme hatası: {e}")
+        finally:
+            curses.noecho()
+            curses.curs_set(0)
+            input_window.clear()
+            input_window.refresh()
+            del input_window
+    
+    def change_i2c_bus(self, parent_window):
+        """I2C bus numarasını değiştir"""
+        input_window = curses.newwin(7, 40, 10, 20)
+        input_window.box()
+        input_window.addstr(1, 2, "I2C Bus Değiştir", curses.color_pair(4))
+        input_window.addstr(3, 2, "Yeni bus numarası (0-9): ")
+        input_window.addstr(5, 2, "Enter: Kaydet, ESC: İptal")
+        
+        curses.echo()
+        curses.curs_set(1)
+        input_window.refresh()
+        
+        try:
+            # Bus numarası gir
+            bus_input = input_window.getstr(3, 25, 1).decode('utf-8')
+            
+            if bus_input and bus_input.isdigit():
+                new_bus = int(bus_input)
+                
+                # Config'i güncelle
+                if "raspberry_pi" not in self.config:
+                    self.config["raspberry_pi"] = {}
+                if "i2c" not in self.config["raspberry_pi"]:
+                    self.config["raspberry_pi"]["i2c"] = {}
+                
+                self.config["raspberry_pi"]["i2c"]["bus_number"] = new_bus
+                
+                # Config dosyasını kaydet
+                with open("config/hardware_config.json", 'w') as f:
+                    json.dump(self.config, f, indent=2)
+                
+                self.log(f"✅ I2C bus {new_bus} olarak güncellendi!")
+                
+        except Exception as e:
+            self.log(f"❌ I2C bus değiştirme hatası: {e}")
+        finally:
+            curses.noecho()
+            curses.curs_set(0)
+            input_window.clear()
+            input_window.refresh()
+            del input_window
+    
     def main_loop(self):
         """Ana döngü"""
         last_update = time.time()
@@ -482,17 +633,18 @@ class TerminalROVGUI:
             try:
                 current_time = time.time()
                 
-                # Ekranı temizle
-                self.stdscr.clear()
-                
-                # UI bileşenlerini çiz
-                self.draw_header()
-                self.draw_controls()
-                self.draw_commands()
-                self.draw_logs()
-                
-                # Ekranı yenile
-                self.stdscr.refresh()
+                # Ekranı temizle (sadece gerektiğinde)
+                if current_time - last_update > 0.1:
+                    self.stdscr.erase()
+                    
+                    # UI bileşenlerini çiz
+                    self.draw_header() 
+                    self.draw_controls()
+                    self.draw_commands()
+                    self.draw_logs()
+                    
+                    # Ekranı yenile
+                    self.stdscr.refresh()
                 
                 # Klavye girişini kontrol et
                 self.handle_keyboard()
@@ -503,7 +655,7 @@ class TerminalROVGUI:
                     last_update = current_time
                 
                 # FPS limiti
-                time.sleep(0.05)  # 20 FPS
+                time.sleep(0.1)  # 10 FPS - daha stabil
                 
             except KeyboardInterrupt:
                 self.running = False

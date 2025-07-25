@@ -27,7 +27,8 @@
       "system_status_led": 10
     },
     "i2c": {
-      "depth_sensor_address": "0x77"
+      "depth_sensor_address": "0x76",
+      "bus_number": 1
     }
   },
   "mavlink": {
