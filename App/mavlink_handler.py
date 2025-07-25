@@ -303,6 +303,83 @@ class MAVLinkHandler:
             pass
         return None
     
+    def get_depth_data(self):
+        """Depth sensor verilerini al (MAVLink üzerinden)"""
+        if not self.connected:
+            return None
+        
+        try:
+            # ArduSub'da depth sensor verisi genellikle SCALED_PRESSURE2 mesajında gelir
+            msg = self.master.recv_match(type='SCALED_PRESSURE2', blocking=False)
+            if msg:
+                # D300 depth sensor data
+                pressure_mbar = msg.press_abs  # Absolute pressure in millibar
+                temperature_c = msg.temperature / 100.0  # Temperature in celsius (from centidegrees)
+                
+                # Convert pressure to depth (rough approximation)
+                # 1 mbar ≈ 1 cm water depth
+                depth_m = max(0.0, (pressure_mbar - 1013.25) / 100.0)  # Sea level correction
+                
+                return {
+                    'depth_m': depth_m,
+                    'temperature_c': temperature_c,
+                    'pressure_mbar': pressure_mbar,
+                    'timestamp': time.time()
+                }
+            
+            # Alternatif olarak SCALED_PRESSURE mesajını da dene
+            msg = self.master.recv_match(type='SCALED_PRESSURE', blocking=False)
+            if msg:
+                pressure_mbar = msg.press_abs
+                temperature_c = msg.temperature / 100.0
+                depth_m = max(0.0, (pressure_mbar - 1013.25) / 100.0)
+                
+                return {
+                    'depth_m': depth_m,
+                    'temperature_c': temperature_c,
+                    'pressure_mbar': pressure_mbar,
+                    'timestamp': time.time()
+                }
+            
+            return None
+            
+        except Exception as e:
+            print(f"❌ Depth data alma hatası: {e}")
+            return None
+    
+    def get_all_sensor_data(self):
+        """Tüm sensör verilerini toplu olarak al"""
+        data = {}
+        
+        # IMU verisi
+        imu_data = self.get_imu_data()
+        if imu_data:
+            data['imu'] = {
+                'accel_x': imu_data[0],
+                'accel_y': imu_data[1], 
+                'accel_z': imu_data[2],
+                'gyro_x': imu_data[3],
+                'gyro_y': imu_data[4],
+                'gyro_z': imu_data[5]
+            }
+        
+        # Depth verisi
+        depth_data = self.get_depth_data()
+        if depth_data:
+            data['depth'] = depth_data
+        
+        # GPS verisi
+        gps_data = self.get_gps_data()
+        if gps_data:
+            data['gps'] = {
+                'lat': gps_data[0],
+                'lon': gps_data[1],
+                'alt': gps_data[2],
+                'satellites': gps_data[3]
+            }
+        
+        return data
+    
     def emergency_stop(self):
         """Acil durum - tüm servo/motor durdur"""
         print("🚨 ACİL DURUM - TÜMÜ DURDURULUYOR!")
@@ -473,7 +550,7 @@ class PIDController:
                 'errors': getattr(self, 'error_count', 0)
             }
         except Exception as e:
-            logger.error(f"System status error: {e}")
+            print(f"System status error: {e}")
             return {
                 'connection_status': False,
                 'armed_status': False,

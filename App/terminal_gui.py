@@ -71,7 +71,7 @@ class TerminalROVGUI:
         
         # Config
         self.load_config()
-        
+    
     def load_config(self):
         """Konfigürasyon yükle"""
         try:
@@ -128,18 +128,11 @@ class TerminalROVGUI:
         except Exception as e:
             self.log(f"❌ Vibration monitor hatası: {e}")
         
-        # Depth sensor
-        try:
-            # Gerçek sensor kullan - simülasyon değil!
-            self.depth_sensor = D300DepthSensor(simulation_mode=False)
-            if self.depth_sensor.connect():
-                # Monitoring'i başlat
-                self.depth_sensor.start_monitoring(interval=0.2)
-                self.log("✅ Derinlik sensörü bağlandı")
-            else:
-                self.log("⚠️ Derinlik sensörü bağlanamadı - I2C adresini kontrol et")
-        except Exception as e:
-            self.log(f"❌ Derinlik sensörü hatası: {e}")
+        # Depth sensor - MAVLink üzerinden al (Pixhawk'a bağlı)
+        # I2C depth sensor'ü başlatma, MAVLink'den alacağız
+        self.depth_sensor = None  # I2C kullanmıyoruz
+        self.depth_data = {'depth_m': 0.0, 'temperature_c': 0.0, 'connected': False}
+        self.log("💡 Depth sensörü MAVLink üzerinden alınacak")
         
         # GPIO controller
         try:
@@ -259,20 +252,33 @@ class TerminalROVGUI:
             self.stdscr.addstr(start_row, 65, "📊 SENSÖR VERİ:", curses.color_pair(2) | curses.A_BOLD)
             self.stdscr.addstr(start_row + 1, 67, "MAVLink Bağlı Değil")
         
-        # Depth sensor verileri
-        if self.depth_sensor and self.depth_sensor.connected:
+        # Depth sensor verileri - MAVLink üzerinden
+        if self.mavlink and self.mavlink.connected:
             try:
-                depth = getattr(self.depth_sensor, 'depth_m', 0.0)
-                temp = getattr(self.depth_sensor, 'temperature_c', 0.0)
-                self.stdscr.addstr(start_row, 110, "🌊 DERİNLİK:", curses.color_pair(4) | curses.A_BOLD)
-                self.stdscr.addstr(start_row + 1, 112, f"Derinlik: {depth:.2f}m")
-                self.stdscr.addstr(start_row + 2, 112, f"Sıcaklık: {temp:.1f}°C")
+                # MAVLink'den depth verisi al
+                depth_data = self.mavlink.get_depth_data()
+                if depth_data:
+                    depth = depth_data['depth_m']
+                    temp = depth_data['temperature_c']
+                    self.depth_data = depth_data
+                    self.depth_data['connected'] = True
+                    
+                    self.stdscr.addstr(start_row, 110, "🌊 DERİNLİK:", curses.color_pair(4) | curses.A_BOLD)
+                    self.stdscr.addstr(start_row + 1, 112, f"Derinlik: {depth:.2f}m")
+                    self.stdscr.addstr(start_row + 2, 112, f"Sıcaklık: {temp:.1f}°C")
+                    self.stdscr.addstr(start_row + 3, 112, f"Basınç: {depth_data.get('pressure_mbar', 0):.1f}mb")
+                else:
+                    self.stdscr.addstr(start_row, 110, "🌊 DERİNLİK:", curses.color_pair(3) | curses.A_BOLD)
+                    self.stdscr.addstr(start_row + 1, 112, "MAVLink'den bekleniyor...")
+                    self.depth_data['connected'] = False
             except Exception as e:
                 self.stdscr.addstr(start_row, 110, "🌊 DERİNLİK:", curses.color_pair(2) | curses.A_BOLD)
-                self.stdscr.addstr(start_row + 1, 112, "Sensör Hatası")
+                self.stdscr.addstr(start_row + 1, 112, f"MAVLink Hatası: {str(e)[:15]}")
+                self.depth_data['connected'] = False
         else:
             self.stdscr.addstr(start_row, 110, "🌊 DERİNLİK:", curses.color_pair(2) | curses.A_BOLD)
-            self.stdscr.addstr(start_row + 1, 112, "Sensör Bağlı Değil")
+            self.stdscr.addstr(start_row + 1, 112, "MAVLink Bağlı Değil")
+            self.depth_data['connected'] = False
         
         # Vibration durumu
         if self.vibration_monitor:
