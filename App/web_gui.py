@@ -82,14 +82,17 @@ class ROVWebController:
             
             # Control module (manuel servo kontrolü)
             try:
-                self.control_module = ControlModule(self.mavlink_handler)
+                self.control_module = ControlModule(self.mavlink_handler, self.navigation_engine)
                 logger.info("✅ Control module başlatıldı")
             except Exception as e:
                 logger.warning(f"⚠️ Control module başlatılamadı: {e}")
             
             # GPIO controller
             try:
-                self.gpio_controller = GPIOController()
+                # Load config for GPIO
+                with open("config/hardware_config.json", 'r') as f:
+                    config = json.load(f)
+                self.gpio_controller = GPIOController(config)
                 logger.info("✅ GPIO controller başlatıldı")
             except Exception as e:
                 logger.warning(f"⚠️ GPIO controller başlatılamadı: {e}")

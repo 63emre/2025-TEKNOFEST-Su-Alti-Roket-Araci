@@ -203,6 +203,10 @@ class VibrationMonitor:
         """Vibration rengi döndür"""
         return self.vibration_color
     
+    def get_vibration_category(self):
+        """Vibration kategorisi döndür"""
+        return self.vibration_category
+    
     def is_high_vibration(self, threshold=50):
         """Yüksek titreşim var mı?"""
         return self.vibration_level > threshold

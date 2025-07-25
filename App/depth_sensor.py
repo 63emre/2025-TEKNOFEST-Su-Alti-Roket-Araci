@@ -38,7 +38,7 @@ class D300DepthSensor:
     def connect(self):
         """D300 sensörüne bağlan"""
         try:
-            print(f"🔌 D300 sensörüne bağlanılıyor (I2C: {self.address:#04x})")
+            print(f"🔌 D300 sensörüne bağlanılıyor (I2C Bus: {self.bus_num}, Address: {self.address:#04x})")
             
             self.bus = smbus2.SMBus(self.bus_num)
             
@@ -50,14 +50,45 @@ class D300DepthSensor:
             return True
             
         except FileNotFoundError:
-            print("❌ I2C bulunamadı! Raspberry Pi'da mısınız?")
+            print("❌ I2C bulunamadı! I2C etkin mi kontrol et:")
+            print("   sudo raspi-config → Interface Options → I2C → Enable")
             return False
-        except OSError:
-            print("❌ D300 sensörü bulunamadı!")
+        except OSError as e:
+            print(f"❌ D300 sensörü bulunamadı! (OSError: {e})")
+            print("🔍 I2C cihazlarını tarayalım...")
+            self._scan_i2c_devices()
             return False
         except Exception as e:
             print(f"❌ D300 bağlantı hatası: {e}")
             return False
+    
+    def _scan_i2c_devices(self):
+        """I2C bus'taki cihazları tara"""
+        try:
+            if not self.bus:
+                self.bus = smbus2.SMBus(self.bus_num)
+            
+            print(f"📡 I2C Bus {self.bus_num} taranıyor...")
+            found_devices = []
+            
+            for addr in range(0x03, 0x78):
+                try:
+                    self.bus.read_byte(addr)
+                    found_devices.append(f"0x{addr:02x}")
+                except:
+                    pass
+            
+            if found_devices:
+                print(f"✅ Bulunan I2C cihazları: {', '.join(found_devices)}")
+                if self.address not in [int(addr, 16) for addr in found_devices]: 
+                    print(f"⚠️  D300 adresi (0x{self.address:02x}) bulunan cihazlar arasında yok!")
+                    print("💡 hardware_config.json'da address değerini kontrol et")
+            else:
+                print("❌ Hiç I2C cihazı bulunamadı!")
+                print("💡 Bağlantıları ve I2C ayarlarını kontrol et")
+                
+        except Exception as e:
+            print(f"❌ I2C tarama hatası: {e}")
     
     def disconnect(self):
         """Sensör bağlantısını kapat"""
