@@ -130,14 +130,14 @@ class TerminalROVGUI:
         
         # Depth sensor
         try:
-            # Gerçek sensor yoksa simulation modu kullan
-            self.depth_sensor = D300DepthSensor(simulation_mode=True)
+            # Gerçek sensor kullan - simülasyon değil!
+            self.depth_sensor = D300DepthSensor(simulation_mode=False)
             if self.depth_sensor.connect():
                 # Monitoring'i başlat
                 self.depth_sensor.start_monitoring(interval=0.2)
-                self.log("✅ Derinlik sensörü bağlandı (simülasyon modu)")
+                self.log("✅ Derinlik sensörü bağlandı")
             else:
-                self.log("⚠️ Derinlik sensörü bağlanamadı")
+                self.log("⚠️ Derinlik sensörü bağlanamadı - I2C adresini kontrol et")
         except Exception as e:
             self.log(f"❌ Derinlik sensörü hatası: {e}")
         
@@ -294,7 +294,7 @@ class TerminalROVGUI:
         
         commands = [
             "W/S: Pitch",     "A/D: Roll",        "Q/E: Yaw",
-            "PgUp/PgDn: Motor", "+/-: Motor Alt.",  "Space: ARM/DISARM",
+            "O/L: Motor",     "PgUp/PgDn: Motor Alt", "Space: ARM/DISARM",
             "R/F: RAW/PID",   "1/2/3: GPS/IMU/HYB", "T: Test Scripts",
             "C: Pin Config",  "V: Vibration",     "G: GPS Data",
             "ESC/P: Çıkış",   "",                 ""
@@ -349,10 +349,6 @@ class TerminalROVGUI:
         if key == -1 or key == curses.ERR:
             return
         
-        # Debug: Tuş kodunu logla (geçici)
-        if key < 256 and key != ord(' '):  # Space dışındaki normal tuşlar
-            self.log(f"🔤 Tuş: {key} ({chr(key) if 32 <= key <= 126 else 'ÖZEL'})")
-        
         # Çıkış tuşları - ESC, Ctrl+C, P tuşu (çoklu seçenek)
         if key in [27, 3, ord('P'), ord('p'), curses.KEY_EXIT, curses.KEY_BREAK]:  # ESC, Ctrl+C, P/p tuşları
             self.running = False
@@ -382,6 +378,15 @@ class TerminalROVGUI:
             self.motor_value = max(-100, self.motor_value - 10)
             self.send_motor_command()
             self.log(f"🎮 Motor azaltıldı: {self.motor_value}% (Page Down)")
+        # Motor kontrol - O/L tuşları (klavyede daha kolay)
+        elif key == ord('o') or key == ord('O'):
+            self.motor_value = min(100, self.motor_value + 10)
+            self.send_motor_command()
+            self.log(f"🎮 Motor artırıldı: {self.motor_value}% (O)")
+        elif key == ord('l') or key == ord('L'):
+            self.motor_value = max(-100, self.motor_value - 10)
+            self.send_motor_command()
+            self.log(f"🎮 Motor azaltıldı: {self.motor_value}% (L)")
         # Alternatif motor kontrol (+ ve - tuşları)
         elif key == ord('+') or key == ord('='):
             self.motor_value = min(100, self.motor_value + 5)
@@ -1123,6 +1128,12 @@ if __name__ == "__main__":
         gui.run()
     except KeyboardInterrupt:
         print("\n👋 Kullanıcı tarafından durduruldu!")
+    except ImportError as e:
+        print(f"❌ Import hatası: {e}")
+        print("💡 Eksik kütüphane: pip install -r requirements.txt")
+        sys.exit(1)
     except Exception as e:
         print(f"❌ Kritik hata: {e}")
+        import traceback
+        traceback.print_exc()
         sys.exit(1) 
