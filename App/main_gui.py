@@ -1117,9 +1117,9 @@ class PinConfigEditor(QDialog):
             self.pin_widgets["raspberry_pi_gpio_system_status_led"].setValue(10)
             
             # MAVLink defaults
-                         self.connection_string.setText("tcp:127.0.0.1:5777")
-             self.heartbeat_timeout.setValue(30)
-             self.command_timeout.setValue(5)
+            self.connection_string.setText("tcp:127.0.0.1:5777")
+            self.heartbeat_timeout.setValue(30)
+            self.command_timeout.setValue(5)
 
 class VibrationComparisonWindow(QDialog):
     """Vibration karşılaştırma penceresi"""
