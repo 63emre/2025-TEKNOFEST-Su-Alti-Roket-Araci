@@ -90,8 +90,27 @@ class TerminalROVGUI:
         self.last_valid_imu = None
         self.imu_timeout_counter = 0
         
+        # IMU veri stabilizasyonu için
+        self.last_imu_display = None
+        self.imu_update_counter = 0
+        
         # Config
         self.load_config()
+        
+        # Depth sensor - MAVLink üzerinden al (Pixhawk'a bağlı)
+        # I2C depth sensor'ü başlatma, MAVLink'den alacağız
+        self.depth_sensor = None  # I2C kullanmıyoruz
+        self.depth_data = {'depth_m': 0.0, 'temperature_c': 0.0, 'connected': False}
+        self.log("💡 Depth sensörü MAVLink üzerinden alınacak")
+        
+        # GPIO controller
+        try:
+            self.gpio_controller = GPIOController(self.config)
+            self.log("✅ GPIO controller başlatıldı")
+        except Exception as e:
+            self.log(f"❌ GPIO controller hatası: {e}")
+        
+        self.log("✅ Sistem bileşenleri başlatıldı!")
     
     def load_config(self):
         """Konfigürasyon yükle"""
@@ -148,12 +167,6 @@ class TerminalROVGUI:
                 self.log("✅ Vibration monitor başlatıldı")
         except Exception as e:
             self.log(f"❌ Vibration monitor hatası: {e}")
-        
-        # Depth sensor - MAVLink üzerinden al (Pixhawk'a bağlı)
-        # I2C depth sensor'ü başlatma, MAVLink'den alacağız
-        self.depth_sensor = None  # I2C kullanmıyoruz
-        self.depth_data = {'depth_m': 0.0, 'temperature_c': 0.0, 'connected': False}
-        self.log("💡 Depth sensörü MAVLink üzerinden alınacak")
         
         # GPIO controller
         try:
@@ -225,7 +238,7 @@ class TerminalROVGUI:
         # Derinlik
         self.stdscr.addstr(start_row + 2, 37, f"Hedef Derinlik: {self.depth_target:.1f}m")
         
-        # Gerçek zamanlı veriler
+        # Gerçek zamanlı veriler (stabilized)
         if self.mavlink and self.mavlink.connected:
             try:
                 imu_data = self.mavlink.get_imu_data()
@@ -237,7 +250,13 @@ class TerminalROVGUI:
                     self.last_valid_imu = imu_data
                     self.imu_timeout_counter = 0
                     
-                    accel_x, accel_y, accel_z, gyro_x, gyro_y, gyro_z = imu_data
+                    # IMU display stabilizasyonu - her 3. frame'de bir güncelle
+                    if self.imu_update_counter % 3 == 0 or self.last_imu_display is None:
+                        self.last_imu_display = imu_data
+                    
+                    # Gösterim için stabil veriyi kullan
+                    accel_x, accel_y, accel_z, gyro_x, gyro_y, gyro_z = self.last_imu_display
+                    
                     self.stdscr.addstr(start_row, 65, "📊 SENSÖR VERİ:", curses.color_pair(4) | curses.A_BOLD)
                     self.stdscr.addstr(start_row + 1, 67, f"Acc X: {accel_x:+6.2f}")
                     self.stdscr.addstr(start_row + 2, 67, f"Acc Y: {accel_y:+6.2f}")
@@ -246,34 +265,44 @@ class TerminalROVGUI:
                     self.stdscr.addstr(start_row + 1, 85, f"Gyro X: {gyro_x:+6.2f}")
                     self.stdscr.addstr(start_row + 2, 85, f"Gyro Y: {gyro_y:+6.2f}")
                     self.stdscr.addstr(start_row + 3, 85, f"Gyro Z: {gyro_z:+6.2f}")
+                    
+                    self.imu_update_counter += 1
+                    
                 else:
                     # Veri yoksa ama bağlantı varsa - timeout sayacı
                     self.imu_timeout_counter += 1
+                    self.imu_update_counter += 1
                     
                     if self.last_valid_imu and self.imu_timeout_counter < 100:  # 5 saniye timeout
-                        # Son geçerli veriyi göster (stale data)
-                        accel_x, accel_y, accel_z, gyro_x, gyro_y, gyro_z = self.last_valid_imu
-                        self.stdscr.addstr(start_row, 65, "📊 SENSÖR VERİ:", curses.color_pair(3) | curses.A_BOLD)
-                        self.stdscr.addstr(start_row + 1, 67, f"Acc X: {accel_x:+6.2f} [STALE]")
-                        self.stdscr.addstr(start_row + 2, 67, f"Acc Y: {accel_y:+6.2f} [STALE]")
-                        self.stdscr.addstr(start_row + 3, 67, f"Acc Z: {accel_z:+6.2f} [STALE]")
-                        self.stdscr.addstr(start_row + 1, 85, f"Gyro X: {gyro_x:+6.2f}")
-                        self.stdscr.addstr(start_row + 2, 85, f"Gyro Y: {gyro_y:+6.2f}")
-                        self.stdscr.addstr(start_row + 3, 85, f"Gyro Z: {gyro_z:+6.2f}")
+                        # Son geçerli veriyi göster (stale data) - ama sık güncelleme
+                        if self.imu_update_counter % 10 == 0:
+                            accel_x, accel_y, accel_z, gyro_x, gyro_y, gyro_z = self.last_valid_imu
+                            self.stdscr.addstr(start_row, 65, "📊 SENSÖR VERİ:", curses.color_pair(3) | curses.A_BOLD)
+                            self.stdscr.addstr(start_row + 1, 67, f"Acc X: {accel_x:+6.2f} [STALE]")
+                            self.stdscr.addstr(start_row + 2, 67, f"Acc Y: {accel_y:+6.2f} [STALE]")
+                            self.stdscr.addstr(start_row + 3, 67, f"Acc Z: {accel_z:+6.2f} [STALE]")
+                            self.stdscr.addstr(start_row + 1, 85, f"Gyro X: {gyro_x:+6.2f}")
+                            self.stdscr.addstr(start_row + 2, 85, f"Gyro Y: {gyro_y:+6.2f}")
+                            self.stdscr.addstr(start_row + 3, 85, f"Gyro Z: {gyro_z:+6.2f}")
                     else:
-                        # Gerçekten veri yok
-                        self.stdscr.addstr(start_row, 65, "📊 SENSÖR VERİ:", curses.color_pair(3) | curses.A_BOLD)
-                        self.stdscr.addstr(start_row + 1, 67, f"IMU sinyali bekleniyor... ({self.imu_timeout_counter//20}s)")
+                        # Gerçekten veri yok - daha az sıklıkta güncelle
+                        if self.imu_update_counter % 20 == 0:
+                            self.stdscr.addstr(start_row, 65, "📊 SENSÖR VERİ:", curses.color_pair(3) | curses.A_BOLD)
+                            self.stdscr.addstr(start_row + 1, 67, f"IMU sinyali bekleniyor... ({self.imu_timeout_counter//20}s)")
                         
             except Exception as e:
-                self.stdscr.addstr(start_row, 65, "📊 SENSÖR VERİ:", curses.color_pair(2) | curses.A_BOLD)
-                self.stdscr.addstr(start_row + 1, 67, f"IMU Hatası: {str(e)[:20]}...")
-                self.log(f"❌ IMU veri hatası: {e}")
+                if self.imu_update_counter % 20 == 0:  # Hata mesajını sık gösterme
+                    self.stdscr.addstr(start_row, 65, "📊 SENSÖR VERİ:", curses.color_pair(2) | curses.A_BOLD)
+                    self.stdscr.addstr(start_row + 1, 67, f"IMU Hatası: {str(e)[:20]}...")
+                    self.log(f"❌ IMU veri hatası: {e}")
+                self.imu_update_counter += 1
         else:
-            self.stdscr.addstr(start_row, 65, "📊 SENSÖR VERİ:", curses.color_pair(2) | curses.A_BOLD)
-            self.stdscr.addstr(start_row + 1, 67, "MAVLink Bağlı Değil")
+            if self.imu_update_counter % 20 == 0:  # Bağlantı mesajını sık gösterme
+                self.stdscr.addstr(start_row, 65, "📊 SENSÖR VERİ:", curses.color_pair(2) | curses.A_BOLD)
+                self.stdscr.addstr(start_row + 1, 67, "MAVLink Bağlı Değil")
+            self.imu_update_counter += 1
         
-        # Depth sensor verileri - MAVLink üzerinden
+        # Depth sensor verileri - MAVLink üzerinden (stabilized)
         if self.mavlink and self.mavlink.connected:
             try:
                 # MAVLink'den depth verisi al
@@ -281,25 +310,55 @@ class TerminalROVGUI:
                 if depth_data:
                     depth = depth_data['depth_m']
                     temp = depth_data['temperature_c']
-                    self.depth_data = depth_data
-                    self.depth_data['connected'] = True
+                    pressure = depth_data.get('pressure_mbar', 0)
+                    
+                    # Sadece anlamlı değişiklik varsa güncelle (anti-flicker)
+                    depth_changed = abs(depth - self.last_depth_display['depth_m']) > 0.01
+                    temp_changed = abs(temp - self.last_depth_display['temperature_c']) > 0.1
+                    pressure_changed = abs(pressure - self.last_depth_display['pressure_mbar']) > 0.5
+                    
+                    if depth_changed or temp_changed or pressure_changed or self.depth_update_counter % 20 == 0:
+                        # Değerleri güncelle
+                        self.last_depth_display = {
+                            'depth_m': depth,
+                            'temperature_c': temp, 
+                            'pressure_mbar': pressure
+                        }
+                        self.depth_data = depth_data
+                        self.depth_data['connected'] = True
+                    
+                    # Her zaman son değerleri göster (flicker önleme)
+                    depth = self.last_depth_display['depth_m']
+                    temp = self.last_depth_display['temperature_c']
+                    pressure = self.last_depth_display['pressure_mbar']
                     
                     self.stdscr.addstr(start_row, 110, "🌊 DERİNLİK:", curses.color_pair(4) | curses.A_BOLD)
                     self.stdscr.addstr(start_row + 1, 112, f"Derinlik: {depth:.2f}m")
                     self.stdscr.addstr(start_row + 2, 112, f"Sıcaklık: {temp:.1f}°C")
-                    self.stdscr.addstr(start_row + 3, 112, f"Basınç: {depth_data.get('pressure_mbar', 0):.1f}mb")
+                    self.stdscr.addstr(start_row + 3, 112, f"Basınç: {pressure:.1f}mb")
+                    
+                    self.depth_update_counter += 1
+                    
                 else:
-                    self.stdscr.addstr(start_row, 110, "🌊 DERİNLİK:", curses.color_pair(3) | curses.A_BOLD)
-                    self.stdscr.addstr(start_row + 1, 112, "MAVLink'den bekleniyor...")
-                    self.depth_data['connected'] = False
+                    # Veri yoksa ama bağlantı varsa - sayaç arttır
+                    self.depth_update_counter += 1
+                    if self.depth_update_counter % 10 == 0:  # Her 0.5 saniyede bir güncelle
+                        self.stdscr.addstr(start_row, 110, "🌊 DERİNLİK:", curses.color_pair(3) | curses.A_BOLD)
+                        self.stdscr.addstr(start_row + 1, 112, "MAVLink'den bekleniyor...")
+                        self.depth_data['connected'] = False
+                        
             except Exception as e:
-                self.stdscr.addstr(start_row, 110, "🌊 DERİNLİK:", curses.color_pair(2) | curses.A_BOLD)
-                self.stdscr.addstr(start_row + 1, 112, f"MAVLink Hatası: {str(e)[:15]}")
-                self.depth_data['connected'] = False
+                if self.depth_update_counter % 20 == 0:  # Hata mesajını sık gösterme
+                    self.stdscr.addstr(start_row, 110, "🌊 DERİNLİK:", curses.color_pair(2) | curses.A_BOLD)
+                    self.stdscr.addstr(start_row + 1, 112, f"MAVLink Hatası: {str(e)[:15]}")
+                    self.depth_data['connected'] = False
+                self.depth_update_counter += 1
         else:
-            self.stdscr.addstr(start_row, 110, "🌊 DERİNLİK:", curses.color_pair(2) | curses.A_BOLD)
-            self.stdscr.addstr(start_row + 1, 112, "MAVLink Bağlı Değil")
-            self.depth_data['connected'] = False
+            if self.depth_update_counter % 20 == 0:  # Bağlantı mesajını sık gösterme
+                self.stdscr.addstr(start_row, 110, "🌊 DERİNLİK:", curses.color_pair(2) | curses.A_BOLD)  
+                self.stdscr.addstr(start_row + 1, 112, "MAVLink Bağlı Değil")
+                self.depth_data['connected'] = False
+            self.depth_update_counter += 1
         
         # Vibration durumu
         if self.vibration_monitor:
@@ -1072,8 +1131,8 @@ class TerminalROVGUI:
             try:
                 current_time = time.time()
                 
-                # Ekranı temizle (60FPS yerine 20FPS)
-                if current_time - last_update > 0.05:
+                # Ekranı temizle - 10 FPS (daha stabil)
+                if current_time - last_update > 0.1:
                     self.stdscr.erase()
                     
                     # UI bileşenlerini çiz
@@ -1081,10 +1140,11 @@ class TerminalROVGUI:
                     self.draw_controls()
                     self.draw_commands()
                     self.draw_logs()
-                    self.draw_graphs() # Yeni eklenen grafik çizimi
+                    self.draw_graphs() # Grafik çizimi
                     
                     # Ekranı yenile
                     self.stdscr.refresh()
+                    last_update = current_time
                 
                 # Klavye girişini kontrol et
                 self.handle_keyboard()
@@ -1092,10 +1152,9 @@ class TerminalROVGUI:
                 # Real-time servo kontrolü (10Hz)
                 if current_time - last_update > 0.1:
                     self.update_servo_control()
-                    last_update = current_time
                 
-                # FPS limiti - 15 FPS optimal
-                time.sleep(0.066)  # ~15 FPS
+                # FPS limiti - 10 FPS (daha az yanıp sönme)
+                time.sleep(0.1)  # 10 FPS
                 
             except KeyboardInterrupt:
                 self.running = False
