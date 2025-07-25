@@ -6,23 +6,29 @@ Bu uygulama, Teknofest 2025 Su Altı Roket Aracı için geliştirilmiş tam ente
 
 ### 🎯 Ana Özellikler
 
-- **Real-time Kontrol**: W,A,S,D tuşları ile anlık servo kontrolü
-- **İki Kontrol Modu**: RAW PWM (titreşimsiz) vs PID (filtreli) karşılaştırması  
-- **Üç Navigation Sistemi**: GPS, IMU Dead Reckoning, Hibrit
-- **Hareket Komutları**: T,Y,U,G,H tuşları ile parametreli görevler
-- **Titreşim Analizi**: Real-time vibration monitoring ve FFT analizi
-- **Script Entegrasyonu**: Otomatik kalibrasyon ve test scriptleri
-- **GUI + Terminal**: PyQt5 arayüz + Tkinter real-time kontrol
+- **🌐 Web GUI**: Modern responsive web arayüzü (BlueOS uyumlu)
+- **📱 Real-time Kontrol**: Touch/klavye ile anlık servo kontrolü
+- **🔄 WebSocket**: Canlı telemetry ve kontrol güncellemeleri
+- **⚙️ İki Kontrol Modu**: RAW PWM (titreşimsiz) vs PID (filtreli)
+- **🧭 Üç Navigation Sistemi**: GPS, IMU Dead Reckoning, Hibrit
+- **🎮 Hareket Komutları**: Parametreli hareket görevleri
+- **📊 Real-time Grafikler**: Plot.ly ile IMU ve telemetry grafikleri
+- **📡 Titreşim Monitörü**: Canlı vibration analizi
+- **🖥️ Desktop GUI**: PyQt5 arayüz (VNC gerekli)
 
 ## 🏗️ Sistem Mimarisi
 
 ```
 App/
-├── main_gui.py              # PyQt5 Ana GUI
+├── web_gui.py               # 🌐 Flask Web GUI (Ana Arayüz)
+├── main_gui.py              # 🖥️ PyQt5 Desktop GUI
+├── templates/
+│   └── index.html           # Web arayüzü template
 ├── control_module.py        # Tkinter Real-time Kontrol  
 ├── mavlink_handler.py       # RAW vs PID Kontrol
 ├── navigation_engine.py     # GPS + IMU + Hibrit Navigation
 ├── vibration_monitor.py     # Titreşim Analizi
+├── start_web_gui.sh         # 🚀 Hızlı Web GUI başlatma
 ├── config/
 │   ├── hardware_config.json # Pin Konfigürasyonu
 │   └── control_settings.json # Kontrol Parametreleri
@@ -46,43 +52,77 @@ App/
 
 ## 🚀 Kurulum ve Çalıştırma
 
-### 1. Gereksinimler
+### 1. Otomatik Kurulum (Raspberry Pi)
 ```bash
-pip install PyQt5 pyqtgraph pymavlink numpy tkinter
+# Repoyu clone et
+git clone https://github.com/kullanici/2025-TEKNOFEST-Su-Alti-Roket-Araci.git
+cd 2025-TEKNOFEST-Su-Alti-Roket-Araci/App
+
+# Kurulum scripti çalıştır
+sudo bash setup_raspberry_pi.sh
 ```
 
-### 2. Sistemi Başlat
+### 2. Web GUI Başlat (Önerilen)
 ```bash
-cd App/
-python main_gui.py
+# Hızlı başlatma
+./start_web_gui.sh
+
+# Veya manuel
+python3 web_gui.py
 ```
 
-### 3. Bağlantıyı Kur
-1. **MAVLink Bağlan** butonuna tık
-2. Bağlantı kurulduktan sonra **ARM/DISARM** ile sistemi aktif et
-3. Kontrol modunu seç: RAW veya PID
-4. Navigation modunu seç: GPS, IMU veya Hibrit
+### 3. Web Arayüzüne Erişim
+- **Lokal**: `http://127.0.0.1:5000`
+- **Network**: `http://192.168.2.2:5000` (ROV IP)
+- **Proxy**: `http://192.168.2.2:8080` (Nginx varsa)
+
+### 4. Service Olarak Çalıştır
+```bash
+# Web GUI service başlat
+sudo systemctl start teknofest-rov-web
+sudo systemctl status teknofest-rov-web
+```
+
+### 5. Desktop GUI (İsteğe Bağlı)
+```bash
+# VNC kurulumu
+sudo apt install tightvncserver
+vncserver :1 -geometry 1024x768
+
+# Desktop GUI çalıştır
+export DISPLAY=:1
+python3 main_gui.py
+```
 
 ## 🎮 Kontrol Kullanımı
 
-### Real-time Kontrol (Basılı Tutma):
+### 🌐 Web GUI Kontrolleri:
+
+#### Sistem Kontrolü:
+1. **MAVLink Bağlan**: Pixhawk'a bağlan
+2. **ARM/DISARM**: Sistemi aktif/pasif et
+3. **Kontrol Modu**: RAW PWM veya PID seç
+4. **Navigation Modu**: GPS, IMU veya Hibrit seç
+
+#### Real-time Kontrol (Klavye):
 - **W,A,S,D**: Servo kontrolü (Pitch/Roll)
 - **Q,E**: Yaw (sola/sağa dönme)
 - **Page ↑/↓**: Derinlik kontrolü
-- **Space**: Acil durum!
+- **Space**: 🚨 Acil durum!
 - **Esc**: Yüzeye çık!
 
-### Hareket Komutları (Parametre Gir):
-- **T**: İleri git (metre belirt)
-- **Y**: Yaw dönme (derece belirt)  
-- **U**: Yukarı çık (metre belirt)
-- **G**: Sol git (metre belirt)
-- **H**: Sağ git (metre belirt)
+#### Hareket Komutları (Parametre Girişli):
+- **İleri Git**: Metre belirt → Çalıştır
+- **Yaw Dön**: Derece belirt → Çalıştır
+- **Yukarı Çık**: Metre belirt → Çalıştır
+- **Sol/Sağ Git**: Metre belirt → Çalıştır
 
-### Sistem Kontrolleri:
-- **F1**: Kontrol modu değiştir (RAW ↔ PID)
-- **F2**: Navigation modu değiştir
-- **F12**: Sistem durumu göster
+#### Web Arayüzü Özellikleri:
+- **📊 Real-time Grafikler**: IMU telemetry
+- **📡 Telemetry Panel**: Roll/Pitch/Yaw/GPS
+- **🔋 Sistem Durumu**: Voltaj/Akım/Güç
+- **📳 Titreşim Seviyesi**: Görsel bar + kategori
+- **📝 Canlı Loglar**: Sistem mesajları
 
 ## 📊 GUI Panelleri
 

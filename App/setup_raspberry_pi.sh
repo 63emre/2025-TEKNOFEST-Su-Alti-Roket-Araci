@@ -88,16 +88,84 @@ EOF
 # Service'i etkinleştirme
 sudo systemctl enable teknofest-rov.service
 
+echo "🌐 Web GUI servisi kuruluyor..."
+sudo tee /etc/systemd/system/teknofest-rov-web.service > /dev/null << 'EOF'
+[Unit]
+Description=TEKNOFEST ROV Web GUI
+After=network.target
+Wants=network.target
+
+[Service]
+Type=simple
+User=pi
+Group=pi
+WorkingDirectory=/home/pi/2025-TEKNOFEST-Su-Alti-Roket-Araci/App
+Environment=PYTHONPATH=/usr/lib/python3/dist-packages
+ExecStart=/usr/bin/python3 web_gui.py
+Restart=on-failure
+RestartSec=10
+StandardOutput=journal
+StandardError=journal
+
+[Install]
+WantedBy=multi-user.target
+EOF
+
+sudo systemctl daemon-reload
+sudo systemctl enable teknofest-rov-web.service
+
+echo "🔗 Nginx proxy konfigürasyonu (isteğe bağlı)..."
+if command -v nginx > /dev/null 2>&1; then
+    sudo tee /etc/nginx/sites-available/rov-web > /dev/null << 'EOF'
+server {
+    listen 8080;
+    server_name _;
+    
+    location / {
+        proxy_pass http://127.0.0.1:5000;
+        proxy_http_version 1.1;
+        proxy_set_header Upgrade $http_upgrade;
+        proxy_set_header Connection "upgrade";
+        proxy_set_header Host $host;
+        proxy_set_header X-Real-IP $remote_addr;
+        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-Proto $scheme;
+        proxy_read_timeout 86400;
+    }
+}
+EOF
+
+    sudo ln -sf /etc/nginx/sites-available/rov-web /etc/nginx/sites-enabled/
+    sudo nginx -t && sudo systemctl reload nginx 2>/dev/null || echo "⚠️ Nginx konfigürasyonu atlandı"
+else
+    echo "ℹ️ Nginx bulunamadı, proxy konfigürasyonu atlandı"
+fi
+
 echo "✅ Kurulum tamamlandı!"
 echo ""
-echo "📋 Sonraki adımlar:"
-echo "1. Raspberry Pi'yi yeniden başlatın: sudo reboot"
-echo "2. Terminal'de: cd App && source venv/bin/activate"
-echo "3. Uygulamayı çalıştırın: python main_gui.py"
+echo "🌐 WEB GUI KULLANIMI (Önerilen):"
+echo "1. Otomatik başlatma: sudo systemctl start teknofest-rov-web"
+echo "2. Web arayüz: http://192.168.2.2:5000 (ROV IP)"
+echo "3. Nginx proxy: http://192.168.2.2:8080 (varsa)"
 echo ""
-echo "🔧 Service olarak çalıştırmak için:"
-echo "sudo systemctl start teknofest-rov.service"
-echo "sudo systemctl status teknofest-rov.service"
+echo "📱 MANUEL BAŞLATMA:"
+echo "cd App && python3 web_gui.py"
 echo ""
-echo "🚨 UYARI: main_gui.py'deki indentasyon hatasını manuel olarak düzeltmeniz gerekiyor!"
-echo "Line 1120 civarındaki 'self.connection_string.setText' satırının indentasyonunu düzeltin." 
+echo "🔧 SERVİS KONTROL:"
+echo "sudo systemctl status teknofest-rov-web"
+echo "sudo systemctl stop teknofest-rov-web"
+echo "sudo systemctl restart teknofest-rov-web"
+echo ""
+echo "📋 DESKTOP GUI (VNC gerekli):"
+echo "1. VNC kurulumu: sudo apt install tightvncserver"
+echo "2. VNC başlat: vncserver :1 -geometry 1024x768"
+echo "3. Display ayarla: export DISPLAY=:1 && python3 main_gui.py"
+echo "4. VNC erişim: 192.168.2.2:5901" 
+
+cd ~/2025-TEKNOFEST-Su-Alti-Roket-Araci/App
+
+# Venv'i tamamen sil
+rm -rf venv
+
+# System packages kullan (venv KULLANMA!)
+export PYTHONPATH="/usr/lib/python3/dist-packages:$PYTHONPATH"
