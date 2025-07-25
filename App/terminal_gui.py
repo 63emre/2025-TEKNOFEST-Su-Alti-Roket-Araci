@@ -141,67 +141,102 @@ class TerminalROVGUI:
     
     def init_systems(self):
         """Sistem bileşenlerini başlat"""
+        print("🚀 TEKNOFEST ROV Terminal GUI sistem başlatma...")
         self.log("🚀 TEKNOFEST ROV Terminal GUI başlatılıyor...")
         
         # MAVLink bağlantısı
         try:
+            print("🔌 MAVLink bağlantısı kuruluyor...")
             self.mavlink = MAVLinkHandler()
             if self.mavlink.connect():
+                print("✅ MAVLink bağlantısı başarılı!")
                 self.log("✅ MAVLink bağlantısı kuruldu!")
             else:
+                print("⚠️ MAVLink bağlantısı kurulamadı")
                 self.log("⚠️ MAVLink bağlantısı kurulamadı, offline mod")
         except Exception as e:
+            print(f"❌ MAVLink hatası: {e}")
             self.log(f"❌ MAVLink hatası: {e}")
         
         # Navigation engine
         try:
+            print("🧭 Navigation engine başlatılıyor...")
             self.navigation = NavigationEngine(self.mavlink)
+            print("✅ Navigation engine başarılı!")
             self.log("✅ Navigation engine başlatıldı")
         except Exception as e:
+            print(f"❌ Navigation hatası: {e}")
             self.log(f"❌ Navigation hatası: {e}")
         
         # Vibration monitor
         try:
+            print("📳 Vibration monitor başlatılıyor...")
             if self.mavlink:
                 self.vibration_monitor = VibrationMonitor(self.mavlink)
+                print("✅ Vibration monitor başarılı!")
                 self.log("✅ Vibration monitor başlatıldı")
         except Exception as e:
+            print(f"❌ Vibration monitor hatası: {e}")
             self.log(f"❌ Vibration monitor hatası: {e}")
+        
+        # Depth sensor - MAVLink üzerinden al (Pixhawk'a bağlı)
+        # I2C depth sensor'ü başlatma, MAVLink'den alacağız
+        self.depth_sensor = None  # I2C kullanmıyoruz
+        self.depth_data = {'depth_m': 0.0, 'temperature_c': 0.0, 'connected': False}
+        print("💡 Depth sensörü MAVLink üzerinden alınacak")
+        self.log("💡 Depth sensörü MAVLink üzerinden alınacak")
         
         # GPIO controller
         try:
+            print("🔌 GPIO controller başlatılıyor...")
             self.gpio_controller = GPIOController(self.config)
+            print("✅ GPIO controller başarılı!")
             self.log("✅ GPIO controller başlatıldı")
         except Exception as e:
+            print(f"❌ GPIO controller hatası: {e}")
             self.log(f"❌ GPIO controller hatası: {e}")
         
+        print("🎯 Tüm sistem bileşenleri tamamlandı!")
         self.log("✅ Sistem bileşenleri başlatıldı!")
     
     def init_curses(self, stdscr):
         """Curses arayüzünü başlat"""
-        self.stdscr = stdscr
-        curses.curs_set(0)  # Cursor gizle
-        curses.noecho()     # Echo kapat
-        curses.cbreak()     # Karakterleri anında al
-        stdscr.keypad(True) # Özel tuşları etkinleştir
-        stdscr.nodelay(True) # Non-blocking input
-        
-        # ESC tuşu için timeout ayarla (Windows uyumluluğu)
-        curses.halfdelay(1)  # 100ms timeout
-        stdscr.timeout(100)   # Input timeout
-        
-        # Renkler
-        curses.start_color()
-        curses.init_pair(1, curses.COLOR_GREEN, curses.COLOR_BLACK)  # Başarılı
-        curses.init_pair(2, curses.COLOR_RED, curses.COLOR_BLACK)    # Hata
-        curses.init_pair(3, curses.COLOR_YELLOW, curses.COLOR_BLACK) # Uyarı
-        curses.init_pair(4, curses.COLOR_CYAN, curses.COLOR_BLACK)   # Info
-        curses.init_pair(5, curses.COLOR_MAGENTA, curses.COLOR_BLACK) # Özel
-        
-        # Ekran boyutu
-        self.height, self.width = stdscr.getmaxyx()
-        
-        self.log(f"🖥️ Terminal boyutu: {self.width}x{self.height}")
+        try:
+            print("🔧 Curses ayarları yapılıyor...")
+            self.stdscr = stdscr
+            curses.curs_set(0)  # Cursor gizle
+            curses.noecho()     # Echo kapat
+            curses.cbreak()     # Karakterleri anında al
+            stdscr.keypad(True) # Özel tuşları etkinleştir
+            stdscr.nodelay(True) # Non-blocking input
+            
+            # ESC tuşu için timeout ayarla (Windows uyumluluğu)
+            curses.halfdelay(1)  # 100ms timeout
+            stdscr.timeout(100)   # Input timeout
+            
+            print("🎨 Renkler ayarlanıyor...")
+            # Renkler
+            curses.start_color()
+            curses.init_pair(1, curses.COLOR_GREEN, curses.COLOR_BLACK)  # Başarılı
+            curses.init_pair(2, curses.COLOR_RED, curses.COLOR_BLACK)    # Hata
+            curses.init_pair(3, curses.COLOR_YELLOW, curses.COLOR_BLACK) # Uyarı
+            curses.init_pair(4, curses.COLOR_CYAN, curses.COLOR_BLACK)   # Info
+            curses.init_pair(5, curses.COLOR_MAGENTA, curses.COLOR_BLACK) # Özel
+            
+            # Ekran boyutu
+            self.height, self.width = stdscr.getmaxyx()
+            
+            print(f"📏 Terminal boyutu: {self.width}x{self.height}")
+            self.log(f"🖥️ Terminal boyutu: {self.width}x{self.height}")
+            
+            # Minimum boyut kontrolü
+            if self.width < 120 or self.height < 30:
+                print(f"⚠️ Terminal çok küçük! Min: 120x30, Mevcut: {self.width}x{self.height}")
+                self.log(f"⚠️ Terminal çok küçük! Min: 120x30, Mevcut: {self.width}x{self.height}")
+            
+        except Exception as e:
+            print(f"❌ init_curses hatası: {e}")
+            raise
     
     def draw_header(self):
         """Başlık çiz"""
@@ -1126,40 +1161,54 @@ class TerminalROVGUI:
     def main_loop(self):
         """Ana döngü"""
         last_update = time.time()
+        print("🔄 Ana döngü başladı...")
+        self.log("🔄 Ana döngü başladı...")
         
-        while self.running:
-            try:
-                current_time = time.time()
-                
-                # Ekranı temizle - 10 FPS (daha stabil)
-                if current_time - last_update > 0.1:
-                    self.stdscr.erase()
+        try:
+            while self.running:
+                try:
+                    current_time = time.time()
                     
-                    # UI bileşenlerini çiz
-                    self.draw_header() 
-                    self.draw_controls()
-                    self.draw_commands()
-                    self.draw_logs()
-                    self.draw_graphs() # Grafik çizimi
+                    # Ekranı temizle - 10 FPS (daha stabil)
+                    if current_time - last_update > 0.1:
+                        self.stdscr.erase()
+                        
+                        # UI bileşenlerini çiz
+                        self.draw_header() 
+                        self.draw_controls()
+                        self.draw_commands()
+                        self.draw_logs()
+                        self.draw_graphs() # Grafik çizimi
+                        
+                        # Ekranı yenile
+                        self.stdscr.refresh()
+                        last_update = current_time
                     
-                    # Ekranı yenile
-                    self.stdscr.refresh()
-                    last_update = current_time
-                
-                # Klavye girişini kontrol et
-                self.handle_keyboard()
-                
-                # Real-time servo kontrolü (10Hz)
-                if current_time - last_update > 0.1:
-                    self.update_servo_control()
-                
-                # FPS limiti - 10 FPS (daha az yanıp sönme)
-                time.sleep(0.1)  # 10 FPS
-                
-            except KeyboardInterrupt:
-                self.running = False
-            except Exception as e:
-                self.log(f"❌ Ana döngü hatası: {e}")
+                    # Klavye girişini kontrol et
+                    self.handle_keyboard()
+                    
+                    # Real-time servo kontrolü (10Hz)
+                    if current_time - last_update > 0.1:
+                        self.update_servo_control()
+                    
+                    # FPS limiti - 10 FPS (daha az yanıp sönme)
+                    time.sleep(0.1)  # 10 FPS
+                    
+                except KeyboardInterrupt:
+                    print("⌨️ Ctrl+C algılandı, çıkılıyor...")
+                    self.running = False
+                except Exception as e:
+                    print(f"❌ Ana döngü frame hatası: {e}")
+                    self.log(f"❌ Ana döngü frame hatası: {e}")
+                    # Hata olsa bile devam et
+                    time.sleep(0.1)
+                    
+        except Exception as e:
+            print(f"❌ Ana döngü kritik hatası: {e}")
+            import traceback
+            traceback.print_exc()
+            
+        print("🏁 Ana döngü tamamlandı")
     
     def cleanup(self):
         """Temizlik işlemleri"""
@@ -1184,21 +1233,41 @@ class TerminalROVGUI:
     
     def run(self):
         """Uygulamayı çalıştır"""
+        print("🔧 Sistem bileşenleri başlatılıyor...")
         # Sistem bileşenlerini başlat
         self.init_systems()
+        print("✅ Sistem bileşenleri başlatıldı!")
         
         # Curses uygulamasını başlat
         try:
+            print("🖥️ Curses wrapper başlatılıyor...")
             curses.wrapper(self._curses_main)
+            print("✅ Curses wrapper tamamlandı!")
         except Exception as e:
             print(f"❌ Terminal GUI hatası: {e}")
+            import traceback
+            traceback.print_exc()
         finally:
+            print("🔄 Cleanup işlemi başlatılıyor...")
             self.cleanup()
+            print("✅ Cleanup tamamlandı!")
     
     def _curses_main(self, stdscr):
         """Curses ana fonksiyonu"""
-        self.init_curses(stdscr)
-        self.main_loop()
+        try:
+            print("🔧 Curses başlatılıyor...")
+            self.init_curses(stdscr)
+            print("✅ Curses başlatıldı!")
+            
+            print("🔧 Main loop başlatılıyor...")
+            self.main_loop()
+            print("✅ Main loop tamamlandı!")
+            
+        except Exception as e:
+            print(f"❌ Curses main hatası: {e}")
+            import traceback
+            traceback.print_exc()
+            raise 
 
 if __name__ == "__main__":
     print("🚀 TEKNOFEST Su Altı ROV - Terminal GUI başlatılıyor...")
@@ -1210,8 +1279,13 @@ if __name__ == "__main__":
     
     # Terminal GUI'yi başlat
     try:
+        print("🔧 GUI sınıfı oluşturuluyor...")
         gui = TerminalROVGUI()
+        print("✅ GUI sınıfı oluşturuldu!")
+        
+        print("🔧 GUI çalıştırılıyor...")
         gui.run()
+        
     except KeyboardInterrupt:
         print("\n👋 Kullanıcı tarafından durduruldu!")
     except ImportError as e:
