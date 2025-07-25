@@ -55,6 +55,16 @@ class TerminalROVGUI:
         self.log_messages = []
         self.max_logs = 50
         
+        # IMU data buffers for graphs
+        self.imu_history = {
+            'roll': [0] * 100,
+            'pitch': [0] * 100, 
+            'yaw': [0] * 100,
+            'accel_x': [0] * 50,
+            'accel_y': [0] * 50,
+            'accel_z': [0] * 50
+        }
+        
         # Config
         self.load_config()
         
@@ -190,25 +200,45 @@ class TerminalROVGUI:
         
         # Gerçek zamanlı veriler
         if self.mavlink and self.mavlink.connected:
-            imu_data = self.mavlink.get_imu_data()
-            if imu_data:
-                accel_x, accel_y, accel_z, gyro_x, gyro_y, gyro_z = imu_data
-                self.stdscr.addstr(start_row, 65, "📊 SENSÖR VERİ:", curses.color_pair(4) | curses.A_BOLD)
-                self.stdscr.addstr(start_row + 1, 67, f"Acc X: {accel_x:+6.2f}")
-                self.stdscr.addstr(start_row + 2, 67, f"Acc Y: {accel_y:+6.2f}")
-                self.stdscr.addstr(start_row + 3, 67, f"Acc Z: {accel_z:+6.2f}")
+            try:
+                imu_data = self.mavlink.get_imu_data()
+                if imu_data and len(imu_data) >= 6:
+                    # IMU history'yi güncelle
+                    self.update_imu_history(imu_data)
+                    
+                    accel_x, accel_y, accel_z, gyro_x, gyro_y, gyro_z = imu_data
+                    self.stdscr.addstr(start_row, 65, "📊 SENSÖR VERİ:", curses.color_pair(4) | curses.A_BOLD)
+                    self.stdscr.addstr(start_row + 1, 67, f"Acc X: {accel_x:+6.2f}")
+                    self.stdscr.addstr(start_row + 2, 67, f"Acc Y: {accel_y:+6.2f}")
+                    self.stdscr.addstr(start_row + 3, 67, f"Acc Z: {accel_z:+6.2f}")
+                    # Gyro verileri de ekleyelim
+                    self.stdscr.addstr(start_row + 1, 85, f"Gyro X: {gyro_x:+6.2f}")
+                    self.stdscr.addstr(start_row + 2, 85, f"Gyro Y: {gyro_y:+6.2f}")
+                    self.stdscr.addstr(start_row + 3, 85, f"Gyro Z: {gyro_z:+6.2f}")
+                else:
+                    self.stdscr.addstr(start_row, 65, "📊 SENSÖR VERİ:", curses.color_pair(3) | curses.A_BOLD)
+                    self.stdscr.addstr(start_row + 1, 67, "IMU verisi bekleniyor...")
+            except Exception as e:
+                self.stdscr.addstr(start_row, 65, "📊 SENSÖR VERİ:", curses.color_pair(2) | curses.A_BOLD)
+                self.stdscr.addstr(start_row + 1, 67, f"IMU Hatası: {str(e)[:20]}...")
+        else:
+            self.stdscr.addstr(start_row, 65, "📊 SENSÖR VERİ:", curses.color_pair(2) | curses.A_BOLD)
+            self.stdscr.addstr(start_row + 1, 67, "MAVLink Bağlı Değil")
         
         # Depth sensor verileri
         if self.depth_sensor and self.depth_sensor.connected:
             try:
                 depth = getattr(self.depth_sensor, 'depth_m', 0.0)
                 temp = getattr(self.depth_sensor, 'temperature_c', 0.0)
-                self.stdscr.addstr(start_row, 90, "🌊 DERİNLİK:", curses.color_pair(4) | curses.A_BOLD)
-                self.stdscr.addstr(start_row + 1, 92, f"Derinlik: {depth:.2f}m")
-                self.stdscr.addstr(start_row + 2, 92, f"Sıcaklık: {temp:.1f}°C")
-            except:
-                self.stdscr.addstr(start_row, 90, "🌊 DERİNLİK:", curses.color_pair(2))
-                self.stdscr.addstr(start_row + 1, 92, "Veri Yok")
+                self.stdscr.addstr(start_row, 110, "🌊 DERİNLİK:", curses.color_pair(4) | curses.A_BOLD)
+                self.stdscr.addstr(start_row + 1, 112, f"Derinlik: {depth:.2f}m")
+                self.stdscr.addstr(start_row + 2, 112, f"Sıcaklık: {temp:.1f}°C")
+            except Exception as e:
+                self.stdscr.addstr(start_row, 110, "🌊 DERİNLİK:", curses.color_pair(2) | curses.A_BOLD)
+                self.stdscr.addstr(start_row + 1, 112, "Sensör Hatası")
+        else:
+            self.stdscr.addstr(start_row, 110, "🌊 DERİNLİK:", curses.color_pair(2) | curses.A_BOLD)
+            self.stdscr.addstr(start_row + 1, 112, "Sensör Bağlı Değil")
         
         # Vibration durumu
         if self.vibration_monitor:
@@ -219,8 +249,8 @@ class TerminalROVGUI:
                 color = curses.color_pair(color_map.get(vib_color, 1))
                 
                 self.stdscr.addstr(start_row + 3, 67, f"Vibration: {vib_level:.1f}%", color)
-            except:
-                pass
+            except Exception as e:
+                self.stdscr.addstr(start_row + 3, 67, f"Vib: Hata", curses.color_pair(2))
     
     def draw_commands(self):
         """Komut bilgilerini çiz"""
@@ -230,9 +260,9 @@ class TerminalROVGUI:
         
         commands = [
             "W/S: Pitch",     "A/D: Roll",        "Q/E: Yaw",
-            "PgUp/PgDn: Motor", "Space: ARM/DISARM", "R/P: RAW/PID",
+            "PgUp/PgDn: Motor", "Space: ARM/DISARM", "R/F: RAW/PID",
             "1/2/3: GPS/IMU/HYB", "T: Test Scripts",  "C: Pin Config",
-            "P: Çıkış",       "V: Vibration",     "G: GPS Data"
+            "ESC/P: Çıkış",   "V: Vibration",     "G: GPS Data"
         ]
         
         row = cmd_row + 1
@@ -246,8 +276,16 @@ class TerminalROVGUI:
     
     def draw_logs(self):
         """Log mesajlarını çiz"""
-        log_start = 15
+        # Grafik alanını hesaba katarak log alanını ayarla
+        if self.height >= 30:
+            log_start = max(35, self.height - 15)  # Grafik varsa alt tarafa
+        else:
+            log_start = 15  # Grafik yoksa eski pozisyon
+            
         max_log_display = self.height - log_start - 2
+        
+        if max_log_display <= 0:
+            return
         
         self.stdscr.addstr(log_start - 1, 2, "📝 LOG MESAJLARI:", curses.color_pair(4) | curses.A_BOLD)
         
@@ -272,7 +310,8 @@ class TerminalROVGUI:
         """Klavye girişini işle"""
         key = self.stdscr.getch()
         
-        if key == ord('p') or key == ord('P'):  # P tuşu ile çıkış
+        # Çıkış tuşları - ESC (27) ve P tuşu
+        if key == 27 or key == ord('P'):  # ESC veya P tuşu ile çıkış
             self.running = False
             return
         
@@ -294,9 +333,11 @@ class TerminalROVGUI:
         elif key == curses.KEY_PPAGE:  # Page Up
             self.motor_value = min(100, self.motor_value + 10)
             self.send_motor_command()
+            self.log(f"🎮 Motor artırıldı: {self.motor_value}%")
         elif key == curses.KEY_NPAGE:  # Page Down
             self.motor_value = max(-100, self.motor_value - 10)
             self.send_motor_command()
+            self.log(f"🎮 Motor azaltıldı: {self.motor_value}%")
         
         # ARM/DISARM
         elif key == ord(' '):  # Space
@@ -306,7 +347,7 @@ class TerminalROVGUI:
         elif key == ord('r'):
             self.control_mode = "RAW"
             self.log("🎛️ Kontrol modu: RAW PWM")
-        elif key == ord('p'):
+        elif key == ord('f'):  # F tuşu ile PID (Filter) modu
             self.control_mode = "PID"
             self.log("🎛️ Kontrol modu: PID")
         
@@ -769,6 +810,171 @@ class TerminalROVGUI:
         gps_window.refresh()
         del gps_window
     
+    def update_imu_history(self, imu_data):
+        """IMU verilerini history'ye ekle"""
+        if not imu_data or len(imu_data) < 6:
+            return
+        
+        try:
+            accel_x, accel_y, accel_z, gyro_x, gyro_y, gyro_z = imu_data
+            
+            # Roll, Pitch, Yaw hesapla (basit yaklaşım)
+            roll = gyro_x * 57.3  # rad to deg approximation
+            pitch = gyro_y * 57.3
+            yaw = gyro_z * 57.3
+            
+            # History'yi güncelle
+            self.imu_history['roll'].pop(0)
+            self.imu_history['roll'].append(roll)
+            
+            self.imu_history['pitch'].pop(0)
+            self.imu_history['pitch'].append(pitch)
+            
+            self.imu_history['yaw'].pop(0)
+            self.imu_history['yaw'].append(yaw)
+            
+            self.imu_history['accel_x'].pop(0)
+            self.imu_history['accel_x'].append(accel_x)
+            
+            self.imu_history['accel_y'].pop(0)
+            self.imu_history['accel_y'].append(accel_y)
+            
+            self.imu_history['accel_z'].pop(0)
+            self.imu_history['accel_z'].append(accel_z)
+            
+        except Exception as e:
+            pass
+    
+    def draw_ascii_graph(self, x, y, width, height, data, title, color_pair=1):
+        """ASCII grafik çiz"""
+        try:
+            if not data or len(data) == 0:
+                return
+            
+            # Başlık
+            self.stdscr.addstr(y, x, title, curses.color_pair(color_pair) | curses.A_BOLD)
+            
+            # Veri normalizasyonu
+            min_val = min(data)
+            max_val = max(data)
+            
+            if max_val == min_val:
+                range_val = 1
+            else:
+                range_val = max_val - min_val
+            
+            # Grafik çerçevesi
+            for i in range(height):
+                self.stdscr.addstr(y + 1 + i, x, "│", curses.color_pair(4))
+                self.stdscr.addstr(y + 1 + i, x + width - 1, "│", curses.color_pair(4))
+            
+            # Alt ve üst çizgi
+            self.stdscr.addstr(y + 1, x, "┌" + "─" * (width - 2) + "┐", curses.color_pair(4))
+            self.stdscr.addstr(y + height, x, "└" + "─" * (width - 2) + "┘", curses.color_pair(4))
+            
+            # Veri noktalarını çiz
+            for i, value in enumerate(data[-width+2:]):  # Son width-2 değeri al
+                if i >= width - 2:
+                    break
+                
+                # Y pozisyonu hesapla
+                normalized = (value - min_val) / range_val if range_val > 0 else 0.5
+                graph_y = int((1 - normalized) * (height - 2))  # Ters çevir
+                graph_y = max(0, min(height - 3, graph_y))
+                
+                # Grafik karakteri
+                char = "█" if normalized > 0.7 else "▓" if normalized > 0.3 else "░"
+                
+                try:
+                    self.stdscr.addstr(y + 2 + graph_y, x + 1 + i, char, curses.color_pair(color_pair))
+                except:
+                    pass
+            
+            # Min/Max değerlerini göster
+            if height > 4:
+                self.stdscr.addstr(y + 1, x + width + 1, f"Max: {max_val:+.2f}", curses.color_pair(color_pair))
+                self.stdscr.addstr(y + height, x + width + 1, f"Min: {min_val:+.2f}", curses.color_pair(color_pair))
+                
+        except Exception as e:
+            pass
+    
+    def draw_progress_bar(self, x, y, width, value, max_value, title, color_pair=1):
+        """İlerleme çubuğu çiz"""
+        try:
+            # Başlık
+            self.stdscr.addstr(y, x, title, curses.color_pair(4) | curses.A_BOLD)
+            
+            # Değer yüzdesi
+            percentage = abs(value) / max_value if max_value > 0 else 0
+            percentage = min(1.0, max(0.0, percentage))
+            
+            # Bar uzunluğu
+            filled_length = int(width * percentage)
+            
+            # Bar çiz
+            bar_str = ""
+            for i in range(width):
+                if i < filled_length:
+                    if value >= 0:
+                        bar_str += "█"
+                    else:
+                        bar_str += "▓"
+                else:
+                    bar_str += "░"
+            
+            # Renk seçimi - pozitif/negatif
+            if value >= 0:
+                bar_color = color_pair
+            else:
+                bar_color = curses.color_pair(2)  # Kırmızı
+            
+            self.stdscr.addstr(y + 1, x, f"[{bar_str}]", bar_color)
+            self.stdscr.addstr(y + 1, x + width + 3, f"{value:+6.1f}", curses.color_pair(4))
+            
+        except Exception as e:
+            pass
+    
+    def draw_graphs(self):
+        """IMU grafikleri ve progress barları çiz"""
+        if self.height < 30 or self.width < 120:  # Yeterli yer yoksa çizme
+            return
+        
+        graph_start_row = 20
+        
+        try:
+            # Motor durumu progress barları
+            self.draw_progress_bar(2, graph_start_row, 20, self.motor_value, 100, "🎮 MOTOR GÜÇ", 1)
+            
+            # Servo durumu progress barları
+            self.draw_progress_bar(2, graph_start_row + 3, 20, self.servo_values['roll'], 45, "📐 ROLL", 1)
+            self.draw_progress_bar(2, graph_start_row + 6, 20, self.servo_values['pitch'], 45, "📐 PITCH", 1)
+            self.draw_progress_bar(2, graph_start_row + 9, 20, self.servo_values['yaw'], 45, "📐 YAW", 1)
+            
+            # IMU grafikleri (sadece MAVLink bağlıysa)
+            if self.mavlink and self.mavlink.connected:
+                # YAW grafiği
+                self.draw_ascii_graph(30, graph_start_row, 30, 6, 
+                                    self.imu_history['yaw'], "YAW (°)", 4)
+                
+                # PITCH grafiği  
+                self.draw_ascii_graph(30, graph_start_row + 7, 30, 6,
+                                    self.imu_history['pitch'], "PITCH (°)", 4)
+                
+                # ROLL grafiği
+                self.draw_ascii_graph(70, graph_start_row, 30, 6,
+                                    self.imu_history['roll'], "ROLL (°)", 4)
+                
+                # Acceleration X grafiği
+                self.draw_ascii_graph(70, graph_start_row + 7, 30, 6,
+                                    self.imu_history['accel_x'], "ACCEL X", 3)
+                
+        except Exception as e:
+            # Hata durumunda basit mesaj göster
+            try:
+                self.stdscr.addstr(graph_start_row, 2, f"📊 Grafik Hatası: {str(e)[:40]}", curses.color_pair(2))
+            except:
+                pass
+    
     def main_loop(self):
         """Ana döngü"""
         last_update = time.time()
@@ -786,6 +992,7 @@ class TerminalROVGUI:
                     self.draw_controls()
                     self.draw_commands()
                     self.draw_logs()
+                    self.draw_graphs() # Yeni eklenen grafik çizimi
                     
                     # Ekranı yenile
                     self.stdscr.refresh()
