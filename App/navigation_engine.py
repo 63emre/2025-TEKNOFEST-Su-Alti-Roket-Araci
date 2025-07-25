@@ -12,14 +12,16 @@ from collections import deque
 import numpy as np
 
 class NavigationEngine:
-    def __init__(self, mavlink_handler, control_settings_path="config/control_settings.json"):
+    def __init__(self, mavlink_handler, sensor_manager=None, depth_sensor=None, control_settings_path="config/control_settings.json"):
         """Navigation sistemi"""
         self.mavlink = mavlink_handler
+        self.sensor_manager = sensor_manager
+        self.depth_sensor = depth_sensor
         self.load_control_settings(control_settings_path)
         
         # Navigation modları
-        self.gps_nav = GPSNavigation(mavlink_handler)
-        self.imu_nav = IMUNavigation(mavlink_handler)
+        self.gps_nav = GPSNavigation(mavlink_handler, self.sensor_manager)
+        self.imu_nav = IMUNavigation(mavlink_handler, self.sensor_manager)
         self.hybrid_nav = HybridNavigation(mavlink_handler, self.gps_nav, self.imu_nav)
         
         # Aktif navigation
@@ -62,6 +64,49 @@ class NavigationEngine:
             return self.imu_nav
         else:  # hybrid
             return self.hybrid_nav
+    
+    def get_depth_data(self):
+        """Derinlik sensöründen veri al"""
+        if self.depth_sensor and self.depth_sensor.connected:
+            return self.depth_sensor.get_sensor_data()
+        return {
+            'depth_m': 0.0,
+            'temperature_c': 20.0,
+            'pressure_mbar': 1013.25,
+            'connected': False
+        }
+    
+    def emergency_surface(self):
+        """Acil durum yüzeye çıkış"""
+        depth_data = self.get_depth_data()
+        current_depth = depth_data['depth_m']
+        
+        if current_depth < 0.5:
+            print("🌊 Zaten yüzeyde!")
+            return True
+        
+        print(f"🚨 ACİL YÜZEY ÇIKIŞI! Mevcut derinlik: {current_depth:.1f}m")
+        
+        # Tam güç yukarı çık
+        success = self.mavlink.emergency_surface()
+        
+        if success:
+            # Derinlik takibi
+            start_time = time.time()
+            while time.time() - start_time < 30:  # 30 saniye max
+                depth_data = self.get_depth_data()
+                current_depth = depth_data['depth_m']
+                
+                print(f"Yüzeye çıkıyor... Derinlik: {current_depth:.1f}m")
+                
+                if current_depth < 0.5:
+                    print("✅ Yüzeye ulaşıldı!")
+                    return True
+                
+                time.sleep(1.0)
+        
+        print("❌ Yüzey çıkışı başarısız!")
+        return False
     
     def start_movement_mission(self, command_type, parameter, control_mode):
         """Hareket görevini başlat"""
@@ -130,14 +175,34 @@ class NavigationEngine:
 class GPSNavigation:
     """GPS bazlı navigation"""
     
-    def __init__(self, mavlink_handler):
+    def __init__(self, mavlink_handler, sensor_manager=None):
         self.mavlink = mavlink_handler
+        self.sensor_manager = sensor_manager
         self.start_position = None
         self.current_position = None
         self.gps_quality = 0
     
     def get_current_position(self):
         """Mevcut GPS pozisyonunu al"""
+        # Önce Adafruit GPS'den dene
+        if self.sensor_manager and self.sensor_manager.sensors_initialized:
+            sensor_data = self.sensor_manager.get_all_sensor_data()
+            gps_data = sensor_data.get('gps', {})
+            
+            if gps_data.get('connected', False):
+                position = gps_data.get('position', {})
+                
+                lat = position.get('latitude', 0.0)
+                lon = position.get('longitude', 0.0) 
+                alt = position.get('altitude', 0.0)
+                satellites = position.get('satellites', 0)
+                
+                if lat != 0.0 and lon != 0.0:  # Valid GPS fix
+                    self.current_position = (lat, lon, alt)
+                    self.gps_quality = satellites
+                    return self.current_position
+        
+        # Fallback: MAVLink GPS
         gps_data = self.mavlink.get_gps_data()
         if gps_data:
             lat, lon, alt, satellites = gps_data
@@ -357,8 +422,9 @@ class GPSNavigation:
 class IMUNavigation:
     """IMU Dead Reckoning Navigation"""
     
-    def __init__(self, mavlink_handler):
+    def __init__(self, mavlink_handler, sensor_manager=None):
         self.mavlink = mavlink_handler
+        self.sensor_manager = sensor_manager
         
         # Relative position (başlangıca göre)
         self.position = [0.0, 0.0, 0.0]  # X, Y, Z meters
@@ -382,9 +448,36 @@ class IMUNavigation:
     
     def update_position_from_imu(self):
         """IMU'dan pozisyonu güncelle"""
+        # Önce Adafruit sensörden dene
+        if self.sensor_manager and self.sensor_manager.sensors_initialized:
+            sensor_data = self.sensor_manager.get_all_sensor_data()
+            imu_data = sensor_data.get('imu', {})
+            
+            if imu_data.get('connected', False):
+                euler = imu_data.get('euler', {})
+                accel = imu_data.get('acceleration', {})
+                
+                # IMU data formatı
+                formatted_data = {
+                    'roll': euler.get('roll', 0.0),
+                    'pitch': euler.get('pitch', 0.0), 
+                    'yaw': euler.get('heading', 0.0),
+                    'xacc': accel.get('x', 0.0),
+                    'yacc': accel.get('y', 0.0),
+                    'zacc': accel.get('z', 0.0)
+                }
+                
+                return self._integrate_imu_data(formatted_data)
+        
+        # Fallback: MAVLink IMU
         imu_data = self.mavlink.get_imu_data()
         if not imu_data:
             return False
+        
+        return self._integrate_imu_data(imu_data)
+    
+    def _integrate_imu_data(self, imu_data):
+        """IMU verisini pozisyona çevir"""
         
         current_time = time.time()
         dt = current_time - self.last_time
@@ -393,7 +486,17 @@ class IMUNavigation:
         if dt > 0.1 or dt <= 0:
             dt = 0.02
         
-        accel_x, accel_y, accel_z, gyro_x, gyro_y, gyro_z = imu_data
+        # IMU data extract
+        if isinstance(imu_data, dict):
+            # Formatted data from Adafruit or MAVLink
+            accel_x = imu_data.get('xacc', 0.0)
+            accel_y = imu_data.get('yacc', 0.0) 
+            accel_z = imu_data.get('zacc', 0.0)
+            yaw = imu_data.get('yaw', 0.0)
+        else:
+            # Tuple format (legacy)
+            accel_x, accel_y, accel_z, gyro_x, gyro_y, gyro_z = imu_data
+            yaw = self.heading
         
         # Gravity compensation (basit)
         accel_x_corrected = accel_x - 0.0  # TODO: gravity vector çıkar
@@ -411,7 +514,10 @@ class IMUNavigation:
         self.position[2] += self.velocity[2] * dt
         
         # Heading güncelle
-        self.heading += math.degrees(gyro_z) * dt
+        if isinstance(imu_data, dict):
+            self.heading = yaw  # Adafruit'ten gelen yaw direkt kullan
+        else:
+            self.heading += math.degrees(gyro_z) * dt  # Gyro entegrasyonu
         
         # Drift correction (basit low-pass filter)
         damping = 0.99
