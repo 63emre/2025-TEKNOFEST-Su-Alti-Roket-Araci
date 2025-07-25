@@ -1,4 +1,4 @@
-#!/bin/bash
+k#!/bin/bash
 # TEKNOFEST 2025 - Su Altı ROV
 # Raspberry Pi Kurulum Scripti
 
@@ -100,4 +100,5 @@ echo "sudo systemctl start teknofest-rov.service"
 echo "sudo systemctl status teknofest-rov.service"
 echo ""
 echo "🚨 UYARI: main_gui.py'deki indentasyon hatasını manuel olarak düzeltmeniz gerekiyor!"
-echo "Line 1120 civarındaki 'self.connection_string.setText' satırının indentasyonunu düzeltin." 
+echo "Line 1120 civarındaki 'self.connection_string.setText' satırının indentasyonunu düzeltin."
+
