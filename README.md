@@ -1,4 +1,21 @@
-# 2025 TEKNOFEST SU ALTI ROKET ARACI YARIŞMASI
+# 🚀 TEKNOFEST 2025 - Su Altı ROV Kontrol Sistemi
+
+## 🌐 WEB GUI (Ana Arayüz)
+
+Modern, responsive web arayüzü ile ROV'unuzu kontrol edin:
+- **📱 Real-time telemetry** ve grafikler
+- **🎮 Touch/klavye** kontrolleri  
+- **🔄 WebSocket** ile canlı güncelleme
+- **🌊 BlueOS uyumlu** tasarım
+
+### 🚀 Hızlı Başlangıç:
+```bash
+git clone https://github.com/kullanici/2025-TEKNOFEST-Su-Alti-Roket-Araci.git
+cd 2025-TEKNOFEST-Su-Alti-Roket-Araci/App
+sudo bash setup_raspberry_pi.sh
+./start_web_gui.sh
+```
+**Web arayüz:** `http://192.168.2.2:5000`
 
 ## 📋 Proje Hakkında
 

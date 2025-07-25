@@ -1,0 +1,61 @@
+{
+  "name": "TEKNOFEST ROV Control",
+  "description": "TEKNOFEST 2025 Su Altı ROV Kontrol Sistemi - Web GUI",
+  "version": "1.0.0",
+  "author": "TEKNOFEST Takımı",
+  "website": "https://github.com/kullanici/2025-TEKNOFEST-Su-Alti-Roket-Araci",
+  "dockerhub": null,
+  "tag": "latest",
+  "permissions": {
+    "ExposedPorts": {
+      "5000/tcp": {}
+    },
+    "PortBindings": {
+      "5000/tcp": [
+        {
+          "HostPort": "5000"
+        }
+      ]
+    },
+    "NetworkMode": "host",
+    "Privileged": true
+  },
+  "requirements": {
+    "os": "linux",
+    "platform": "arm*",
+    "memory": "256MB",
+    "disk": "100MB"
+  },
+  "config": {
+    "environment": [
+      "PYTHONPATH=/usr/lib/python3/dist-packages"
+    ],
+    "working_directory": "/app",
+    "entrypoint": ["python3", "web_gui.py"],
+    "ports": {
+      "5000": {
+        "name": "Web GUI",
+        "description": "TEKNOFEST ROV Web Arayüzü",
+        "protocol": "http"
+      }
+    }
+  },
+  "features": [
+    "Real-time ROV control",
+    "IMU/GPS telemetry",
+    "Vibration monitoring", 
+    "Navigation systems",
+    "Emergency protocols"
+  ],
+  "installation": {
+    "commands": [
+      "sudo bash setup_raspberry_pi.sh",
+      "chmod +x start_web_gui.sh"
+    ]
+  },
+  "ui": {
+    "category": "ROV Control",
+    "icon": "🚀",
+    "color": "#2196F3"
+  }
+} 
