@@ -94,6 +94,11 @@ class TerminalROVGUI:
         self.last_imu_display = None
         self.imu_update_counter = 0
         
+        # Servo kontrol stabilizasyonu için
+        self.last_servo_display = {'roll': 0, 'pitch': 0, 'yaw': 0}
+        self.last_motor_display = 0
+        self.servo_display_counter = 0
+        
         # Depth verisi stabilizasyonu için
         self.last_depth_display = {'depth_m': 0.0, 'temperature_c': 0.0, 'pressure_mbar': 0.0}
         self.depth_update_counter = 0
@@ -264,18 +269,35 @@ class TerminalROVGUI:
         """Kontrol bilgilerini çiz"""
         start_row = 4
         
-        # Servo kontrol bilgisi
+        # Servo kontrol bilgisi (stabilized)
+        # Sadece değerler değiştiyse güncelle
+        servo_changed = (
+            self.servo_values['roll'] != self.last_servo_display['roll'] or
+            self.servo_values['pitch'] != self.last_servo_display['pitch'] or
+            self.servo_values['yaw'] != self.last_servo_display['yaw'] or
+            self.motor_value != self.last_motor_display or
+            self.servo_display_counter % 50 == 0  # Her 5 saniyede bir zorla güncelle
+        )
+        
+        if servo_changed:
+            # Değerleri güncelle
+            self.last_servo_display = self.servo_values.copy()
+            self.last_motor_display = self.motor_value
+        
+        # Her zaman son stabilize değerleri göster
         self.stdscr.addstr(start_row, 2, "🎮 SERVO KONTROL:", curses.color_pair(4) | curses.A_BOLD)
-        self.stdscr.addstr(start_row + 1, 4, f"Roll:  {self.servo_values['roll']:+3.0f}° (A/D)")
-        self.stdscr.addstr(start_row + 2, 4, f"Pitch: {self.servo_values['pitch']:+3.0f}° (W/S)")
-        self.stdscr.addstr(start_row + 3, 4, f"Yaw:   {self.servo_values['yaw']:+3.0f}° (Q/E)")
+        self.stdscr.addstr(start_row + 1, 4, f"Roll:  {self.last_servo_display['roll']:+3.0f}° (A/D)")
+        self.stdscr.addstr(start_row + 2, 4, f"Pitch: {self.last_servo_display['pitch']:+3.0f}° (W/S)")
+        self.stdscr.addstr(start_row + 3, 4, f"Yaw:   {self.last_servo_display['yaw']:+3.0f}° (Q/E)")
         
-        # Motor kontrol
+        # Motor kontrol (stabilized)
         self.stdscr.addstr(start_row, 35, "⚙️ MOTOR KONTROL:", curses.color_pair(4) | curses.A_BOLD)
-        self.stdscr.addstr(start_row + 1, 37, f"Güç: {self.motor_value:+3.0f}% (Page Up/Down)")
+        self.stdscr.addstr(start_row + 1, 37, f"Güç: {self.last_motor_display:+3.0f}% (O/L)")
         
-        # Derinlik
+        # Derinlik hedefi
         self.stdscr.addstr(start_row + 2, 37, f"Hedef Derinlik: {self.depth_target:.1f}m")
+        
+        self.servo_display_counter += 1
         
         # Gerçek zamanlı veriler (stabilized)
         if self.mavlink and self.mavlink.connected:
@@ -399,17 +421,20 @@ class TerminalROVGUI:
                 self.depth_data['connected'] = False
             self.depth_update_counter += 1
         
-        # Vibration durumu
+        # Vibration durumu (stabilized)
         if self.vibration_monitor:
             try:
-                vib_level = self.vibration_monitor.get_vibration_level()
-                vib_color = self.vibration_monitor.get_vibration_color()
-                color_map = {"green": 1, "yellow": 3, "red": 2}
-                color = curses.color_pair(color_map.get(vib_color, 1))
-                
-                self.stdscr.addstr(start_row + 3, 67, f"Vibration: {vib_level:.1f}%", color)
+                # Vibration verilerini sadece belirli aralıklarla güncelle
+                if self.servo_display_counter % 10 == 0:  # Her 1 saniyede bir
+                    vib_level = self.vibration_monitor.get_vibration_level()
+                    vib_color = self.vibration_monitor.get_vibration_color()
+                    color_map = {"green": 1, "yellow": 3, "red": 2}
+                    color = curses.color_pair(color_map.get(vib_color, 1))
+                    
+                    self.stdscr.addstr(start_row + 3, 67, f"Vibration: {vib_level:.1f}%", color)
             except Exception as e:
-                self.stdscr.addstr(start_row + 3, 67, f"Vib: Hata", curses.color_pair(2))
+                if self.servo_display_counter % 20 == 0:  # Hata mesajını sık gösterme
+                    self.stdscr.addstr(start_row + 3, 67, f"Vib: Hata", curses.color_pair(2))
     
     def draw_commands(self):
         """Komut bilgilerini çiz"""
@@ -419,10 +444,9 @@ class TerminalROVGUI:
         
         commands = [
             "W/S: Pitch",     "A/D: Roll",        "Q/E: Yaw",
-            "O/L: Motor",     "PgUp/PgDn: Motor Alt", "Space: ARM/DISARM",
-            "R/F: RAW/PID",   "1/2/3: GPS/IMU/HYB", "T: Test Scripts",
-            "C: Pin Config",  "V: Vibration",     "G: GPS Data",
-            "ESC/P: Çıkış",   "",                 ""
+            "O/L: Motor",     "Space: ARM/DISARM", "R/F: RAW/PID", 
+            "1/2/3: GPS/IMU/HYB", "T: Test Scripts",  "C: Pin Config",
+            "V: Vibration",   "G: GPS Data",      "ESC/P: Çıkış"
         ]
         
         row = cmd_row + 1
