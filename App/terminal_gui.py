@@ -130,9 +130,12 @@ class TerminalROVGUI:
         
         # Depth sensor
         try:
-            self.depth_sensor = D300DepthSensor()
+            # Gerçek sensor yoksa simulation modu kullan
+            self.depth_sensor = D300DepthSensor(simulation_mode=True)
             if self.depth_sensor.connect():
-                self.log("✅ Derinlik sensörü bağlandı")
+                # Monitoring'i başlat
+                self.depth_sensor.start_monitoring(interval=0.2)
+                self.log("✅ Derinlik sensörü bağlandı (simülasyon modu)")
             else:
                 self.log("⚠️ Derinlik sensörü bağlanamadı")
         except Exception as e:

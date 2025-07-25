@@ -13,8 +13,11 @@ from collections import deque
 class D300DepthSensor:
     """D300 Derinlik ve Sıcaklık Sensörü Sınıfı"""
     
-    def __init__(self, bus_num=1, address=0x76, config_path="config/hardware_config.json"):
+    def __init__(self, bus_num=1, address=0x76, config_path="config/hardware_config.json", simulation_mode=False):
         """D300 sensörü başlat"""
+        # Simulation mode flag
+        self.simulation_mode = simulation_mode
+        
         # Config'den I2C ayarlarını yükle
         try:
             with open(config_path, 'r') as f:
@@ -32,8 +35,11 @@ class D300DepthSensor:
         
         # Sensor data
         self.depth_m = 0.0
-        self.temperature_c = 0.0
-        self.pressure_mbar = 0.0
+        self.temperature_c = 20.0  # Varsayılan sıcaklık
+        self.pressure_mbar = 1013.25  # Sea level pressure
+        
+        # Simulation parameters
+        self.sim_time = 0.0
         
         # Data history
         self.depth_history = deque(maxlen=100)
@@ -48,6 +54,12 @@ class D300DepthSensor:
         
     def connect(self):
         """D300 sensörüne bağlan"""
+        # Simulation mode check
+        if self.simulation_mode:
+            print("🎮 D300 simülasyon modu etkinleştirildi")
+            self.connected = True
+            return True
+            
         try:
             print(f"🔌 D300 sensörüne bağlanılıyor (I2C Bus: {self.bus_num}, Address: {self.address:#04x})")
             
@@ -63,14 +75,17 @@ class D300DepthSensor:
         except FileNotFoundError:
             print("❌ I2C bulunamadı! I2C etkin mi kontrol et:")
             print("   sudo raspi-config → Interface Options → I2C → Enable")
+            print("💡 Simülasyon modu için: D300DepthSensor(simulation_mode=True)")
             return False
         except OSError as e:
             print(f"❌ D300 sensörü bulunamadı! (OSError: {e})")
             print("🔍 I2C cihazlarını tarayalım...")
             self._scan_i2c_devices()
+            print("💡 Simülasyon modu için: D300DepthSensor(simulation_mode=True)")
             return False
         except Exception as e:
             print(f"❌ D300 bağlantı hatası: {e}")
+            print("💡 Simülasyon modu için: D300DepthSensor(simulation_mode=True)")
             return False
     
     def _scan_i2c_devices(self):
@@ -155,6 +170,35 @@ class D300DepthSensor:
     
     def read_sensor(self):
         """Sensörden veri oku ve işle"""
+        if self.simulation_mode:
+            # Simulation mode - gerçekçi değerler üret
+            import math
+            
+            # Zamanı artır
+            self.sim_time += 0.1
+            
+            # Gerçekçi derinlik simülasyonu (0-10m arası sinüs dalgası)
+            depth = abs(math.sin(self.sim_time * 0.1) * 5.0) + (math.sin(self.sim_time * 0.05) * 2.0)
+            depth = max(0.0, depth)
+            
+            # Gerçekçi sıcaklık simülasyonu (18-25°C arası)
+            temperature = 20.0 + math.sin(self.sim_time * 0.02) * 3.0 + (depth * -0.1)  # Derinlikle soğur
+            
+            # Basınç hesapla
+            pressure = 1013.25 + (depth * 100)  # Her metre +100 mbar
+            
+            with self.data_lock:
+                self.depth_m = depth
+                self.temperature_c = temperature
+                self.pressure_mbar = pressure
+                
+                # Add to history
+                self.depth_history.append(depth)
+                self.temp_history.append(temperature)
+            
+            return True
+        
+        # Gerçek sensor modu
         pressure_raw, temp_raw = self.read_raw_data()
         
         if pressure_raw is None or temp_raw is None:
