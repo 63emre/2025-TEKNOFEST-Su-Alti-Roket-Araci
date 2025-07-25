@@ -193,10 +193,34 @@ class TerminalROVGUI:
             imu_data = self.mavlink.get_imu_data()
             if imu_data:
                 accel_x, accel_y, accel_z, gyro_x, gyro_y, gyro_z = imu_data
-                self.stdscr.addstr(start_row, 65, "📊 IMU VERİ:", curses.color_pair(4) | curses.A_BOLD)
+                self.stdscr.addstr(start_row, 65, "📊 SENSÖR VERİ:", curses.color_pair(4) | curses.A_BOLD)
                 self.stdscr.addstr(start_row + 1, 67, f"Acc X: {accel_x:+6.2f}")
                 self.stdscr.addstr(start_row + 2, 67, f"Acc Y: {accel_y:+6.2f}")
                 self.stdscr.addstr(start_row + 3, 67, f"Acc Z: {accel_z:+6.2f}")
+        
+        # Depth sensor verileri
+        if self.depth_sensor and self.depth_sensor.connected:
+            try:
+                depth = getattr(self.depth_sensor, 'depth_m', 0.0)
+                temp = getattr(self.depth_sensor, 'temperature_c', 0.0)
+                self.stdscr.addstr(start_row, 90, "🌊 DERİNLİK:", curses.color_pair(4) | curses.A_BOLD)
+                self.stdscr.addstr(start_row + 1, 92, f"Derinlik: {depth:.2f}m")
+                self.stdscr.addstr(start_row + 2, 92, f"Sıcaklık: {temp:.1f}°C")
+            except:
+                self.stdscr.addstr(start_row, 90, "🌊 DERİNLİK:", curses.color_pair(2))
+                self.stdscr.addstr(start_row + 1, 92, "Veri Yok")
+        
+        # Vibration durumu
+        if self.vibration_monitor:
+            try:
+                vib_level = self.vibration_monitor.get_vibration_level()
+                vib_color = self.vibration_monitor.get_vibration_color()
+                color_map = {"green": 1, "yellow": 3, "red": 2}
+                color = curses.color_pair(color_map.get(vib_color, 1))
+                
+                self.stdscr.addstr(start_row + 3, 67, f"Vibration: {vib_level:.1f}%", color)
+            except:
+                pass
     
     def draw_commands(self):
         """Komut bilgilerini çiz"""
@@ -208,7 +232,7 @@ class TerminalROVGUI:
             "W/S: Pitch",     "A/D: Roll",        "Q/E: Yaw",
             "PgUp/PgDn: Motor", "Space: ARM/DISARM", "R/P: RAW/PID",
             "1/2/3: GPS/IMU/HYB", "T: Test Scripts",  "C: Pin Config",
-            "ESC: Çıkış"
+            "P: Çıkış",       "V: Vibration",     "G: GPS Data"
         ]
         
         row = cmd_row + 1
@@ -248,7 +272,7 @@ class TerminalROVGUI:
         """Klavye girişini işle"""
         key = self.stdscr.getch()
         
-        if key == 27:  # ESC
+        if key == ord('p') or key == ord('P'):  # P tuşu ile çıkış
             self.running = False
             return
         
@@ -304,6 +328,14 @@ class TerminalROVGUI:
         # Pin konfigürasyonu
         elif key == ord('c'):
             self.show_pin_config()
+            
+        # Vibration monitor
+        elif key == ord('v'):
+            self.show_vibration_window()
+            
+        # GPS data
+        elif key == ord('g'):
+            self.show_gps_window()
     
     def update_servo_control(self):
         """Real-time servo kontrolünü güncelle"""
@@ -415,7 +447,7 @@ class TerminalROVGUI:
             ("3", "IMU Kalibrasyonu", "imu_calibration.py"),
             ("4", "Sistem Kontrolü", "system_check.py"),
             ("5", "Acil Durum Testi", "emergency_stop.py"),
-            ("ESC", "Geri", None)
+            ("0", "Geri", None)
         ]
         
         for i, (key, name, script) in enumerate(scripts):
@@ -426,7 +458,7 @@ class TerminalROVGUI:
         # Test seçimi bekle
         while True:
             key = test_window.getch()
-            if key == 27:  # ESC
+            if key == ord('0'):  # 0 tuşu ile geri
                 break
             elif key in [ord('1'), ord('2'), ord('3'), ord('4'), ord('5')]:
                 script_idx = int(chr(key)) - 1
@@ -506,14 +538,14 @@ class TerminalROVGUI:
         config_window.addstr(15, 4, "Seçenekler:")
         config_window.addstr(16, 6, "1: I2C Adresini Değiştir")
         config_window.addstr(17, 6, "2: I2C Bus'u Değiştir")
-        config_window.addstr(18, 6, "ESC: Geri")
+        config_window.addstr(18, 6, "9: Geri")
         
         config_window.refresh()
         
         # Pin ayarları seçimi bekle
         while True:
             key = config_window.getch()
-            if key == 27:  # ESC
+            if key == ord('9'):  # 9 tuşu ile geri
                 break
             elif key == ord('1'):
                 self.change_i2c_address(config_window)
@@ -625,6 +657,118 @@ class TerminalROVGUI:
             input_window.refresh()
             del input_window
     
+    def show_vibration_window(self):
+        """Vibration monitoring window"""
+        vib_window = curses.newwin(18, 70, 2, 10)
+        vib_window.box()
+        vib_window.addstr(1, 2, "📈 TİTREŞİM MONİTÖRÜ", curses.color_pair(4) | curses.A_BOLD)
+        
+        # Vibration bilgilerini göster
+        if self.vibration_monitor:
+            try:
+                vib_data = self.vibration_monitor.get_vibration_data()
+                
+                vib_window.addstr(3, 4, f"Titreşim Seviyesi: {vib_data.get('level', 0):.1f}%")
+                vib_window.addstr(4, 4, f"Titreşim Kategorisi: {vib_data.get('category', 'unknown')}")
+                vib_window.addstr(5, 4, f"Renk: {vib_data.get('color', 'green')}")
+                
+                # Frequency bands
+                freq_bands = vib_data.get('frequency_bands', {})
+                vib_window.addstr(7, 4, "Frekans Bandları:")
+                vib_window.addstr(8, 6, f"Düşük (0-5Hz):  {freq_bands.get('low', 0):.2f}")
+                vib_window.addstr(9, 6, f"Orta (5-15Hz):  {freq_bands.get('medium', 0):.2f}")
+                vib_window.addstr(10, 6, f"Yüksek (15-25Hz): {freq_bands.get('high', 0):.2f}")
+                
+                # Dominant frequency
+                vib_window.addstr(12, 4, f"Baskın Frekans: {vib_data.get('dominant_frequency', 0):.1f} Hz")
+                
+                # Buffer durumu
+                vib_window.addstr(14, 4, f"Buffer Boyutu: {vib_data.get('buffer_size', 0)}")
+                
+            except Exception as e:
+                vib_window.addstr(3, 4, f"❌ Vibration veri hatası: {e}")
+        else:
+            vib_window.addstr(3, 4, "❌ Vibration monitor başlatılmamış")
+        
+        vib_window.addstr(16, 4, "Herhangi bir tuş: Geri")
+        vib_window.refresh()
+        
+        # Herhangi tuş bekle
+        vib_window.getch()
+        
+        vib_window.clear()
+        vib_window.refresh()
+        del vib_window
+    
+    def show_gps_window(self):
+        """GPS data window"""
+        gps_window = curses.newwin(16, 70, 3, 10)
+        gps_window.box()
+        gps_window.addstr(1, 2, "🗺️  GPS VERİLERİ", curses.color_pair(4) | curses.A_BOLD)
+        
+        # GPS bilgilerini göster
+        if self.mavlink and self.mavlink.connected:
+            try:
+                gps_data = self.mavlink.get_gps_data()
+                
+                if gps_data:
+                    lat, lon, alt, satellites = gps_data
+                    
+                    gps_window.addstr(3, 4, f"Enlem (Latitude):  {lat:.7f}°")
+                    gps_window.addstr(4, 4, f"Boylam (Longitude): {lon:.7f}°")
+                    gps_window.addstr(5, 4, f"Yükseklik:         {alt:.1f} m")
+                    gps_window.addstr(6, 4, f"Uydu Sayısı:       {satellites}")
+                    
+                    # GPS kalitesi
+                    if satellites >= 6:
+                        gps_status = "✅ İyi"
+                        color = curses.color_pair(1)
+                    elif satellites >= 4:
+                        gps_status = "⚠️ Orta"
+                        color = curses.color_pair(3)
+                    else:
+                        gps_status = "❌ Zayıf"
+                        color = curses.color_pair(2)
+                    
+                    gps_window.addstr(8, 4, f"GPS Kalitesi:      {gps_status}", color)
+                    
+                    # Coordinate format
+                    gps_window.addstr(10, 4, "Coordinate Format:")
+                    gps_window.addstr(11, 6, f"DD: {lat:.6f}, {lon:.6f}")
+                    
+                    # Convert to degrees, minutes, seconds
+                    lat_deg = int(abs(lat))
+                    lat_min = int((abs(lat) - lat_deg) * 60)
+                    lat_sec = ((abs(lat) - lat_deg) * 60 - lat_min) * 60
+                    lat_dir = "N" if lat >= 0 else "S"
+                    
+                    lon_deg = int(abs(lon))
+                    lon_min = int((abs(lon) - lon_deg) * 60)
+                    lon_sec = ((abs(lon) - lon_deg) * 60 - lon_min) * 60
+                    lon_dir = "E" if lon >= 0 else "W"
+                    
+                    gps_window.addstr(12, 6, f"DMS: {lat_deg}°{lat_min}'{lat_sec:.1f}\"{lat_dir}, {lon_deg}°{lon_min}'{lon_sec:.1f}\"{lon_dir}")
+                    
+                else:
+                    gps_window.addstr(3, 4, "❌ GPS verisi alınamıyor")
+                    gps_window.addstr(4, 4, "💡 GPS anteni bağlı mı?")
+                    gps_window.addstr(5, 4, "💡 Açık havada mısınız?")
+                    
+            except Exception as e:
+                gps_window.addstr(3, 4, f"❌ GPS veri hatası: {e}")
+        else:
+            gps_window.addstr(3, 4, "❌ MAVLink bağlantısı yok")
+        
+        gps_window.addstr(14, 4, "Herhangi bir tuş: Geri")
+        gps_window.refresh()
+        
+        # Herhangi tuş bekle
+        gps_window.getch()
+        
+        gps_window.clear()
+        gps_window.refresh()
+        del gps_window
+    
     def main_loop(self):
         """Ana döngü"""
         last_update = time.time()
@@ -633,8 +777,8 @@ class TerminalROVGUI:
             try:
                 current_time = time.time()
                 
-                # Ekranı temizle (sadece gerektiğinde)
-                if current_time - last_update > 0.1:
+                # Ekranı temizle (60FPS yerine 20FPS)
+                if current_time - last_update > 0.05:
                     self.stdscr.erase()
                     
                     # UI bileşenlerini çiz
@@ -654,8 +798,8 @@ class TerminalROVGUI:
                     self.update_servo_control()
                     last_update = current_time
                 
-                # FPS limiti
-                time.sleep(0.1)  # 10 FPS - daha stabil
+                # FPS limiti - 15 FPS optimal
+                time.sleep(0.066)  # ~15 FPS
                 
             except KeyboardInterrupt:
                 self.running = False

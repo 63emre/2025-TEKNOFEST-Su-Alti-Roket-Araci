@@ -75,31 +75,38 @@ class D300DepthSensor:
     
     def _scan_i2c_devices(self):
         """I2C bus'taki cihazları tara"""
-        try:
-            if not self.bus:
-                self.bus = smbus2.SMBus(self.bus_num)
-            
-            print(f"📡 I2C Bus {self.bus_num} taranıyor...")
-            found_devices = []
-            
-            for addr in range(0x03, 0x78):
-                try:
-                    self.bus.read_byte(addr)
-                    found_devices.append(f"0x{addr:02x}")
-                except:
-                    pass
-            
-            if found_devices:
-                print(f"✅ Bulunan I2C cihazları: {', '.join(found_devices)}")
-                if self.address not in [int(addr, 16) for addr in found_devices]: 
-                    print(f"⚠️  D300 adresi (0x{self.address:02x}) bulunan cihazlar arasında yok!")
-                    print("💡 hardware_config.json'da address değerini kontrol et")
-            else:
-                print("❌ Hiç I2C cihazı bulunamadı!")
-                print("💡 Bağlantıları ve I2C ayarlarını kontrol et")
+        # Tüm I2C bus'larını dene
+        for bus_num in [0, 1]:
+            try:
+                print(f"📡 I2C Bus {bus_num} taranıyor...")
+                bus = smbus2.SMBus(bus_num)
+                found_devices = []
                 
-        except Exception as e:
-            print(f"❌ I2C tarama hatası: {e}")
+                for addr in range(0x03, 0x78):
+                    try:
+                        bus.read_byte(addr)
+                        found_devices.append(f"0x{addr:02x}")
+                    except:
+                        pass
+                
+                if found_devices:
+                    print(f"✅ Bus {bus_num}: {', '.join(found_devices)}")
+                    # Depth sensor adreslerini kontrol et
+                    common_addresses = ['0x76', '0x77', '0x40', '0x48']
+                    for addr_str in common_addresses:
+                        addr_int = int(addr_str, 16)
+                        if f"0x{addr_int:02x}" in found_devices:
+                            print(f"🎯 Potansiyel D300 adresi: {addr_str}")
+                else:
+                    print(f"❌ Bus {bus_num}: Hiç cihaz bulunamadı")
+                
+                bus.close()
+                
+            except Exception as e:
+                print(f"❌ Bus {bus_num} tarama hatası: {e}")
+        
+        print("💡 BlueOS'ta görünen adresi hardware_config.json'a gir")
+        print("💡 Terminal GUI'de C tuşu ile I2C ayarını değiştirebilirsin")
     
     def disconnect(self):
         """Sensör bağlantısını kapat"""
