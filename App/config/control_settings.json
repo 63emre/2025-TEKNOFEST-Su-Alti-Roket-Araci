@@ -1,0 +1,109 @@
+{
+  "control_modes": {
+    "raw_control": {
+      "name": "RAW PWM Control",
+      "description": "Titreşimsiz direkt PWM kontrolü",
+      "update_frequency_hz": 50,
+      "max_pwm_change_per_step": 50,
+      "response_time_ms": 20,
+      "vibration_level": "low"
+    },
+    "pid_control": {
+      "name": "PID Filtered Control", 
+      "description": "IMU filtreli PID kontrolü",
+      "update_frequency_hz": 20,
+      "pid_parameters": {
+        "roll": {"kp": 0.8, "ki": 0.02, "kd": 0.12},
+        "pitch": {"kp": 0.8, "ki": 0.02, "kd": 0.12},
+        "yaw": {"kp": 0.8, "ki": 0.02, "kd": 0.12}
+      },
+      "filter_settings": {
+        "max_rate_deg_per_sec": 30.0,
+        "dead_zone_degrees": 5.0,
+        "max_integral": 50.0,
+        "gyro_weight": 0.98,
+        "accel_weight": 0.02
+      },
+      "response_time_ms": 100,
+      "vibration_level": "medium"
+    }
+  },
+  "navigation_modes": {
+    "gps_only": {
+      "name": "GPS Navigation",
+      "description": "GPS koordinat bazlı navigation",
+      "accuracy_meters": 1.0,
+      "update_rate_hz": 5,
+      "min_satellite_count": 4
+    },
+    "imu_only": {
+      "name": "IMU Dead Reckoning",
+      "description": "Accelerometer integration bazlı",
+      "accuracy_meters": 0.5,
+      "update_rate_hz": 50,
+      "drift_correction_enabled": true
+    },
+    "hybrid": {
+      "name": "GPS + IMU Hybrid",
+      "description": "GPS varsa GPS, yoksa IMU",
+      "gps_timeout_seconds": 5,
+      "switch_threshold_accuracy": 2.0,
+      "fusion_weight_gps": 0.7,
+      "fusion_weight_imu": 0.3
+    }
+  },
+  "movement_commands": {
+    "T": {
+      "name": "FORWARD",
+      "description": "İleri hareket",
+      "parameter_type": "distance_meters",
+      "default_value": 5.0,
+      "min_value": 0.1,
+      "max_value": 50.0
+    },
+    "Y": {
+      "name": "YAW_ROTATION",
+      "description": "Yaw ekseni dönme", 
+      "parameter_type": "angle_degrees",
+      "default_value": 90.0,
+      "min_value": -180.0,
+      "max_value": 180.0
+    },
+    "U": {
+      "name": "ASCEND",
+      "description": "Yukarı çıkış",
+      "parameter_type": "distance_meters",
+      "default_value": 2.0,
+      "min_value": 0.1,
+      "max_value": 10.0
+    },
+    "G": {
+      "name": "STRAFE_LEFT",
+      "description": "Sol yatay hareket",
+      "parameter_type": "distance_meters", 
+      "default_value": 3.0,
+      "min_value": 0.1,
+      "max_value": 20.0
+    },
+    "H": {
+      "name": "STRAFE_RIGHT",
+      "description": "Sağ yatay hareket",
+      "parameter_type": "distance_meters",
+      "default_value": 3.0,
+      "min_value": 0.1,
+      "max_value": 20.0
+    }
+  },
+  "realtime_controls": {
+    "W": "pitch_up",
+    "S": "pitch_down",
+    "A": "roll_left", 
+    "D": "roll_right",
+    "Q": "yaw_left",
+    "E": "yaw_right",
+    "PAGE_UP": "depth_up",
+    "PAGE_DOWN": "depth_down",
+    "SPACE": "emergency_stop",
+    "ESC": "surface_immediately"
+  }
+} 

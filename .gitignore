@@ -1,0 +1,179 @@
+# TEKNOFEST Su Altı Roket Aracı - .gitignore
+
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+build/
+develop-eggs/
+dist/
+downloads/
+eggs/
+.eggs/
+lib/
+lib64/
+parts/
+sdist/
+var/
+wheels/
+pip-wheel-metadata/
+share/python-wheels/
+*.egg-info/
+.installed.cfg
+*.egg
+MANIFEST
+
+# Virtual Environment
+venv/
+env/
+ENV/
+.env
+.venv
+
+# PyInstaller
+*.manifest
+*.spec
+
+# Unit test / coverage reports
+htmlcov/
+.tox/
+.nox/
+.coverage
+.coverage.*
+.cache
+nosetests.xml
+coverage.xml
+*.cover
+*.py,cover
+.hypothesis/
+.pytest_cache/
+
+# Jupyter Notebook
+.ipynb_checkpoints
+
+# IPython
+profile_default/
+ipython_config.py
+
+# pyenv
+.python-version
+
+# Spyder project settings
+.spyderproject
+.spyproject
+
+# Rope project settings
+.ropeproject
+
+# mkdocs documentation
+/site
+
+# mypy
+.mypy_cache/
+.dmypy.json
+dmypy.json
+
+# Pyre type checker
+.pyre/
+
+# IDE Files
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# OS Files
+.DS_Store
+.DS_Store?
+._*
+.Spotlight-V100
+.Trashes
+ehthumbs.db
+Thumbs.db
+
+# Windows
+Desktop.ini
+
+# Log files
+*.log
+logs/
+log/
+
+# Configuration files with sensitive data
+config/local_*.json
+config/secrets.json
+config/passwords.json
+
+# MAVLink/ArduPilot specific
+*.tlog
+*.bin
+*.param
+*.pdef
+*.waypoints
+*.fence
+*.rally
+
+# Mission files (if they contain sensitive location data)
+# mission_*.txt
+# waypoint_*.txt
+
+# Hardware test results
+test_results/
+calibration_data/
+hardware_logs/
+
+# Temporary files
+temp/
+tmp/
+*.tmp
+*.temp
+
+# Backup files
+*.bak
+*.backup
+*.old
+
+# Documentation builds
+docs/_build/
+docs/build/
+
+# BlueOS specific
+blueos_setup_wizard.json.bak
+
+# Video files (usually too large for git)
+*.mp4
+*.avi
+*.mov
+*.mkv
+*.flv
+*.wmv
+
+# Image files (if large)
+*.raw
+*.tiff
+*.bmp
+
+# Compressed files
+*.zip
+*.tar.gz
+*.rar
+*.7z
+
+# Database files
+*.db
+*.sqlite
+*.sqlite3
+
+# API Keys and secrets
+.env.local
+.env.production
+secrets/
+api_keys/
+
+# Development tools
+.coverage
+.pytest_cache/
+.mypy_cache/ 
