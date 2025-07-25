@@ -444,8 +444,8 @@ class TerminalROVGUI:
         
         commands = [
             "W/S: Pitch",     "A/D: Roll",        "Q/E: Yaw",
-            "O/L: Motor",     "Space: ARM/DISARM", "R/F: RAW/PID", 
-            "1/2/3: GPS/IMU/HYB", "T: Test Scripts",  "C: Pin Config",
+            "O/L: Motor",     "X: Servo Sıfırla", "Space: ARM/DISARM", 
+            "R/F: RAW/PID",   "1/2/3: GPS/IMU/HYB", "T: Test Scripts",
             "V: Vibration",   "G: GPS Data",      "ESC/P: Çıkış"
         ]
         
@@ -498,25 +498,49 @@ class TerminalROVGUI:
         if key == -1 or key == curses.ERR:
             return
         
+        # Debug: Hangi tuş basıldığını göster (önemli tuşlar için)
+        if key in [ord('w'), ord('W'), ord('s'), ord('S'), ord('a'), ord('A'), 
+                   ord('d'), ord('D'), ord('q'), ord('Q'), ord('e'), ord('E'),
+                   ord('o'), ord('O'), ord('l'), ord('L'), ord('v'), ord('V')]:
+            self.log(f"🔤 Tuş basıldı: '{chr(key)}'")
+        
         # Çıkış tuşları - ESC, Ctrl+C, P tuşu (çoklu seçenek)
         if key in [27, 3, ord('P'), ord('p'), curses.KEY_EXIT, curses.KEY_BREAK]:  # ESC, Ctrl+C, P/p tuşları
             self.running = False
             self.log("🔄 Çıkış komutu alındı...")
             return
         
-        # Real-time servo kontrol
-        if key == ord('w'):
-            self.active_keys.add('w')
-        elif key == ord('s'):
-            self.active_keys.add('s')
-        elif key == ord('a'):
-            self.active_keys.add('a')
-        elif key == ord('d'):
-            self.active_keys.add('d')
-        elif key == ord('q'):
-            self.active_keys.add('q')
-        elif key == ord('e'):
-            self.active_keys.add('e')
+        # Servo sıfırlama tuşu
+        elif key == ord('x') or key == ord('X'):
+            self.servo_values = {'roll': 0, 'pitch': 0, 'yaw': 0}
+            self.log("🔄 Tüm servo değerleri sıfırlandı!")
+            self.send_servo_commands()
+        
+        # Real-time servo kontrol - ANLıK HAREKET sistemine çevir
+        elif key == ord('w') or key == ord('W'):
+            self.servo_values['pitch'] = min(45, self.servo_values['pitch'] + 5)
+            self.log(f"🎮 W tuşu - Pitch: {self.servo_values['pitch']}")
+            self.send_servo_commands()
+        elif key == ord('s') or key == ord('S'):
+            self.servo_values['pitch'] = max(-45, self.servo_values['pitch'] - 5)
+            self.log(f"🎮 S tuşu - Pitch: {self.servo_values['pitch']}")
+            self.send_servo_commands()
+        elif key == ord('a') or key == ord('A'):
+            self.servo_values['roll'] = min(45, self.servo_values['roll'] + 5)
+            self.log(f"🎮 A tuşu - Roll: {self.servo_values['roll']}")
+            self.send_servo_commands()
+        elif key == ord('d') or key == ord('D'):
+            self.servo_values['roll'] = max(-45, self.servo_values['roll'] - 5)
+            self.log(f"🎮 D tuşu - Roll: {self.servo_values['roll']}")
+            self.send_servo_commands()
+        elif key == ord('q') or key == ord('Q'):
+            self.servo_values['yaw'] = min(45, self.servo_values['yaw'] + 5)
+            self.log(f"🎮 Q tuşu - Yaw: {self.servo_values['yaw']}")
+            self.send_servo_commands()
+        elif key == ord('e') or key == ord('E'):
+            self.servo_values['yaw'] = max(-45, self.servo_values['yaw'] - 5)
+            self.log(f"🎮 E tuşu - Yaw: {self.servo_values['yaw']}")
+            self.send_servo_commands()
         
         # Motor kontrol
         elif key == curses.KEY_PPAGE:  # Page Up
@@ -551,10 +575,10 @@ class TerminalROVGUI:
             self.toggle_arm()
         
         # Kontrol modu değiştir
-        elif key == ord('r'):
+        elif key == ord('r') or key == ord('R'):
             self.control_mode = "RAW"
             self.log("🎛️ Kontrol modu: RAW PWM")
-        elif key == ord('f'):  # F tuşu ile PID (Filter) modu
+        elif key == ord('f') or key == ord('F'):  # F tuşu ile PID (Filter) modu
             self.control_mode = "PID"
             self.log("🎛️ Kontrol modu: PID")
         
@@ -570,66 +594,61 @@ class TerminalROVGUI:
             self.log("🧭 Navigation modu: HYBRID")
         
         # Test scriptleri
-        elif key == ord('t'):
+        elif key == ord('t') or key == ord('T'):
             self.show_test_menu()
             
         # Pin konfigürasyonu
-        elif key == ord('c'):
+        elif key == ord('c') or key == ord('C'):
             self.show_pin_config()
             
         # Vibration monitor
-        elif key == ord('v'):
+        elif key == ord('v') or key == ord('V'):
+            self.log("🔤 Vibration menüsü açılıyor...")
             self.show_vibration_window()
             
         # GPS data
-        elif key == ord('g'):
+        elif key == ord('g') or key == ord('G'):
             self.show_gps_window()
             
-        # Debug için tuş kodunu göster (sadece bilinmeyen tuşlar için)
-        elif key > 127:  # Özel tuşlar
-            self.log(f"🔤 Bilinmeyen özel tuş: {key}")
+        # Bilinmeyen tuş
+        else:
+            if key < 256:
+                self.log(f"🔤 Bilinmeyen tuş: '{chr(key)}' ({key})")
+            else:
+                self.log(f"🔤 Bilinmeyen özel tuş: {key}")
     
     def update_servo_control(self):
-        """Real-time servo kontrolünü güncelle"""
-        # Pitch kontrol
-        if 'w' in self.active_keys:
-            self.servo_values['pitch'] = min(45, self.servo_values['pitch'] + 2)
-        elif 's' in self.active_keys:
-            self.servo_values['pitch'] = max(-45, self.servo_values['pitch'] - 2)
-        else:
-            # Otomatik sıfırlama
-            if self.servo_values['pitch'] > 0:
-                self.servo_values['pitch'] = max(0, self.servo_values['pitch'] - 1)
-            elif self.servo_values['pitch'] < 0:
-                self.servo_values['pitch'] = min(0, self.servo_values['pitch'] + 1)
+        """Servo değerlerini otomatik sıfırla"""
+        # Otomatik sıfırlama - yumuşak geçiş
+        changed = False
         
-        # Roll kontrol
-        if 'a' in self.active_keys:
-            self.servo_values['roll'] = min(45, self.servo_values['roll'] + 2)
-        elif 'd' in self.active_keys:
-            self.servo_values['roll'] = max(-45, self.servo_values['roll'] - 2)
-        else:
-            if self.servo_values['roll'] > 0:
-                self.servo_values['roll'] = max(0, self.servo_values['roll'] - 1)
-            elif self.servo_values['roll'] < 0:
-                self.servo_values['roll'] = min(0, self.servo_values['roll'] + 1)
+        # Pitch otomatik sıfırlama
+        if self.servo_values['pitch'] > 0:
+            self.servo_values['pitch'] = max(0, self.servo_values['pitch'] - 0.5)
+            changed = True
+        elif self.servo_values['pitch'] < 0:
+            self.servo_values['pitch'] = min(0, self.servo_values['pitch'] + 0.5)
+            changed = True
         
-        # Yaw kontrol
-        if 'q' in self.active_keys:
-            self.servo_values['yaw'] = min(45, self.servo_values['yaw'] + 2)
-        elif 'e' in self.active_keys:
-            self.servo_values['yaw'] = max(-45, self.servo_values['yaw'] - 2)
-        else:
-            if self.servo_values['yaw'] > 0:
-                self.servo_values['yaw'] = max(0, self.servo_values['yaw'] - 1)
-            elif self.servo_values['yaw'] < 0:
-                self.servo_values['yaw'] = min(0, self.servo_values['yaw'] + 1)
+        # Roll otomatik sıfırlama
+        if self.servo_values['roll'] > 0:
+            self.servo_values['roll'] = max(0, self.servo_values['roll'] - 0.5)
+            changed = True
+        elif self.servo_values['roll'] < 0:
+            self.servo_values['roll'] = min(0, self.servo_values['roll'] + 0.5)
+            changed = True
         
-        # Servo komutlarını gönder
-        self.send_servo_commands()
+        # Yaw otomatik sıfırlama
+        if self.servo_values['yaw'] > 0:
+            self.servo_values['yaw'] = max(0, self.servo_values['yaw'] - 0.5)
+            changed = True
+        elif self.servo_values['yaw'] < 0:
+            self.servo_values['yaw'] = min(0, self.servo_values['yaw'] + 0.5)
+            changed = True
         
-        # Tuş durumunu temizle (bir frame sonra)
-        self.active_keys.clear()
+        # Değişiklik varsa servo komutlarını gönder
+        if changed:
+            self.send_servo_commands()
     
     def send_servo_commands(self):
         """Servo komutlarını MAVLink'e gönder"""
