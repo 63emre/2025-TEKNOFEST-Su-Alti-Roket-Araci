@@ -327,6 +327,44 @@ class MAVLinkHandler:
             
         except Exception as e:
             print(f"❌ Acil durum hatası: {e}")
+    
+    def get_system_status(self):
+        """Sistem durumu bilgilerini döndür"""
+        try:
+            return {
+                'connection_status': self.connected,
+                'armed_status': getattr(self, 'armed', False),
+                'flight_mode': getattr(self, 'current_mode', 'MANUAL'),
+                'battery_voltage': getattr(self, 'battery_voltage', 0.0),
+                'battery_level': getattr(self, 'battery_level', 0),
+                'gps_status': getattr(self, 'gps_fix_type', 0),
+                'satellites': getattr(self, 'satellites_visible', 0),
+                'depth': getattr(self, 'depth', 0.0),
+                'temperature': getattr(self, 'temperature', 20.0),
+                'pressure': getattr(self, 'pressure', 1013.25),
+                'system_time': time.time(),
+                'uptime': time.time() - getattr(self, 'start_time', time.time()),
+                'last_heartbeat': getattr(self, 'last_heartbeat', 0),
+                'errors': getattr(self, 'error_count', 0)
+            }
+        except Exception as e:
+            print(f"System status error: {e}")
+            return {
+                'connection_status': False,
+                'armed_status': False,
+                'flight_mode': 'UNKNOWN',
+                'battery_voltage': 0.0,
+                'battery_level': 0,
+                'gps_status': 0,
+                'satellites': 0,
+                'depth': 0.0,
+                'temperature': 0.0,
+                'pressure': 0.0,
+                'system_time': time.time(),
+                'uptime': 0,
+                'last_heartbeat': 0,
+                'errors': 0
+            }
 
 class IMUFilter:
     """Basit IMU filtresi - Complementary Filter"""
