@@ -209,19 +209,24 @@ class TerminalROVGUI:
         self.log("✅ Sistem bileşenleri başlatıldı!")
     
     def init_curses(self, stdscr):
-        """Curses arayüzünü başlat"""
+        """Curses arayüzünü başlat - optimized"""
         try:
             print("🔧 Curses ayarları yapılıyor...")
             self.stdscr = stdscr
+            
+            # Temel ayarlar
             curses.curs_set(0)  # Cursor gizle
             curses.noecho()     # Echo kapat
             curses.cbreak()     # Karakterleri anında al
             stdscr.keypad(True) # Özel tuşları etkinleştir
-            stdscr.nodelay(True) # Non-blocking input
             
-            # ESC tuşu için timeout ayarla (Windows uyumluluğu)
-            curses.halfdelay(1)  # 100ms timeout
-            stdscr.timeout(100)   # Input timeout
+            # REAL-TIME için optimizasyon
+            stdscr.nodelay(True)  # Non-blocking input
+            stdscr.timeout(0)     # Hiç bekleme - anında dön
+            
+            # Refresh optimizasyonu
+            if hasattr(curses, 'use_env'):
+                curses.use_env(True)
             
             print("🎨 Renkler ayarlanıyor...")
             # Renkler
@@ -242,6 +247,10 @@ class TerminalROVGUI:
             if self.width < 120 or self.height < 30:
                 print(f"⚠️ Terminal çok küçük! Min: 120x30, Mevcut: {self.width}x{self.height}")
                 self.log(f"⚠️ Terminal çok küçük! Min: 120x30, Mevcut: {self.width}x{self.height}")
+            
+            # İlk çizim
+            stdscr.clear()
+            stdscr.refresh()
             
         except Exception as e:
             print(f"❌ init_curses hatası: {e}")
@@ -498,11 +507,13 @@ class TerminalROVGUI:
         if key == -1 or key == curses.ERR:
             return
         
-        # Debug: Hangi tuş basıldığını göster (önemli tuşlar için)
-        if key in [ord('w'), ord('W'), ord('s'), ord('S'), ord('a'), ord('A'), 
-                   ord('d'), ord('D'), ord('q'), ord('Q'), ord('e'), ord('E'),
-                   ord('o'), ord('O'), ord('l'), ord('L'), ord('v'), ord('V')]:
-            self.log(f"🔤 Tuş basıldı: '{chr(key)}'")
+        # Debug: Hangi tuş basıldığını göster (sadece önemli değişiklikler)
+        important_keys = [ord('w'), ord('W'), ord('s'), ord('S'), ord('a'), ord('A'), 
+                         ord('d'), ord('D'), ord('q'), ord('Q'), ord('e'), ord('E'),
+                         ord('o'), ord('O'), ord('l'), ord('L'), ord('v'), ord('V'), ord('x'), ord('X')]
+        
+        if key in important_keys:
+            self.log(f"🔤 {chr(key).upper()} tuşu basıldı")
         
         # Çıkış tuşları - ESC, Ctrl+C, P tuşu (çoklu seçenek)
         if key in [27, 3, ord('P'), ord('p'), curses.KEY_EXIT, curses.KEY_BREAK]:  # ESC, Ctrl+C, P/p tuşları
@@ -512,63 +523,88 @@ class TerminalROVGUI:
         
         # Servo sıfırlama tuşu
         elif key == ord('x') or key == ord('X'):
+            old_values = self.servo_values.copy()
             self.servo_values = {'roll': 0, 'pitch': 0, 'yaw': 0}
-            self.log("🔄 Tüm servo değerleri sıfırlandı!")
+            self.log(f"🔄 Servo sıfırlama: {old_values} → {self.servo_values}")
             self.send_servo_commands()
         
-        # Real-time servo kontrol - ANLıK HAREKET sistemine çevir
+        # Real-time servo kontrol - ANLIK HAREKET
         elif key == ord('w') or key == ord('W'):
+            old_pitch = self.servo_values['pitch']
             self.servo_values['pitch'] = min(45, self.servo_values['pitch'] + 5)
-            self.log(f"🎮 W tuşu - Pitch: {self.servo_values['pitch']}")
+            if old_pitch != self.servo_values['pitch']:
+                self.log(f"🎮 Pitch: {old_pitch} → {self.servo_values['pitch']}")
             self.send_servo_commands()
         elif key == ord('s') or key == ord('S'):
+            old_pitch = self.servo_values['pitch']
             self.servo_values['pitch'] = max(-45, self.servo_values['pitch'] - 5)
-            self.log(f"🎮 S tuşu - Pitch: {self.servo_values['pitch']}")
+            if old_pitch != self.servo_values['pitch']:
+                self.log(f"🎮 Pitch: {old_pitch} → {self.servo_values['pitch']}")
             self.send_servo_commands()
         elif key == ord('a') or key == ord('A'):
+            old_roll = self.servo_values['roll']
             self.servo_values['roll'] = min(45, self.servo_values['roll'] + 5)
-            self.log(f"🎮 A tuşu - Roll: {self.servo_values['roll']}")
+            if old_roll != self.servo_values['roll']:
+                self.log(f"🎮 Roll: {old_roll} → {self.servo_values['roll']}")
             self.send_servo_commands()
         elif key == ord('d') or key == ord('D'):
+            old_roll = self.servo_values['roll']
             self.servo_values['roll'] = max(-45, self.servo_values['roll'] - 5)
-            self.log(f"🎮 D tuşu - Roll: {self.servo_values['roll']}")
+            if old_roll != self.servo_values['roll']:
+                self.log(f"🎮 Roll: {old_roll} → {self.servo_values['roll']}")
             self.send_servo_commands()
         elif key == ord('q') or key == ord('Q'):
+            old_yaw = self.servo_values['yaw']
             self.servo_values['yaw'] = min(45, self.servo_values['yaw'] + 5)
-            self.log(f"🎮 Q tuşu - Yaw: {self.servo_values['yaw']}")
+            if old_yaw != self.servo_values['yaw']:
+                self.log(f"🎮 Yaw: {old_yaw} → {self.servo_values['yaw']}")
             self.send_servo_commands()
         elif key == ord('e') or key == ord('E'):
+            old_yaw = self.servo_values['yaw']
             self.servo_values['yaw'] = max(-45, self.servo_values['yaw'] - 5)
-            self.log(f"🎮 E tuşu - Yaw: {self.servo_values['yaw']}")
+            if old_yaw != self.servo_values['yaw']:
+                self.log(f"🎮 Yaw: {old_yaw} → {self.servo_values['yaw']}")
             self.send_servo_commands()
         
-        # Motor kontrol
+        # Motor kontrol - ANLIK HAREKET
         elif key == curses.KEY_PPAGE:  # Page Up
+            old_motor = self.motor_value
             self.motor_value = min(100, self.motor_value + 10)
+            if old_motor != self.motor_value:
+                self.log(f"🎮 Motor: {old_motor} → {self.motor_value}% (PageUp)")
             self.send_motor_command()
-            self.log(f"🎮 Motor artırıldı: {self.motor_value}% (Page Up)")
         elif key == curses.KEY_NPAGE:  # Page Down
+            old_motor = self.motor_value
             self.motor_value = max(-100, self.motor_value - 10)
+            if old_motor != self.motor_value:
+                self.log(f"🎮 Motor: {old_motor} → {self.motor_value}% (PageDown)")
             self.send_motor_command()
-            self.log(f"🎮 Motor azaltıldı: {self.motor_value}% (Page Down)")
-        # Motor kontrol - O/L tuşları (klavyede daha kolay)
+        # Motor kontrol - O/L tuşları (ana kontrol)
         elif key == ord('o') or key == ord('O'):
+            old_motor = self.motor_value
             self.motor_value = min(100, self.motor_value + 10)
+            if old_motor != self.motor_value:
+                self.log(f"🎮 Motor: {old_motor} → {self.motor_value}% (O)")
             self.send_motor_command()
-            self.log(f"🎮 Motor artırıldı: {self.motor_value}% (O)")
         elif key == ord('l') or key == ord('L'):
+            old_motor = self.motor_value
             self.motor_value = max(-100, self.motor_value - 10)
+            if old_motor != self.motor_value:
+                self.log(f"🎮 Motor: {old_motor} → {self.motor_value}% (L)")
             self.send_motor_command()
-            self.log(f"🎮 Motor azaltıldı: {self.motor_value}% (L)")
-        # Alternatif motor kontrol (+ ve - tuşları)
+        # İnce ayar motor kontrol
         elif key == ord('+') or key == ord('='):
+            old_motor = self.motor_value
             self.motor_value = min(100, self.motor_value + 5)
+            if old_motor != self.motor_value:
+                self.log(f"🎮 Motor: {old_motor} → {self.motor_value}% (+)")
             self.send_motor_command()
-            self.log(f"🎮 Motor artırıldı: {self.motor_value}% (+)")
         elif key == ord('-') or key == ord('_'):
+            old_motor = self.motor_value
             self.motor_value = max(-100, self.motor_value - 5)
+            if old_motor != self.motor_value:
+                self.log(f"🎮 Motor: {old_motor} → {self.motor_value}% (-)")
             self.send_motor_command()
-            self.log(f"🎮 Motor azaltıldı: {self.motor_value}% (-)")
         
         # ARM/DISARM
         elif key == ord(' '):  # Space
@@ -604,12 +640,27 @@ class TerminalROVGUI:
         # Vibration monitor
         elif key == ord('v') or key == ord('V'):
             self.log("🔤 Vibration menüsü açılıyor...")
-            self.show_vibration_window()
-            
+            try:
+                self.show_vibration_window()
+                # Menü kapandıktan sonra ekranı zorla yenile
+                self.stdscr.clear()
+                self.stdscr.refresh()
+                self.log("✅ Vibration menüsü kapatıldı")
+            except Exception as e:
+                self.log(f"❌ Vibration menü hatası: {e}")
+        
         # GPS data
         elif key == ord('g') or key == ord('G'):
-            self.show_gps_window()
-            
+            self.log("🔤 GPS menüsü açılıyor...")
+            try:
+                self.show_gps_window()
+                # Menü kapandıktan sonra ekranı zorla yenile
+                self.stdscr.clear()
+                self.stdscr.refresh()
+                self.log("✅ GPS menüsü kapatıldı")
+            except Exception as e:
+                self.log(f"❌ GPS menü hatası: {e}")
+        
         # Bilinmeyen tuş
         else:
             if key < 256:
@@ -1206,8 +1257,12 @@ class TerminalROVGUI:
                 pass
     
     def main_loop(self):
-        """Ana döngü"""
+        """Ana döngü - optimized anti-flicker"""
         last_update = time.time()
+        last_servo_values = self.servo_values.copy()
+        last_motor_value = self.motor_value
+        force_update_counter = 0
+        
         print("🔄 Ana döngü başladı...")
         self.log("🔄 Ana döngü başladı...")
         
@@ -1216,8 +1271,24 @@ class TerminalROVGUI:
                 try:
                     current_time = time.time()
                     
-                    # Ekranı temizle - 10 FPS (daha stabil)
+                    # Klavye girişini kontrol et (YÜKSEK FREKANSTA)
+                    self.handle_keyboard()
+                    
+                    # Servo otomatik sıfırlama (10Hz)
                     if current_time - last_update > 0.1:
+                        self.update_servo_control()
+                        last_update = current_time
+                    
+                    # EKRANI SADECE DEĞİŞİKLİK OLDUĞUNDA YENİLE!
+                    servo_changed = (
+                        self.servo_values != last_servo_values or 
+                        self.motor_value != last_motor_value
+                    )
+                    
+                    force_update = force_update_counter % 100 == 0  # Her 10 saniyede zorla
+                    
+                    if servo_changed or force_update or force_update_counter < 3:
+                        # Ekranı temizle ve yenile
                         self.stdscr.erase()
                         
                         # UI bileşenlerini çiz
@@ -1225,21 +1296,22 @@ class TerminalROVGUI:
                         self.draw_controls()
                         self.draw_commands()
                         self.draw_logs()
-                        self.draw_graphs() # Grafik çizimi
+                        self.draw_graphs()
                         
                         # Ekranı yenile
                         self.stdscr.refresh()
-                        last_update = current_time
+                        
+                        # Son değerleri kaydet
+                        last_servo_values = self.servo_values.copy()
+                        last_motor_value = self.motor_value
+                        
+                        if servo_changed:
+                            self.log(f"🔄 Ekran güncellendi - Servo: {self.servo_values}")
                     
-                    # Klavye girişini kontrol et
-                    self.handle_keyboard()
+                    force_update_counter += 1
                     
-                    # Real-time servo kontrolü (10Hz)
-                    if current_time - last_update > 0.1:
-                        self.update_servo_control()
-                    
-                    # FPS limiti - 10 FPS (daha az yanıp sönme)
-                    time.sleep(0.1)  # 10 FPS
+                    # YÜKSEK FREKANSTA KLAVYE OKUMA - düşük CPU
+                    time.sleep(0.02)  # 50Hz klavye okuma
                     
                 except KeyboardInterrupt:
                     print("⌨️ Ctrl+C algılandı, çıkılıyor...")
@@ -1247,7 +1319,6 @@ class TerminalROVGUI:
                 except Exception as e:
                     print(f"❌ Ana döngü frame hatası: {e}")
                     self.log(f"❌ Ana döngü frame hatası: {e}")
-                    # Hata olsa bile devam et
                     time.sleep(0.1)
                     
         except Exception as e:
