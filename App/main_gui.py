@@ -19,6 +19,9 @@ from mavlink_handler import MAVLinkHandler
 from navigation_engine import NavigationEngine
 from vibration_monitor import VibrationMonitor
 from control_module import ControlModule
+from gpio_controller import GPIOController
+from depth_sensor import D300DepthSensor
+from sensor_manager import SensorManager
 
 class MainWindow(QMainWindow):
     def __init__(self):
@@ -31,6 +34,9 @@ class MainWindow(QMainWindow):
         self.navigation_engine = None
         self.vibration_monitor = None
         self.control_module = None
+        self.gpio_controller = None
+        self.depth_sensor = None
+        self.sensor_manager = None
         
         # GUI durumu
         self.connection_status = False
@@ -384,11 +390,43 @@ class MainWindow(QMainWindow):
     def setup_system(self):
         """Sistem bileşenlerini başlat"""
         try:
+            # Config yükle
+            config = self.load_hardware_config()
+            
             # MAVLink handler
             self.mavlink_handler = MAVLinkHandler()
             
-            # Navigation engine
-            self.navigation_engine = NavigationEngine(self.mavlink_handler)
+            # GPIO Controller (Raspberry Pi)
+            self.gpio_controller = GPIOController(config)
+            gpio_status = self.gpio_controller.initialize()
+            if gpio_status:
+                self.log_message("✅ GPIO sistemi başlatıldı")
+                # Buton callback ayarla
+                self.gpio_controller.setup_button_callback(self.on_emergency_button)
+            else:
+                self.log_message("⚠️ GPIO simülasyon modunda")
+            
+            # D300 Derinlik Sensörü
+            self.depth_sensor = D300DepthSensor()
+            if self.depth_sensor.connect():
+                self.depth_sensor.start_monitoring()
+                self.log_message("✅ D300 derinlik sensörü başlatıldı")
+            else:
+                self.log_message("⚠️ D300 sensörü simülasyon modunda")
+            
+            # Adafruit Sensör Manager
+            self.sensor_manager = SensorManager(config)
+            if self.sensor_manager.initialize_sensors():
+                self.log_message("✅ Adafruit sensörleri başlatıldı")
+            else:
+                self.log_message("⚠️ Adafruit sensörleri simülasyon modunda")
+            
+            # Navigation engine (güncellenmiş sensörlerle)
+            self.navigation_engine = NavigationEngine(
+                self.mavlink_handler, 
+                self.sensor_manager, 
+                self.depth_sensor
+            )
             
             # Vibration monitor
             self.vibration_monitor = VibrationMonitor(self.mavlink_handler)
@@ -401,11 +439,74 @@ class MainWindow(QMainWindow):
                 self.update_gui_from_control
             )
             
-            self.log_message("Sistem bileşenleri başarıyla yüklendi")
+            self.log_message("🚀 Sistem bileşenleri başarıyla yüklendi!")
             
         except Exception as e:
-            self.log_message(f"Sistem başlatma hatası: {e}")
+            self.log_message(f"❌ Sistem başlatma hatası: {e}")
             QMessageBox.critical(self, "Hata", f"Sistem başlatılamadı: {e}")
+    
+    def load_hardware_config(self):
+        """Hardware konfigürasyonunu yükle"""
+        try:
+            with open("config/hardware_config.json", 'r') as f:
+                return json.load(f)
+        except Exception as e:
+            self.log_message(f"⚠️ Config yükleme hatası: {e}")
+            # Varsayılan config döndür
+            return {
+                "raspberry_pi": {
+                    "gpio": {
+                        "buzzer": 7,
+                        "control_button": 13,
+                        "led_red": 4,
+                        "led_green": 5,
+                        "led_blue": 6,
+                        "warning_led": 8,
+                        "system_status_led": 10
+                    }
+                }
+            }
+    
+    def on_emergency_button(self):
+        """Acil durum butonu basıldı"""
+        self.log_message("🚨 ACİL DURUM BUTONU BASILDI!")
+        
+        # Buzzer çal
+        if self.gpio_controller:
+            self.gpio_controller.buzzer_beep(2000, 0.5, 80)
+            self.gpio_controller.emergency_led_pattern()
+        
+        # Emergency stop
+        if self.mavlink_handler:
+            self.mavlink_handler.emergency_stop()
+        
+        # GUI update
+        QMessageBox.warning(self, "ACİL DURUM", "Acil durum butonu basıldı!\nTüm sistemler durduruldu!")
+    
+    def closeEvent(self, event):
+        """Uygulama kapatılırken temizlik yap"""
+        try:
+            # GPIO temizle
+            if self.gpio_controller:
+                self.gpio_controller.cleanup()
+            
+            # Sensörleri kapat
+            if self.depth_sensor:
+                self.depth_sensor.disconnect()
+            
+            if self.sensor_manager:
+                self.sensor_manager.shutdown_sensors()
+            
+            # MAVLink kapat
+            if self.mavlink_handler:
+                self.mavlink_handler.disconnect()
+            
+            self.log_message("🔄 Sistem temizliği tamamlandı")
+            
+        except Exception as e:
+            print(f"Temizlik hatası: {e}")
+        
+        event.accept()
     
     def toggle_connection(self):
         """MAVLink bağlantısını aç/kapat"""
