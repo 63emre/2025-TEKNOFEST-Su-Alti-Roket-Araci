@@ -94,6 +94,10 @@ class TerminalROVGUI:
         self.last_imu_display = None
         self.imu_update_counter = 0
         
+        # Depth verisi stabilizasyonu için
+        self.last_depth_display = {'depth_m': 0.0, 'temperature_c': 0.0, 'pressure_mbar': 0.0}
+        self.depth_update_counter = 0
+        
         # Config
         self.load_config()
         
