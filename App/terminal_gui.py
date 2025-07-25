@@ -65,6 +65,10 @@ class TerminalROVGUI:
             'accel_z': [0] * 50
         }
         
+        # IMU veri durumu için buffer
+        self.last_valid_imu = None
+        self.imu_timeout_counter = 0
+        
         # Config
         self.load_config()
         
@@ -152,6 +156,10 @@ class TerminalROVGUI:
         stdscr.keypad(True) # Özel tuşları etkinleştir
         stdscr.nodelay(True) # Non-blocking input
         
+        # ESC tuşu için timeout ayarla (Windows uyumluluğu)
+        curses.halfdelay(1)  # 100ms timeout
+        stdscr.timeout(100)   # Input timeout
+        
         # Renkler
         curses.start_color()
         curses.init_pair(1, curses.COLOR_GREEN, curses.COLOR_BLACK)  # Başarılı
@@ -162,6 +170,8 @@ class TerminalROVGUI:
         
         # Ekran boyutu
         self.height, self.width = stdscr.getmaxyx()
+        
+        self.log(f"🖥️ Terminal boyutu: {self.width}x{self.height}")
     
     def draw_header(self):
         """Başlık çiz"""
@@ -206,6 +216,10 @@ class TerminalROVGUI:
                     # IMU history'yi güncelle
                     self.update_imu_history(imu_data)
                     
+                    # Son geçerli veriyi kaydet
+                    self.last_valid_imu = imu_data
+                    self.imu_timeout_counter = 0
+                    
                     accel_x, accel_y, accel_z, gyro_x, gyro_y, gyro_z = imu_data
                     self.stdscr.addstr(start_row, 65, "📊 SENSÖR VERİ:", curses.color_pair(4) | curses.A_BOLD)
                     self.stdscr.addstr(start_row + 1, 67, f"Acc X: {accel_x:+6.2f}")
@@ -216,11 +230,28 @@ class TerminalROVGUI:
                     self.stdscr.addstr(start_row + 2, 85, f"Gyro Y: {gyro_y:+6.2f}")
                     self.stdscr.addstr(start_row + 3, 85, f"Gyro Z: {gyro_z:+6.2f}")
                 else:
-                    self.stdscr.addstr(start_row, 65, "📊 SENSÖR VERİ:", curses.color_pair(3) | curses.A_BOLD)
-                    self.stdscr.addstr(start_row + 1, 67, "IMU verisi bekleniyor...")
+                    # Veri yoksa ama bağlantı varsa - timeout sayacı
+                    self.imu_timeout_counter += 1
+                    
+                    if self.last_valid_imu and self.imu_timeout_counter < 100:  # 5 saniye timeout
+                        # Son geçerli veriyi göster (stale data)
+                        accel_x, accel_y, accel_z, gyro_x, gyro_y, gyro_z = self.last_valid_imu
+                        self.stdscr.addstr(start_row, 65, "📊 SENSÖR VERİ:", curses.color_pair(3) | curses.A_BOLD)
+                        self.stdscr.addstr(start_row + 1, 67, f"Acc X: {accel_x:+6.2f} [STALE]")
+                        self.stdscr.addstr(start_row + 2, 67, f"Acc Y: {accel_y:+6.2f} [STALE]")
+                        self.stdscr.addstr(start_row + 3, 67, f"Acc Z: {accel_z:+6.2f} [STALE]")
+                        self.stdscr.addstr(start_row + 1, 85, f"Gyro X: {gyro_x:+6.2f}")
+                        self.stdscr.addstr(start_row + 2, 85, f"Gyro Y: {gyro_y:+6.2f}")
+                        self.stdscr.addstr(start_row + 3, 85, f"Gyro Z: {gyro_z:+6.2f}")
+                    else:
+                        # Gerçekten veri yok
+                        self.stdscr.addstr(start_row, 65, "📊 SENSÖR VERİ:", curses.color_pair(3) | curses.A_BOLD)
+                        self.stdscr.addstr(start_row + 1, 67, f"IMU sinyali bekleniyor... ({self.imu_timeout_counter//20}s)")
+                        
             except Exception as e:
                 self.stdscr.addstr(start_row, 65, "📊 SENSÖR VERİ:", curses.color_pair(2) | curses.A_BOLD)
                 self.stdscr.addstr(start_row + 1, 67, f"IMU Hatası: {str(e)[:20]}...")
+                self.log(f"❌ IMU veri hatası: {e}")
         else:
             self.stdscr.addstr(start_row, 65, "📊 SENSÖR VERİ:", curses.color_pair(2) | curses.A_BOLD)
             self.stdscr.addstr(start_row + 1, 67, "MAVLink Bağlı Değil")
@@ -260,9 +291,10 @@ class TerminalROVGUI:
         
         commands = [
             "W/S: Pitch",     "A/D: Roll",        "Q/E: Yaw",
-            "PgUp/PgDn: Motor", "Space: ARM/DISARM", "R/F: RAW/PID",
-            "1/2/3: GPS/IMU/HYB", "T: Test Scripts",  "C: Pin Config",
-            "ESC/P: Çıkış",   "V: Vibration",     "G: GPS Data"
+            "PgUp/PgDn: Motor", "+/-: Motor Alt.",  "Space: ARM/DISARM",
+            "R/F: RAW/PID",   "1/2/3: GPS/IMU/HYB", "T: Test Scripts",
+            "C: Pin Config",  "V: Vibration",     "G: GPS Data",
+            "ESC/P: Çıkış",   "",                 ""
         ]
         
         row = cmd_row + 1
@@ -310,9 +342,18 @@ class TerminalROVGUI:
         """Klavye girişini işle"""
         key = self.stdscr.getch()
         
-        # Çıkış tuşları - ESC (27) ve P tuşu
-        if key == 27 or key == ord('P'):  # ESC veya P tuşu ile çıkış
+        # Tuş basılmadıysa (timeout)
+        if key == -1 or key == curses.ERR:
+            return
+        
+        # Debug: Tuş kodunu logla (geçici)
+        if key < 256 and key != ord(' '):  # Space dışındaki normal tuşlar
+            self.log(f"🔤 Tuş: {key} ({chr(key) if 32 <= key <= 126 else 'ÖZEL'})")
+        
+        # Çıkış tuşları - ESC, Ctrl+C, P tuşu (çoklu seçenek)
+        if key in [27, 3, ord('P'), ord('p'), curses.KEY_EXIT, curses.KEY_BREAK]:  # ESC, Ctrl+C, P/p tuşları
             self.running = False
+            self.log("🔄 Çıkış komutu alındı...")
             return
         
         # Real-time servo kontrol
@@ -333,11 +374,20 @@ class TerminalROVGUI:
         elif key == curses.KEY_PPAGE:  # Page Up
             self.motor_value = min(100, self.motor_value + 10)
             self.send_motor_command()
-            self.log(f"🎮 Motor artırıldı: {self.motor_value}%")
+            self.log(f"🎮 Motor artırıldı: {self.motor_value}% (Page Up)")
         elif key == curses.KEY_NPAGE:  # Page Down
             self.motor_value = max(-100, self.motor_value - 10)
             self.send_motor_command()
-            self.log(f"🎮 Motor azaltıldı: {self.motor_value}%")
+            self.log(f"🎮 Motor azaltıldı: {self.motor_value}% (Page Down)")
+        # Alternatif motor kontrol (+ ve - tuşları)
+        elif key == ord('+') or key == ord('='):
+            self.motor_value = min(100, self.motor_value + 5)
+            self.send_motor_command()
+            self.log(f"🎮 Motor artırıldı: {self.motor_value}% (+)")
+        elif key == ord('-') or key == ord('_'):
+            self.motor_value = max(-100, self.motor_value - 5)
+            self.send_motor_command()
+            self.log(f"🎮 Motor azaltıldı: {self.motor_value}% (-)")
         
         # ARM/DISARM
         elif key == ord(' '):  # Space
@@ -377,6 +427,10 @@ class TerminalROVGUI:
         # GPS data
         elif key == ord('g'):
             self.show_gps_window()
+            
+        # Debug için tuş kodunu göster (sadece bilinmeyen tuşlar için)
+        elif key > 127:  # Özel tuşlar
+            self.log(f"🔤 Bilinmeyen özel tuş: {key}")
     
     def update_servo_control(self):
         """Real-time servo kontrolünü güncelle"""
