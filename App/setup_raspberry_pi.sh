@@ -35,7 +35,9 @@ sudo apt install -y \
     libgfortran5 \
     git \
     cmake \
-    build-essential
+    build-essential \
+    avahi-daemon \
+    avahi-utils
 
 # Python virtual environment oluşturma
 echo "🐍 Python virtual environment oluşturuluyor..."
