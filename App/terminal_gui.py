@@ -487,13 +487,19 @@ class TerminalROVGUI:
             if self.mavlink and self.mavlink.connected:
                 try:
                     if self.armed:
-                        self.mavlink.disarm()
-                        self.armed = False
-                        self.log("🟢 DISARMED - Güvenlik aktif")
+                        success = self.mavlink.disarm_system()
+                        if success:
+                            self.armed = False
+                            self.log("🟢 DISARMED - Güvenlik aktif")
+                        else:
+                            self.log("❌ DISARM başarısız!")
                     else:
-                        self.mavlink.arm()
-                        self.armed = True
-                        self.log("🔴 ARMED - Sistem aktif!")
+                        success = self.mavlink.arm_system()
+                        if success:
+                            self.armed = True
+                            self.log("🔴 ARMED - Sistem aktif!")
+                        else:
+                            self.log("❌ ARM başarısız!")
                 except Exception as e:
                     self.log(f"❌ ARM/DISARM hatası: {e}")
             else:
@@ -579,7 +585,10 @@ class TerminalROVGUI:
             motor_pwm = 1500 + (self.motor_value * 4)  # -100% = 1100, +100% = 1900
             motor_pwm = max(1100, min(1900, motor_pwm))
             
-            self.mavlink.set_rc_channel_pwm(6, motor_pwm)
+            # MAVLink handler'daki method kullan
+            success = self.mavlink.send_raw_motor_pwm(motor_pwm)
+            if not success:
+                self.log(f"❌ Motor PWM gönderilemedi: {motor_pwm}")
         except Exception as e:
             self.log(f"❌ Motor komut hatası: {e}")
     

@@ -58,13 +58,18 @@ class MAVLinkHandler:
             }
     
     def connect(self):
-        """Pixhawk'a bağlan"""
+        """Pixhawk'a bağlan - telem2_con.py'deki çalışan yöntem"""
         try:
             connection_string = self.config["mavlink"]["connection_string"]
-            print(f"🔌 Pixhawk'a bağlanıyor: {connection_string}")
+            baud_rate = self.config["mavlink"].get("baud_rate", 57600)
+            print(f"🔌 Pixhawk'a bağlanıyor: {connection_string} @ {baud_rate} baud")
             
-            self.master = mavutil.mavlink_connection(connection_string)
-            self.master.wait_heartbeat(timeout=10)
+            # telem2_con.py'deki çalışan method
+            self.master = mavutil.mavlink_connection(connection_string, baud=baud_rate)
+            
+            print("⏳ Heartbeat bekleniyor...")
+            self.master.wait_heartbeat()
+            print(f"✓ Bağlandım: SYS={self.master.target_system} COMP={self.master.target_component}")
             
             self.connected = True
             print("✅ MAVLink bağlantısı başarılı!")
@@ -304,19 +309,20 @@ class MAVLinkHandler:
         return None
     
     def get_depth_data(self):
-        """Depth sensor verilerini al (MAVLink üzerinden)"""
+        """Depth sensor verilerini al (D300 - I2C port 0x76, bus 1)"""
         if not self.connected:
             return None
         
         try:
+            # D300 depth sensor - I2C 0x76 adresinde, bus 1 üzerinden
             # ArduSub'da depth sensor verisi genellikle SCALED_PRESSURE2 mesajında gelir
             msg = self.master.recv_match(type='SCALED_PRESSURE2', blocking=False)
             if msg:
-                # D300 depth sensor data
+                # D300 depth sensor data (I2C 0x76)
                 pressure_mbar = msg.press_abs  # Absolute pressure in millibar
                 temperature_c = msg.temperature / 100.0  # Temperature in celsius (from centidegrees)
                 
-                # Convert pressure to depth (rough approximation)
+                # Convert pressure to depth (optimized for D300)
                 # 1 mbar ≈ 1 cm water depth
                 depth_m = max(0.0, (pressure_mbar - 1013.25) / 100.0)  # Sea level correction
                 
@@ -324,6 +330,7 @@ class MAVLinkHandler:
                     'depth_m': depth_m,
                     'temperature_c': temperature_c,
                     'pressure_mbar': pressure_mbar,
+                    'sensor': 'D300_I2C_0x76',
                     'timestamp': time.time()
                 }
             
@@ -338,13 +345,14 @@ class MAVLinkHandler:
                     'depth_m': depth_m,
                     'temperature_c': temperature_c,
                     'pressure_mbar': pressure_mbar,
+                    'sensor': 'D300_I2C_0x76_ALT',
                     'timestamp': time.time()
                 }
             
             return None
             
         except Exception as e:
-            print(f"❌ Depth data alma hatası: {e}")
+            print(f"❌ D300 depth sensor (I2C 0x76) veri alma hatası: {e}")
             return None
     
     def get_all_sensor_data(self):

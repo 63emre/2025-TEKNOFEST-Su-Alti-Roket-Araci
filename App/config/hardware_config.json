@@ -32,7 +32,8 @@
     }
   },
   "mavlink": {
-    "connection_string": "tcp:127.0.0.1:5777",
+    "connection_string": "/dev/serial0",
+    "baud_rate": 57600,
     "heartbeat_timeout": 30,
     "command_timeout": 5
   },
