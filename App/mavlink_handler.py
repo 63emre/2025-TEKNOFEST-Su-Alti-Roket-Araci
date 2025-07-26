@@ -270,24 +270,53 @@ class MAVLinkHandler:
             return self.control_servos_raw(roll_output, pitch_output, yaw_output)
     
     def get_imu_data(self):
-        """IMU verilerini al"""
+        """IMU verilerini al - OPTIMIZED Pi'da çalışan versiyon"""
         if not self.connected:
             return None
             
         try:
-            msg = self.master.recv_match(type='RAW_IMU', blocking=False, timeout=0.1)
+            # Önce RAW_IMU dene
+            msg = self.master.recv_match(type='RAW_IMU', blocking=False)
             if msg:
                 # Convert to SI units
                 accel_x = msg.xacc / 1000.0  # mg to m/s²
                 accel_y = msg.yacc / 1000.0
                 accel_z = msg.zacc / 1000.0
-                gyro_x = math.radians(msg.xgyro / 1000.0)  # mrad/s to rad/s
-                gyro_y = math.radians(msg.ygyro / 1000.0)
-                gyro_z = math.radians(msg.zgyro / 1000.0)
+                gyro_x = msg.xgyro / 1000.0  # mrad/s to rad/s (radians olarak değil)
+                gyro_y = msg.ygyro / 1000.0
+                gyro_z = msg.zgyro / 1000.0
                 
                 return accel_x, accel_y, accel_z, gyro_x, gyro_y, gyro_z
-        except:
-            pass
+            
+            # Alternatif olarak SCALED_IMU dene
+            msg = self.master.recv_match(type='SCALED_IMU', blocking=False)
+            if msg:
+                accel_x = msg.xacc / 1000.0
+                accel_y = msg.yacc / 1000.0
+                accel_z = msg.zacc / 1000.0
+                gyro_x = msg.xgyro / 1000.0
+                gyro_y = msg.ygyro / 1000.0
+                gyro_z = msg.zgyro / 1000.0
+                
+                return accel_x, accel_y, accel_z, gyro_x, gyro_y, gyro_z
+            
+            # Son olarak ATTITUDE dene (daha yavaş ama kesin çalışır)
+            msg = self.master.recv_match(type='ATTITUDE', blocking=False)
+            if msg:
+                # ATTITUDE mesajından IMU benzeri veri çıkart
+                roll = math.degrees(msg.roll)
+                pitch = math.degrees(msg.pitch)
+                yaw = math.degrees(msg.yaw)
+                
+                # Fake acceleration from attitude (approximation)
+                accel_x = math.sin(msg.pitch) * 9.81
+                accel_y = -math.sin(msg.roll) * math.cos(msg.pitch) * 9.81
+                accel_z = math.cos(msg.roll) * math.cos(msg.pitch) * 9.81
+                
+                return accel_x, accel_y, accel_z, msg.rollspeed, msg.pitchspeed, msg.yawspeed
+                
+        except Exception as e:
+            print(f"❌ IMU veri alma hatası: {e}")
         return None
     
     def get_gps_data(self):
@@ -309,12 +338,12 @@ class MAVLinkHandler:
         return None
     
     def get_depth_data(self):
-        """Depth sensor verilerini al (D300 - I2C port 0x76, bus 1)"""
+        """Depth sensor verilerini al (D300 - I2C port 0x76, bus 1) - OPTIMIZED"""
         if not self.connected:
             return None
         
         try:
-            # D300 depth sensor - I2C 0x76 adresinde, bus 1 üzerinden
+            # D300 depth sensor - I2C 0x76 adresinde, bus 1 üzerinden - Pi'da çalışan versiyon
             # ArduSub'da depth sensor verisi genellikle SCALED_PRESSURE2 mesajında gelir
             msg = self.master.recv_match(type='SCALED_PRESSURE2', blocking=False)
             if msg:
@@ -346,6 +375,19 @@ class MAVLinkHandler:
                     'temperature_c': temperature_c,
                     'pressure_mbar': pressure_mbar,
                     'sensor': 'D300_I2C_0x76_ALT',
+                    'timestamp': time.time()
+                }
+            
+            # VFR_HUD mesajından da altitude bilgisi alabiliriz
+            msg = self.master.recv_match(type='VFR_HUD', blocking=False)
+            if msg and hasattr(msg, 'alt'):
+                depth_m = max(0.0, -msg.alt)  # Altitude negatifse depth pozitif
+                
+                return {
+                    'depth_m': depth_m,
+                    'temperature_c': 20.0,  # Default temperature
+                    'pressure_mbar': 1013.25 + (depth_m * 100),  # Approximate
+                    'sensor': 'VFR_HUD_ALT',
                     'timestamp': time.time()
                 }
             

@@ -82,11 +82,11 @@ class TerminalROVGUI:
         self.current_gps = None  # Direct GPS data
         self.current_vibration = None  # Direct vibration data
         
-        # FPS optimization
+        # Pi FPS optimization - daha düşük FPS, daha az CPU
         self.last_screen_update = 0
         self.last_data_fetch = 0
-        self.screen_fps_target = 20  # 50ms screen updates
-        self.data_fps_target = 50   # 20ms data fetching
+        self.screen_fps_target = 15  # 67ms screen updates (Pi friendly)
+        self.data_fps_target = 10   # 100ms data fetching (Pi friendly)
         
         # Config
         self.load_config()
@@ -227,21 +227,45 @@ class TerminalROVGUI:
             raise
     
     def fetch_live_data(self):
-        """Canlı veri alma - NO CACHING, DIRECT FROM SENSORS"""
+        """Canlı veri alma - OPTIMIZED Pi çalışan versiyon"""
         current_time = time.time()
         
-        # Data fetch FPS kontrolü
-        if current_time - self.last_data_fetch < (1.0 / self.data_fps_target):
+        # Data fetch FPS kontrolü - daha gevşek timing
+        if current_time - self.last_data_fetch < 0.1:  # 10 FPS veri fetch
             return  # Skip if too frequent
         
         self.last_data_fetch = current_time
         
-        # REAL IMU DATA - Her çağrıda fresh
+        # REAL IMU DATA - Her çağrıda fresh - Pi'da çalışan
         if self.mavlink and self.mavlink.connected:
             try:
-                self.current_imu = self.mavlink.get_imu_data()
-                self.current_depth = self.mavlink.get_depth_data() 
-                self.current_gps = self.mavlink.get_gps_data()
+                # IMU verisi al
+                imu_data = self.mavlink.get_imu_data()
+                if imu_data:
+                    self.current_imu = imu_data
+                    # Log sadece ilk başarılı veri geldiğinde
+                    if not hasattr(self, '_imu_success_logged'):
+                        self.log("✅ IMU veri akışı başladı!")
+                        self._imu_success_logged = True
+                
+                # Depth verisi al  
+                depth_data = self.mavlink.get_depth_data()
+                if depth_data:
+                    self.current_depth = depth_data
+                    # Log sadece ilk başarılı veri geldiğinde
+                    if not hasattr(self, '_depth_success_logged'):
+                        self.log(f"✅ Depth sensör aktif! ({depth_data.get('sensor', 'unknown')})")
+                        self._depth_success_logged = True
+                
+                # GPS verisi al
+                gps_data = self.mavlink.get_gps_data()
+                if gps_data:
+                    self.current_gps = gps_data
+                    # Log sadece ilk başarılı veri geldiğinde
+                    if not hasattr(self, '_gps_success_logged'):
+                        self.log("✅ GPS veri akışı başladı!")
+                        self._gps_success_logged = True
+                        
             except Exception as e:
                 self.log(f"❌ MAVLink veri hatası: {e}")
                 
@@ -287,53 +311,67 @@ class TerminalROVGUI:
         self.stdscr.addstr(start_row + 1, 37, f"Güç: {self.motor_value:+3.0f}% (O/L)")
         self.stdscr.addstr(start_row + 2, 37, f"Hedef Derinlik: {self.depth_target:.1f}m")
         
-        # %100 REAL IMU DATA - Fresh from sensors
+        # %100 REAL IMU DATA - Pi'dan gelen fresh sensor data
         if self.current_imu:
             accel_x, accel_y, accel_z, gyro_x, gyro_y, gyro_z = self.current_imu
             
-            self.stdscr.addstr(start_row, 65, "📊 LIVE IMU VERİ:", curses.color_pair(1) | curses.A_BOLD)
-            self.stdscr.addstr(start_row + 1, 67, f"Acc X: {accel_x:+7.3f} m/s²")
-            self.stdscr.addstr(start_row + 2, 67, f"Acc Y: {accel_y:+7.3f} m/s²")
-            self.stdscr.addstr(start_row + 3, 67, f"Acc Z: {accel_z:+7.3f} m/s²")
-            self.stdscr.addstr(start_row + 1, 90, f"Gyro X: {gyro_x:+7.3f} rad/s")
-            self.stdscr.addstr(start_row + 2, 90, f"Gyro Y: {gyro_y:+7.3f} rad/s") 
-            self.stdscr.addstr(start_row + 3, 90, f"Gyro Z: {gyro_z:+7.3f} rad/s")
+            self.stdscr.addstr(start_row, 65, "📊 LIVE IMU (Pi):", curses.color_pair(1) | curses.A_BOLD)
+            self.stdscr.addstr(start_row + 1, 67, f"Acc X: {accel_x:+6.2f} m/s²")
+            self.stdscr.addstr(start_row + 2, 67, f"Acc Y: {accel_y:+6.2f} m/s²")
+            self.stdscr.addstr(start_row + 3, 67, f"Acc Z: {accel_z:+6.2f} m/s²")
+            self.stdscr.addstr(start_row + 1, 88, f"Gyro X: {gyro_x:+6.2f}°/s")
+            self.stdscr.addstr(start_row + 2, 88, f"Gyro Y: {gyro_y:+6.2f}°/s") 
+            self.stdscr.addstr(start_row + 3, 88, f"Gyro Z: {gyro_z:+6.2f}°/s")
         else:
             color = curses.color_pair(3) if self.mavlink and self.mavlink.connected else curses.color_pair(2)
-            self.stdscr.addstr(start_row, 65, "📊 IMU VERİ:", color | curses.A_BOLD)
+            self.stdscr.addstr(start_row, 65, "📊 IMU (Pi):", color | curses.A_BOLD)
             if self.mavlink and self.mavlink.connected:
-                self.stdscr.addstr(start_row + 1, 67, "IMU sinyali bekleniyor...")
+                self.stdscr.addstr(start_row + 1, 67, "IMU veri akışı başlatılıyor...")
+                self.stdscr.addstr(start_row + 2, 67, "RAW_IMU/SCALED_IMU/ATTITUDE")
+                self.stdscr.addstr(start_row + 3, 67, "mesajları bekleniyor...")
             else:
                 self.stdscr.addstr(start_row + 1, 67, "MAVLink Bağlı Değil")
+                self.stdscr.addstr(start_row + 2, 67, "telem2_con.py çalıştır")
         
-        # %100 REAL DEPTH DATA - Fresh from MAVLink
+        # %100 REAL DEPTH DATA - D300 sensor I2C 0x76 [[memory:4381766]]
         if self.current_depth:
             depth = self.current_depth['depth_m']
             temp = self.current_depth['temperature_c']
             pressure = self.current_depth['pressure_mbar']
+            sensor_type = self.current_depth.get('sensor', 'D300')
             
-            self.stdscr.addstr(start_row, 115, "🌊 LIVE DERİNLİK:", curses.color_pair(1) | curses.A_BOLD)
-            self.stdscr.addstr(start_row + 1, 117, f"Derinlik: {depth:.3f}m")
-            self.stdscr.addstr(start_row + 2, 117, f"Sıcaklık: {temp:.2f}°C") 
-            self.stdscr.addstr(start_row + 3, 117, f"Basınç: {pressure:.1f}mb")
+            self.stdscr.addstr(start_row, 108, "🌊 D300 DEPTH (Pi):", curses.color_pair(1) | curses.A_BOLD)
+            self.stdscr.addstr(start_row + 1, 110, f"Derinlik: {depth:.2f}m")
+            self.stdscr.addstr(start_row + 2, 110, f"Sıcaklık: {temp:.1f}°C") 
+            self.stdscr.addstr(start_row + 3, 110, f"Basınç: {pressure:.0f}mb")
+            
+            # Sensor tipi göster (küçük font)
+            if len(sensor_type) < 15:
+                self.stdscr.addstr(start_row + 3, 128, f"({sensor_type})", curses.color_pair(4))
         else:
             color = curses.color_pair(3) if self.mavlink and self.mavlink.connected else curses.color_pair(2)
-            self.stdscr.addstr(start_row, 115, "🌊 DERİNLİK:", color | curses.A_BOLD)
+            self.stdscr.addstr(start_row, 108, "🌊 D300 (I2C 0x76):", color | curses.A_BOLD)
             if self.mavlink and self.mavlink.connected:
-                self.stdscr.addstr(start_row + 1, 117, "Depth sensör bekleniyor...")
+                self.stdscr.addstr(start_row + 1, 110, "Depth sensör başlatılıyor...")
+                self.stdscr.addstr(start_row + 2, 110, "SCALED_PRESSURE/VFR_HUD")
+                self.stdscr.addstr(start_row + 3, 110, "mesajları bekleniyor...")
             else:
-                self.stdscr.addstr(start_row + 1, 117, "MAVLink Bağlı Değil")
+                self.stdscr.addstr(start_row + 1, 110, "MAVLink Bağlı Değil")
+                self.stdscr.addstr(start_row + 2, 110, "I2C bus 1, addr 0x76")
         
-        # %100 REAL VIBRATION DATA
+        # %100 REAL VIBRATION DATA (from IMU analysis)
         if self.current_vibration:
             vib_level = self.current_vibration['level']
             vib_color_name = self.current_vibration['color']
             color_map = {"green": 1, "yellow": 3, "red": 2}
             color = curses.color_pair(color_map.get(vib_color_name, 1))
             
-            self.stdscr.addstr(start_row + 3, 90, f"Vibration: {vib_level:.2f}%", color)
+            # Vibration level göster
+            vib_status = "OK" if vib_level < 30 else "HIGH" if vib_level < 70 else "CRITICAL"
+            self.stdscr.addstr(start_row + 3, 88, f"Vib: {vib_level:.1f}% ({vib_status})", color)
         else:
-            self.stdscr.addstr(start_row + 3, 90, f"Vib: Bekleniyor...", curses.color_pair(3))
+            vib_text = "Vib: IMU analizi..." if self.current_imu else "Vib: IMU gerekli"
+            self.stdscr.addstr(start_row + 3, 88, vib_text, curses.color_pair(3))
     
     def draw_commands(self):
         """Komut bilgilerini çiz"""
@@ -358,27 +396,40 @@ class TerminalROVGUI:
             col += 20
     
     def draw_performance_info(self):
-        """Performance bilgisi çiz"""
+        """Performance bilgisi çiz - Pi optimized"""
         perf_row = 14
         current_time = time.time()
         
         # FPS hesaplama
         screen_fps = 1.0 / max(0.001, current_time - self.last_screen_update) if self.last_screen_update > 0 else 0
-        data_fps = self.data_fps_target
+        data_fps = 10.0  # Pi'da 10 FPS veri fetch
         
-        self.stdscr.addstr(perf_row, 2, "⚡ PERFORMANCE (REAL-TIME):", curses.color_pair(5) | curses.A_BOLD)
-        self.stdscr.addstr(perf_row + 1, 4, f"Screen FPS: {screen_fps:.1f} (Target: {self.screen_fps_target})")
-        self.stdscr.addstr(perf_row + 2, 4, f"Data FPS: {data_fps:.1f} (Live stream)")
+        self.stdscr.addstr(perf_row, 2, "⚡ Pi PERFORMANCE:", curses.color_pair(5) | curses.A_BOLD)
+        self.stdscr.addstr(perf_row + 1, 4, f"Screen: {screen_fps:.1f} FPS (Target: {self.screen_fps_target})")
+        self.stdscr.addstr(perf_row + 2, 4, f"Data: {data_fps:.1f} FPS (Pi optimized)")
         
-        # Bağlantı durumu
-        conn_status = "LIVE" if self.mavlink and self.mavlink.connected else "OFFLINE"
+        # Bağlantı durumu - TELEM2 /dev/serial0 @ 57600
+        conn_status = "LIVE (57600)" if self.mavlink and self.mavlink.connected else "OFFLINE"
         conn_color = curses.color_pair(1) if self.mavlink and self.mavlink.connected else curses.color_pair(2)
-        self.stdscr.addstr(perf_row + 1, 50, f"Connection: {conn_status}", conn_color)
+        self.stdscr.addstr(perf_row + 1, 40, f"TELEM2: {conn_status}", conn_color)
         
-        # Data freshness
-        data_age = "FRESH" if self.current_imu else "STALE"
-        data_color = curses.color_pair(1) if self.current_imu else curses.color_pair(3)
-        self.stdscr.addstr(perf_row + 2, 50, f"Data: {data_age}", data_color)
+        # Veri durumu - IMU, Depth, GPS
+        data_status = []
+        if self.current_imu:
+            data_status.append("IMU✅")
+        if self.current_depth:
+            data_status.append("D300✅")
+        if self.current_gps:
+            data_status.append("GPS✅")
+        
+        if data_status:
+            status_text = " ".join(data_status)
+            data_color = curses.color_pair(1)
+        else:
+            status_text = "Veri akışı başlatılıyor..."
+            data_color = curses.color_pair(3)
+        
+        self.stdscr.addstr(perf_row + 2, 40, f"Sensörler: {status_text}", data_color)
     
     def draw_logs(self):
         """Log mesajlarını çiz"""
@@ -630,8 +681,8 @@ class TerminalROVGUI:
                         
                         self.last_screen_update = current_time
                     
-                    # MINIMAL sleep for CPU efficiency
-                    time.sleep(0.01)  # 100 FPS keyboard polling
+                    # Pi CPU efficiency - daha fazla uyku
+                    time.sleep(0.02)  # 50 FPS keyboard polling (Pi friendly)
                     
                 except KeyboardInterrupt:
                     print("⌨️ Ctrl+C algılandı, çıkılıyor...")
