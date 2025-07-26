@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """
 TEKNOFEST Su Altı ROV - Terminal GUI
-Real-time Terminal Kontrol Uygulaması
+Real-time Terminal Kontrol Uygulaması - Optimized Version
 """
 
 import sys
@@ -32,7 +32,9 @@ import threading
 import time
 import subprocess
 import json
+import math
 from datetime import datetime
+from collections import deque
 
 # Local imports
 try:
@@ -67,37 +69,73 @@ class TerminalROVGUI:
         self.motor_value = 0
         self.depth_target = 0
         
+        # Movement targets
+        self.movement_active = False
+        self.movement_target = {'x': 0, 'y': 0, 'z': 0}
+        self.current_position = {'x': 0, 'y': 0, 'z': 0}
+        
         # Terminal UI
         self.stdscr = None
         self.height = 0
         self.width = 0
         
         # Logs
-        self.log_messages = []
-        self.max_logs = 50
+        self.log_messages = deque(maxlen=100)
         
-        # IMU data buffers for graphs
-        self.imu_history = {
-            'roll': [0] * 100,
-            'pitch': [0] * 100, 
-            'yaw': [0] * 100,
-            'accel_x': [0] * 50,
-            'accel_y': [0] * 50,
-            'accel_z': [0] * 50
+        # Real IMU data - optimized buffers
+        self.imu_data = {
+            'accel_x': 0, 'accel_y': 0, 'accel_z': 0,
+            'gyro_x': 0, 'gyro_y': 0, 'gyro_z': 0,
+            'roll': 0, 'pitch': 0, 'yaw': 0,
+            'timestamp': 0
         }
         
-        # IMU veri durumu için buffer
-        self.last_valid_imu = None
-        self.imu_timeout_counter = 0
+        # IMU history for graphs - smaller buffers for better performance
+        self.imu_history = {
+            'roll': deque([0] * 60, maxlen=60),
+            'pitch': deque([0] * 60, maxlen=60), 
+            'yaw': deque([0] * 60, maxlen=60),
+            'accel_x': deque([0] * 60, maxlen=60),
+            'accel_y': deque([0] * 60, maxlen=60),
+            'accel_z': deque([0] * 60, maxlen=60)
+        }
+        
+        # Real depth data
+        self.depth_data = {
+            'depth_m': 0.0, 
+            'temperature_c': 0.0, 
+            'pressure_mbar': 0.0,
+            'connected': False,
+            'timestamp': 0
+        }
+        
+        # IMU integration for real roll/pitch/yaw
+        self.integrated_angles = {'roll': 0, 'pitch': 0, 'yaw': 0}
+        self.last_imu_time = 0
         
         # Config
         self.load_config()
+        
+        # Data update thread control
+        self.data_lock = threading.Lock()
+        self.data_thread = None
+        self.data_thread_running = False
     
     def load_config(self):
         """Konfigürasyon yükle"""
         try:
             with open("config/hardware_config.json", 'r') as f:
                 self.config = json.load(f)
+                
+            # I2C depth sensor adresini 0x76 olarak ayarla
+            if "raspberry_pi" not in self.config:
+                self.config["raspberry_pi"] = {}
+            if "i2c" not in self.config["raspberry_pi"]:
+                self.config["raspberry_pi"]["i2c"] = {}
+            
+            self.config["raspberry_pi"]["i2c"]["depth_sensor_address"] = "0x76"
+            self.config["raspberry_pi"]["i2c"]["bus_number"] = 1
+            
         except Exception as e:
             self.log(f"❌ Config yükleme hatası: {e}")
             # Varsayılan config
@@ -107,18 +145,22 @@ class TerminalROVGUI:
                     "motor": 6,
                     "pwm_limits": {"servo_min": 1100, "servo_max": 1900, "servo_neutral": 1500, "motor_stop": 1500}
                 },
-                "mavlink": {"connection_string": "tcp:127.0.0.1:5777"}
+                "mavlink": {"connection_string": "tcp:127.0.0.1:5777"},
+                "raspberry_pi": {
+                    "i2c": {
+                        "depth_sensor_address": "0x76",
+                        "bus_number": 1
+                    }
+                }
             }
     
     def log(self, message):
-        """Log mesajı ekle"""
-        timestamp = datetime.now().strftime("%H:%M:%S")
+        """Log mesajı ekle - thread-safe"""
+        timestamp = datetime.now().strftime("%H:%M:%S.%f")[:-3]
         log_entry = f"[{timestamp}] {message}"
-        self.log_messages.append(log_entry)
         
-        # Max log sayısını aş
-        if len(self.log_messages) > self.max_logs:
-            self.log_messages.pop(0)
+        with self.data_lock:
+            self.log_messages.append(log_entry)
     
     def init_systems(self):
         """Sistem bileşenlerini başlat"""
@@ -149,11 +191,18 @@ class TerminalROVGUI:
         except Exception as e:
             self.log(f"❌ Vibration monitor hatası: {e}")
         
-        # Depth sensor - MAVLink üzerinden al (Pixhawk'a bağlı)
-        # I2C depth sensor'ü başlatma, MAVLink'den alacağız
-        self.depth_sensor = None  # I2C kullanmıyoruz
-        self.depth_data = {'depth_m': 0.0, 'temperature_c': 0.0, 'connected': False}
-        self.log("💡 Depth sensörü MAVLink üzerinden alınacak")
+        # I2C Depth sensor - 0x76 adresinde aktif et
+        try:
+            self.depth_sensor = D300DepthSensor()
+            if self.depth_sensor.connect():
+                self.log("✅ I2C Depth sensörü (0x76) bağlandı!")
+                self.depth_data['connected'] = True
+            else:
+                self.log("⚠️ I2C Depth sensörü bağlanamadı, MAVLink'den denenecek")
+                self.depth_sensor = None
+        except Exception as e:
+            self.log(f"❌ I2C Depth sensörü hatası: {e}")
+            self.depth_sensor = None
         
         # GPIO controller
         try:
@@ -162,7 +211,146 @@ class TerminalROVGUI:
         except Exception as e:
             self.log(f"❌ GPIO controller hatası: {e}")
         
+        # Start data update thread
+        self.start_data_thread()
+        
         self.log("✅ Sistem bileşenleri başlatıldı!")
+    
+    def start_data_thread(self):
+        """Veri güncelleme thread'ini başlat"""
+        self.data_thread_running = True
+        self.data_thread = threading.Thread(target=self.data_update_loop, daemon=True)
+        self.data_thread.start()
+        self.log("🔄 Veri güncelleme thread'i başlatıldı")
+    
+    def data_update_loop(self):
+        """Arkaplanda veri güncelleme döngüsü - 50Hz"""
+        last_update = time.time()
+        
+        while self.data_thread_running and self.running:
+            try:
+                current_time = time.time()
+                dt = current_time - last_update
+                
+                # 50Hz veri güncelleme
+                if dt >= 0.02:  # 50Hz = 20ms
+                    self.update_sensor_data()
+                    last_update = current_time
+                
+                time.sleep(0.005)  # 5ms sleep for CPU efficiency
+                
+            except Exception as e:
+                self.log(f"❌ Veri güncelleme hatası: {e}")
+                time.sleep(0.1)
+    
+    def update_sensor_data(self):
+        """Tüm sensör verilerini güncelle"""
+        current_time = time.time()
+        
+        # IMU verilerini güncelle
+        if self.mavlink and self.mavlink.connected:
+            try:
+                raw_imu = self.mavlink.get_imu_data()
+                if raw_imu and len(raw_imu) >= 6:
+                    with self.data_lock:
+                        self.imu_data['accel_x'] = raw_imu[0]
+                        self.imu_data['accel_y'] = raw_imu[1]
+                        self.imu_data['accel_z'] = raw_imu[2]
+                        self.imu_data['gyro_x'] = raw_imu[3]
+                        self.imu_data['gyro_y'] = raw_imu[4]
+                        self.imu_data['gyro_z'] = raw_imu[5]
+                        self.imu_data['timestamp'] = current_time
+                        
+                        # Gerçek roll/pitch/yaw hesapla
+                        self.calculate_real_orientation()
+                        
+                        # History güncelle
+                        self.update_imu_history()
+                        
+            except Exception as e:
+                pass
+        
+        # Depth sensor verilerini güncelle
+        if self.depth_sensor:
+            try:
+                depth_reading = self.depth_sensor.read_data()
+                if depth_reading:
+                    with self.data_lock:
+                        self.depth_data.update(depth_reading)
+                        self.depth_data['timestamp'] = current_time
+                        self.depth_data['connected'] = True
+            except Exception as e:
+                with self.data_lock:
+                    self.depth_data['connected'] = False
+        
+        # MAVLink'den depth verisi (backup)
+        elif self.mavlink and self.mavlink.connected:
+            try:
+                mavlink_depth = self.mavlink.get_depth_data()
+                if mavlink_depth:
+                    with self.data_lock:
+                        self.depth_data.update(mavlink_depth)
+                        self.depth_data['timestamp'] = current_time
+                        self.depth_data['connected'] = True
+            except Exception as e:
+                pass
+    
+    def calculate_real_orientation(self):
+        """Gerçek roll/pitch/yaw hesapla - Accelerometer + Gyroscope fusion"""
+        try:
+            dt = time.time() - self.last_imu_time if self.last_imu_time > 0 else 0.02
+            self.last_imu_time = time.time()
+            
+            # Accelerometer'dan roll/pitch hesapla
+            accel_x = self.imu_data['accel_x']
+            accel_y = self.imu_data['accel_y'] 
+            accel_z = self.imu_data['accel_z']
+            
+            # Roll (x-axis rotation)
+            roll_accel = math.atan2(accel_y, math.sqrt(accel_x*accel_x + accel_z*accel_z))
+            roll_accel = math.degrees(roll_accel)
+            
+            # Pitch (y-axis rotation)
+            pitch_accel = math.atan2(-accel_x, math.sqrt(accel_y*accel_y + accel_z*accel_z))
+            pitch_accel = math.degrees(pitch_accel)
+            
+            # Gyroscope integration
+            gyro_x = math.degrees(self.imu_data['gyro_x'])
+            gyro_y = math.degrees(self.imu_data['gyro_y'])
+            gyro_z = math.degrees(self.imu_data['gyro_z'])
+            
+            # Complementary filter (0.98 gyro, 0.02 accel)
+            alpha = 0.98
+            
+            self.integrated_angles['roll'] = alpha * (self.integrated_angles['roll'] + gyro_x * dt) + (1 - alpha) * roll_accel
+            self.integrated_angles['pitch'] = alpha * (self.integrated_angles['pitch'] + gyro_y * dt) + (1 - alpha) * pitch_accel
+            self.integrated_angles['yaw'] += gyro_z * dt  # Yaw sadece gyro'dan
+            
+            # Yaw wrap-around
+            if self.integrated_angles['yaw'] > 180:
+                self.integrated_angles['yaw'] -= 360
+            elif self.integrated_angles['yaw'] < -180:
+                self.integrated_angles['yaw'] += 360
+            
+            # IMU data'ya kaydet
+            self.imu_data['roll'] = self.integrated_angles['roll']
+            self.imu_data['pitch'] = self.integrated_angles['pitch']
+            self.imu_data['yaw'] = self.integrated_angles['yaw']
+            
+        except Exception as e:
+            pass
+    
+    def update_imu_history(self):
+        """IMU history'yi güncelle"""
+        try:
+            self.imu_history['roll'].append(self.imu_data['roll'])
+            self.imu_history['pitch'].append(self.imu_data['pitch'])
+            self.imu_history['yaw'].append(self.imu_data['yaw'])
+            self.imu_history['accel_x'].append(self.imu_data['accel_x'])
+            self.imu_history['accel_y'].append(self.imu_data['accel_y'])
+            self.imu_history['accel_z'].append(self.imu_data['accel_z'])
+        except Exception as e:
+            pass
     
     def init_curses(self, stdscr):
         """Curses arayüzünü başlat"""
@@ -173,9 +361,8 @@ class TerminalROVGUI:
         stdscr.keypad(True) # Özel tuşları etkinleştir
         stdscr.nodelay(True) # Non-blocking input
         
-        # ESC tuşu için timeout ayarla (Windows uyumluluğu)
-        curses.halfdelay(1)  # 100ms timeout
-        stdscr.timeout(100)   # Input timeout
+        # Timeout optimize - 30Hz UI update
+        stdscr.timeout(33)   # 33ms = ~30Hz
         
         # Renkler
         curses.start_color()
@@ -184,6 +371,7 @@ class TerminalROVGUI:
         curses.init_pair(3, curses.COLOR_YELLOW, curses.COLOR_BLACK) # Uyarı
         curses.init_pair(4, curses.COLOR_CYAN, curses.COLOR_BLACK)   # Info
         curses.init_pair(5, curses.COLOR_MAGENTA, curses.COLOR_BLACK) # Özel
+        curses.init_pair(6, curses.COLOR_WHITE, curses.COLOR_BLACK)   # Normal
         
         # Ekran boyutu
         self.height, self.width = stdscr.getmaxyx()
@@ -192,139 +380,97 @@ class TerminalROVGUI:
     
     def draw_header(self):
         """Başlık çiz"""
-        title = "🚀 TEKNOFEST Su Altı ROV - Terminal Kontrol 🚀"
+        title = "🚀 TEKNOFEST Su Altı ROV - Real-Time Terminal 🚀"
         self.stdscr.addstr(0, (self.width - len(title)) // 2, title, curses.color_pair(4) | curses.A_BOLD)
         
         # Durum bilgisi
         status_line = 1
         mavlink_status = "✅ Bağlı" if self.mavlink and self.mavlink.connected else "❌ Bağlı Değil"
         arm_status = "🔴 ARMED" if self.armed else "🟢 DISARMED"
+        depth_status = "✅ I2C" if self.depth_data['connected'] else "❌ Bağlı Değil"
         
         self.stdscr.addstr(status_line, 2, f"MAVLink: {mavlink_status}", curses.color_pair(1 if self.mavlink and self.mavlink.connected else 2))
         self.stdscr.addstr(status_line, 25, f"Durum: {arm_status}", curses.color_pair(2 if self.armed else 1))
         self.stdscr.addstr(status_line, 45, f"Kontrol: {self.control_mode}", curses.color_pair(5))
         self.stdscr.addstr(status_line, 60, f"Navigation: {self.navigation_mode}", curses.color_pair(5))
+        self.stdscr.addstr(status_line, 80, f"Depth: {depth_status}", curses.color_pair(1 if self.depth_data['connected'] else 2))
         
         # Çizgi
         self.stdscr.addstr(2, 0, "─" * self.width, curses.color_pair(4))
     
-    def draw_controls(self):
-        """Kontrol bilgilerini çiz"""
+    def draw_real_sensor_data(self):
+        """Gerçek sensör verilerini çiz"""
         start_row = 4
         
-        # Servo kontrol bilgisi
-        self.stdscr.addstr(start_row, 2, "🎮 SERVO KONTROL:", curses.color_pair(4) | curses.A_BOLD)
-        self.stdscr.addstr(start_row + 1, 4, f"Roll:  {self.servo_values['roll']:+3.0f}° (A/D)")
-        self.stdscr.addstr(start_row + 2, 4, f"Pitch: {self.servo_values['pitch']:+3.0f}° (W/S)")
-        self.stdscr.addstr(start_row + 3, 4, f"Yaw:   {self.servo_values['yaw']:+3.0f}° (Q/E)")
+        with self.data_lock:
+            # Gerçek IMU verileri - sütun 1
+            self.stdscr.addstr(start_row, 2, "📊 GERÇEK IMU VERİLERİ:", curses.color_pair(4) | curses.A_BOLD)
+            self.stdscr.addstr(start_row + 1, 4, f"Roll:  {self.imu_data['roll']:+7.2f}°", curses.color_pair(1))
+            self.stdscr.addstr(start_row + 2, 4, f"Pitch: {self.imu_data['pitch']:+7.2f}°", curses.color_pair(1))
+            self.stdscr.addstr(start_row + 3, 4, f"Yaw:   {self.imu_data['yaw']:+7.2f}°", curses.color_pair(1))
+            self.stdscr.addstr(start_row + 4, 4, f"AccX:  {self.imu_data['accel_x']:+7.3f}", curses.color_pair(6))
+            self.stdscr.addstr(start_row + 5, 4, f"AccY:  {self.imu_data['accel_y']:+7.3f}", curses.color_pair(6))
+            self.stdscr.addstr(start_row + 6, 4, f"AccZ:  {self.imu_data['accel_z']:+7.3f}", curses.color_pair(6))
+            
+            # Gerçek Depth verileri - sütun 2
+            self.stdscr.addstr(start_row, 35, "🌊 GERÇEK DERİNLİK VERİSİ:", curses.color_pair(4) | curses.A_BOLD)
+            if self.depth_data['connected']:
+                self.stdscr.addstr(start_row + 1, 37, f"Derinlik:  {self.depth_data['depth_m']:6.2f}m", curses.color_pair(1))
+                self.stdscr.addstr(start_row + 2, 37, f"Sıcaklık:  {self.depth_data['temperature_c']:6.1f}°C", curses.color_pair(1))
+                self.stdscr.addstr(start_row + 3, 37, f"Basınç:    {self.depth_data['pressure_mbar']:6.1f}mb", curses.color_pair(1))
+                data_age = time.time() - self.depth_data.get('timestamp', 0)
+                self.stdscr.addstr(start_row + 4, 37, f"Veri yaşı: {data_age:.1f}s", curses.color_pair(1 if data_age < 1 else 3))
+            else:
+                self.stdscr.addstr(start_row + 1, 37, "❌ Bağlantı yok", curses.color_pair(2))
+                self.stdscr.addstr(start_row + 2, 37, "💡 I2C kontrol et", curses.color_pair(3))
         
-        # Motor kontrol
-        self.stdscr.addstr(start_row, 35, "⚙️ MOTOR KONTROL:", curses.color_pair(4) | curses.A_BOLD)
-        self.stdscr.addstr(start_row + 1, 37, f"Güç: {self.motor_value:+3.0f}% (Page Up/Down)")
+        # Servo kontrol durumu - sütun 3
+        self.stdscr.addstr(start_row, 70, "🎮 SERVO KONTROL:", curses.color_pair(4) | curses.A_BOLD)
+        self.stdscr.addstr(start_row + 1, 72, f"Roll:  {self.servo_values['roll']:+4.0f}°", curses.color_pair(5))
+        self.stdscr.addstr(start_row + 2, 72, f"Pitch: {self.servo_values['pitch']:+4.0f}°", curses.color_pair(5))
+        self.stdscr.addstr(start_row + 3, 72, f"Yaw:   {self.servo_values['yaw']:+4.0f}°", curses.color_pair(5))
+        self.stdscr.addstr(start_row + 4, 72, f"Motor: {self.motor_value:+4.0f}%", curses.color_pair(5))
         
-        # Derinlik
-        self.stdscr.addstr(start_row + 2, 37, f"Hedef Derinlik: {self.depth_target:.1f}m")
-        
-        # Gerçek zamanlı veriler
-        if self.mavlink and self.mavlink.connected:
-            try:
-                imu_data = self.mavlink.get_imu_data()
-                if imu_data and len(imu_data) >= 6:
-                    # IMU history'yi güncelle
-                    self.update_imu_history(imu_data)
-                    
-                    # Son geçerli veriyi kaydet
-                    self.last_valid_imu = imu_data
-                    self.imu_timeout_counter = 0
-                    
-                    accel_x, accel_y, accel_z, gyro_x, gyro_y, gyro_z = imu_data
-                    self.stdscr.addstr(start_row, 65, "📊 SENSÖR VERİ:", curses.color_pair(4) | curses.A_BOLD)
-                    self.stdscr.addstr(start_row + 1, 67, f"Acc X: {accel_x:+6.2f}")
-                    self.stdscr.addstr(start_row + 2, 67, f"Acc Y: {accel_y:+6.2f}")
-                    self.stdscr.addstr(start_row + 3, 67, f"Acc Z: {accel_z:+6.2f}")
-                    # Gyro verileri de ekleyelim
-                    self.stdscr.addstr(start_row + 1, 85, f"Gyro X: {gyro_x:+6.2f}")
-                    self.stdscr.addstr(start_row + 2, 85, f"Gyro Y: {gyro_y:+6.2f}")
-                    self.stdscr.addstr(start_row + 3, 85, f"Gyro Z: {gyro_z:+6.2f}")
-                else:
-                    # Veri yoksa ama bağlantı varsa - timeout sayacı
-                    self.imu_timeout_counter += 1
-                    
-                    if self.last_valid_imu and self.imu_timeout_counter < 100:  # 5 saniye timeout
-                        # Son geçerli veriyi göster (stale data)
-                        accel_x, accel_y, accel_z, gyro_x, gyro_y, gyro_z = self.last_valid_imu
-                        self.stdscr.addstr(start_row, 65, "📊 SENSÖR VERİ:", curses.color_pair(3) | curses.A_BOLD)
-                        self.stdscr.addstr(start_row + 1, 67, f"Acc X: {accel_x:+6.2f} [STALE]")
-                        self.stdscr.addstr(start_row + 2, 67, f"Acc Y: {accel_y:+6.2f} [STALE]")
-                        self.stdscr.addstr(start_row + 3, 67, f"Acc Z: {accel_z:+6.2f} [STALE]")
-                        self.stdscr.addstr(start_row + 1, 85, f"Gyro X: {gyro_x:+6.2f}")
-                        self.stdscr.addstr(start_row + 2, 85, f"Gyro Y: {gyro_y:+6.2f}")
-                        self.stdscr.addstr(start_row + 3, 85, f"Gyro Z: {gyro_z:+6.2f}")
-                    else:
-                        # Gerçekten veri yok
-                        self.stdscr.addstr(start_row, 65, "📊 SENSÖR VERİ:", curses.color_pair(3) | curses.A_BOLD)
-                        self.stdscr.addstr(start_row + 1, 67, f"IMU sinyali bekleniyor... ({self.imu_timeout_counter//20}s)")
-                        
-            except Exception as e:
-                self.stdscr.addstr(start_row, 65, "📊 SENSÖR VERİ:", curses.color_pair(2) | curses.A_BOLD)
-                self.stdscr.addstr(start_row + 1, 67, f"IMU Hatası: {str(e)[:20]}...")
-                self.log(f"❌ IMU veri hatası: {e}")
-        else:
-            self.stdscr.addstr(start_row, 65, "📊 SENSÖR VERİ:", curses.color_pair(2) | curses.A_BOLD)
-            self.stdscr.addstr(start_row + 1, 67, "MAVLink Bağlı Değil")
-        
-        # Depth sensor verileri - MAVLink üzerinden
-        if self.mavlink and self.mavlink.connected:
-            try:
-                # MAVLink'den depth verisi al
-                depth_data = self.mavlink.get_depth_data()
-                if depth_data:
-                    depth = depth_data['depth_m']
-                    temp = depth_data['temperature_c']
-                    self.depth_data = depth_data
-                    self.depth_data['connected'] = True
-                    
-                    self.stdscr.addstr(start_row, 110, "🌊 DERİNLİK:", curses.color_pair(4) | curses.A_BOLD)
-                    self.stdscr.addstr(start_row + 1, 112, f"Derinlik: {depth:.2f}m")
-                    self.stdscr.addstr(start_row + 2, 112, f"Sıcaklık: {temp:.1f}°C")
-                    self.stdscr.addstr(start_row + 3, 112, f"Basınç: {depth_data.get('pressure_mbar', 0):.1f}mb")
-                else:
-                    self.stdscr.addstr(start_row, 110, "🌊 DERİNLİK:", curses.color_pair(3) | curses.A_BOLD)
-                    self.stdscr.addstr(start_row + 1, 112, "MAVLink'den bekleniyor...")
-                    self.depth_data['connected'] = False
-            except Exception as e:
-                self.stdscr.addstr(start_row, 110, "🌊 DERİNLİK:", curses.color_pair(2) | curses.A_BOLD)
-                self.stdscr.addstr(start_row + 1, 112, f"MAVLink Hatası: {str(e)[:15]}")
-                self.depth_data['connected'] = False
-        else:
-            self.stdscr.addstr(start_row, 110, "🌊 DERİNLİK:", curses.color_pair(2) | curses.A_BOLD)
-            self.stdscr.addstr(start_row + 1, 112, "MAVLink Bağlı Değil")
-            self.depth_data['connected'] = False
-        
-        # Vibration durumu
-        if self.vibration_monitor:
-            try:
-                vib_level = self.vibration_monitor.get_vibration_level()
-                vib_color = self.vibration_monitor.get_vibration_color()
-                color_map = {"green": 1, "yellow": 3, "red": 2}
-                color = curses.color_pair(color_map.get(vib_color, 1))
-                
-                self.stdscr.addstr(start_row + 3, 67, f"Vibration: {vib_level:.1f}%", color)
-            except Exception as e:
-                self.stdscr.addstr(start_row + 3, 67, f"Vib: Hata", curses.color_pair(2))
+        # Movement status
+        if self.movement_active:
+            self.stdscr.addstr(start_row + 5, 72, "🎯 HAREKET AKTİF", curses.color_pair(3) | curses.A_BOLD)
+            self.stdscr.addstr(start_row + 6, 72, f"Hedef: {self.movement_target['x']:.1f}m", curses.color_pair(3))
     
-    def draw_commands(self):
-        """Komut bilgilerini çiz"""
-        cmd_row = 9
+    def draw_movement_menu(self):
+        """Hareket menüsünü çiz"""
+        menu_row = 12
         
-        self.stdscr.addstr(cmd_row, 2, "⌨️  KOMUTLAR:", curses.color_pair(4) | curses.A_BOLD)
+        self.stdscr.addstr(menu_row, 2, "🎯 HAREKET KOMUTLARI:", curses.color_pair(4) | curses.A_BOLD)
+        
+        menu_items = [
+            "1: Sağa Git (metre gir)",    "2: Sola Git (metre gir)",    "3: Yukarı Git (metre gir)",
+            "4: Aşağı Git (metre gir)",   "5: İleri Git (metre gir)",   "6: Geri Git (metre gir)",
+            "7: Saat Yönü Dön (derece)", "8: Ters Saat Dön (derece)", "9: Pozisyon Sıfırla",
+            "0: Hareketi Durdur",         "",                           ""
+        ]
+        
+        row = menu_row + 1
+        col = 4
+        for i, item in enumerate(menu_items):
+            if i % 3 == 0 and i > 0:
+                row += 1
+                col = 4
+            if item:  # Boş string değilse
+                self.stdscr.addstr(row, col, item[:25], curses.color_pair(3))
+            col += 30
+    
+    def draw_controls(self):
+        """Kontrol bilgilerini çiz"""
+        cmd_row = 17
+        
+        self.stdscr.addstr(cmd_row, 2, "⌨️  MANUEL KONTROL:", curses.color_pair(4) | curses.A_BOLD)
         
         commands = [
-            "W/S: Pitch",     "A/D: Roll",        "Q/E: Yaw",
-            "O/L: Motor",     "PgUp/PgDn: Motor Alt", "Space: ARM/DISARM",
-            "R/F: RAW/PID",   "1/2/3: GPS/IMU/HYB", "T: Test Scripts",
-            "C: Pin Config",  "V: Vibration",     "G: GPS Data",
-            "ESC/P: Çıkış",   "",                 ""
+            "W/S: Pitch ±",       "A/D: Roll ±",        "Q/E: Yaw ±",
+            "O/L: Motor ±",       "PgUp/PgDn: Güçlü Motor", "Space: ARM/DISARM",
+            "R/F: RAW/PID",       "M: Hareket Menü",    "T: Test Scripts",
+            "C: Pin Config",      "V: Vibration",       "G: GPS Data",
+            "ESC/P: Çıkış",       "",                   ""
         ]
         
         row = cmd_row + 1
@@ -333,51 +479,107 @@ class TerminalROVGUI:
             if i % 3 == 0 and i > 0:
                 row += 1
                 col = 4
-            self.stdscr.addstr(row, col, cmd, curses.color_pair(3))
-            col += 20
+            if cmd:
+                self.stdscr.addstr(row, col, cmd[:18], curses.color_pair(6))
+            col += 22
     
     def draw_logs(self):
-        """Log mesajlarını çiz"""
-        # Grafik alanını hesaba katarak log alanını ayarla
-        if self.height >= 30:
-            log_start = max(35, self.height - 15)  # Grafik varsa alt tarafa
-        else:
-            log_start = 15  # Grafik yoksa eski pozisyon
-            
-        max_log_display = self.height - log_start - 2
-        
-        if max_log_display <= 0:
+        """Log mesajlarını çiz - optimize edilmiş"""
+        if self.height < 25:
             return
+            
+        log_start = self.height - 8
+        max_log_display = 6
         
-        self.stdscr.addstr(log_start - 1, 2, "📝 LOG MESAJLARI:", curses.color_pair(4) | curses.A_BOLD)
+        self.stdscr.addstr(log_start - 1, 2, "📝 SON LOG MESAJLARI:", curses.color_pair(4) | curses.A_BOLD)
         
-        # Son mesajları göster
-        start_idx = max(0, len(self.log_messages) - max_log_display)
-        for i, message in enumerate(self.log_messages[start_idx:]):
+        with self.data_lock:
+            # Son mesajları göster
+            recent_logs = list(self.log_messages)[-max_log_display:]
+        
+        for i, message in enumerate(recent_logs):
             if log_start + i < self.height - 1:
                 # Renk seçimi
-                color = curses.color_pair(1)  # Varsayılan yeşil
+                color = curses.color_pair(6)  # Varsayılan beyaz
                 if "❌" in message:
                     color = curses.color_pair(2)  # Kırmızı
                 elif "⚠️" in message:
                     color = curses.color_pair(3)  # Sarı
-                elif "🔧" in message or "🎮" in message:
+                elif "✅" in message:
+                    color = curses.color_pair(1)  # Yeşil
+                elif "🎮" in message or "🎯" in message:
                     color = curses.color_pair(5)  # Magenta
                 
-                # Mesajı kısalt
+                # Mesajı kısalt ve göster
                 display_message = message[:self.width - 4]
-                self.stdscr.addstr(log_start + i, 4, display_message, color)
+                try:
+                    self.stdscr.addstr(log_start + i, 4, display_message, color)
+                except:
+                    pass
+    
+    def draw_performance_graphs(self):
+        """Performans grafikleri - kompakt"""
+        if self.height < 25 or self.width < 100:
+            return
+            
+        graph_row = 22
+        
+        try:
+            with self.data_lock:
+                # Mini grafikler çiz
+                self.draw_mini_graph(2, graph_row, 25, 3, list(self.imu_history['roll']), "ROLL", 4)
+                self.draw_mini_graph(30, graph_row, 25, 3, list(self.imu_history['pitch']), "PITCH", 4)
+                self.draw_mini_graph(58, graph_row, 25, 3, list(self.imu_history['yaw']), "YAW", 4)
+                
+        except Exception as e:
+            pass
+    
+    def draw_mini_graph(self, x, y, width, height, data, title, color_pair=1):
+        """Mini ASCII grafik çiz - optimize edilmiş"""
+        try:
+            if not data or len(data) == 0:
+                return
+            
+            # Başlık
+            self.stdscr.addstr(y, x, f"{title}:", curses.color_pair(color_pair) | curses.A_BOLD)
+            
+            # Son değer
+            last_value = data[-1] if data else 0
+            self.stdscr.addstr(y, x + len(title) + 2, f"{last_value:+6.1f}°", curses.color_pair(color_pair))
+            
+            # Mini trend göstergesi
+            if len(data) >= 2:
+                trend = "↗" if data[-1] > data[-2] else "↘" if data[-1] < data[-2] else "→"
+                trend_color = curses.color_pair(1) if trend == "→" else curses.color_pair(3)
+                self.stdscr.addstr(y, x + len(title) + 12, trend, trend_color)
+            
+            # Basit çubuk grafik
+            recent_data = data[-width+2:] if len(data) >= width-2 else data
+            if len(recent_data) > 0:
+                max_val = max(abs(v) for v in recent_data)
+                if max_val > 0:
+                    for i, value in enumerate(recent_data[-15:]):  # Son 15 değer
+                        if i >= width - 2:
+                            break
+                        bar_height = int(abs(value) / max_val * 2)  # 0-2 yükseklik
+                        char = "█" if bar_height >= 2 else "▓" if bar_height >= 1 else "░"
+                        try:
+                            self.stdscr.addstr(y + 1, x + i, char, curses.color_pair(color_pair))
+                        except:
+                            pass
+        except Exception as e:
+            pass
     
     def handle_keyboard(self):
-        """Klavye girişini işle"""
+        """Klavye girişini işle - optimize edilmiş"""
         key = self.stdscr.getch()
         
-        # Tuş basılmadıysa (timeout)
+        # Tuş basılmadıysa
         if key == -1 or key == curses.ERR:
             return
         
-        # Çıkış tuşları - ESC, Ctrl+C, P tuşu (çoklu seçenek)
-        if key in [27, 3, ord('P'), ord('p'), curses.KEY_EXIT, curses.KEY_BREAK]:  # ESC, Ctrl+C, P/p tuşları
+        # Çıkış tuşları
+        if key in [27, 3, ord('P'), ord('p')]:  # ESC, Ctrl+C, P/p
             self.running = False
             self.log("🔄 Çıkış komutu alındı...")
             return
@@ -396,43 +598,33 @@ class TerminalROVGUI:
         elif key == ord('e'):
             self.active_keys.add('e')
         
-        # Motor kontrol
+        # Motor kontrol - optimize edilmiş
         elif key == curses.KEY_PPAGE:  # Page Up
             self.motor_value = min(100, self.motor_value + 10)
             self.send_motor_command()
-            self.log(f"🎮 Motor artırıldı: {self.motor_value}% (Page Up)")
         elif key == curses.KEY_NPAGE:  # Page Down
             self.motor_value = max(-100, self.motor_value - 10)
             self.send_motor_command()
-            self.log(f"🎮 Motor azaltıldı: {self.motor_value}% (Page Down)")
-        # Motor kontrol - O/L tuşları (klavyede daha kolay)
         elif key == ord('o') or key == ord('O'):
-            self.motor_value = min(100, self.motor_value + 10)
-            self.send_motor_command()
-            self.log(f"🎮 Motor artırıldı: {self.motor_value}% (O)")
-        elif key == ord('l') or key == ord('L'):
-            self.motor_value = max(-100, self.motor_value - 10)
-            self.send_motor_command()
-            self.log(f"🎮 Motor azaltıldı: {self.motor_value}% (L)")
-        # Alternatif motor kontrol (+ ve - tuşları)
-        elif key == ord('+') or key == ord('='):
             self.motor_value = min(100, self.motor_value + 5)
             self.send_motor_command()
-            self.log(f"🎮 Motor artırıldı: {self.motor_value}% (+)")
-        elif key == ord('-') or key == ord('_'):
+        elif key == ord('l') or key == ord('L'):
             self.motor_value = max(-100, self.motor_value - 5)
             self.send_motor_command()
-            self.log(f"🎮 Motor azaltıldı: {self.motor_value}% (-)")
+        
+        # Movement menu
+        elif key == ord('m') or key == ord('M'):
+            self.show_movement_menu()
         
         # ARM/DISARM
         elif key == ord(' '):  # Space
             self.toggle_arm()
         
-        # Kontrol modu değiştir
+        # Kontrol modu
         elif key == ord('r'):
             self.control_mode = "RAW"
             self.log("🎛️ Kontrol modu: RAW PWM")
-        elif key == ord('f'):  # F tuşu ile PID (Filter) modu
+        elif key == ord('f'):
             self.control_mode = "PID"
             self.log("🎛️ Kontrol modu: PID")
         
@@ -447,66 +639,273 @@ class TerminalROVGUI:
             self.navigation_mode = "HYBRID"
             self.log("🧭 Navigation modu: HYBRID")
         
-        # Test scriptleri
+        # Test ve konfigürasyon
         elif key == ord('t'):
             self.show_test_menu()
-            
-        # Pin konfigürasyonu
         elif key == ord('c'):
             self.show_pin_config()
-            
-        # Vibration monitor
         elif key == ord('v'):
             self.show_vibration_window()
-            
-        # GPS data
         elif key == ord('g'):
             self.show_gps_window()
+    
+    def show_movement_menu(self):
+        """Hareket menüsünü göster ve işle"""
+        menu_window = curses.newwin(20, 80, 5, 10)
+        menu_window.box()
+        menu_window.addstr(1, 2, "🎯 HAREKET KOMUTLARI - METRE/DERECE GİRİN", curses.color_pair(4) | curses.A_BOLD)
+        
+        menu_items = [
+            ("1", "Sağa Git (X+)", "metre"),
+            ("2", "Sola Git (X-)", "metre"), 
+            ("3", "Yukarı Git (Z+)", "metre"),
+            ("4", "Aşağı Git (Z-)", "metre"),
+            ("5", "İleri Git (Y+)", "metre"),
+            ("6", "Geri Git (Y-)", "metre"),
+            ("7", "Saat Yönü Dön", "derece"),
+            ("8", "Ters Saat Dön", "derece"),
+            ("9", "Pozisyon Sıfırla", ""),
+            ("0", "Hareketi Durdur", ""),
+            ("ESC", "Geri", "")
+        ]
+        
+        for i, (key, desc, unit) in enumerate(menu_items):
+            menu_window.addstr(3 + i, 4, f"{key}: {desc} {unit}")
+        
+        menu_window.refresh()
+        
+        while True:
+            key = menu_window.getch()
             
-        # Debug için tuş kodunu göster (sadece bilinmeyen tuşlar için)
-        elif key > 127:  # Özel tuşlar
-            self.log(f"🔤 Bilinmeyen özel tuş: {key}")
+            if key == 27:  # ESC
+                break
+            elif key in [ord('1'), ord('2'), ord('3'), ord('4'), ord('5'), ord('6')]:
+                distance = self.get_distance_input(menu_window, "Metre girin (0.1-10.0): ")
+                if distance is not None:
+                    self.execute_movement(chr(key), distance)
+                break
+            elif key in [ord('7'), ord('8')]:
+                angle = self.get_distance_input(menu_window, "Derece girin (1-360): ")
+                if angle is not None:
+                    self.execute_movement(chr(key), angle)
+                break
+            elif key == ord('9'):
+                self.reset_position()
+                break
+            elif key == ord('0'):
+                self.stop_movement()
+                break
+        
+        menu_window.clear()
+        menu_window.refresh()
+        del menu_window
+    
+    def get_distance_input(self, parent_window, prompt):
+        """Mesafe/açı girişi al"""
+        input_window = curses.newwin(5, 50, 12, 20)
+        input_window.box()
+        input_window.addstr(1, 2, prompt, curses.color_pair(4))
+        input_window.addstr(3, 2, "Enter: Uygula, ESC: İptal")
+        
+        curses.echo()
+        curses.curs_set(1)
+        input_window.refresh()
+        
+        try:
+            user_input = input_window.getstr(1, len(prompt) + 2, 10).decode('utf-8')
+            
+            if user_input:
+                value = float(user_input)
+                if 0 < value <= 100:  # Maksimum limit
+                    return value
+                else:
+                    self.log(f"❌ Geçersiz değer: {value} (0-100 arası olmalı)")
+                    return None
+            return None
+            
+        except ValueError:
+            self.log(f"❌ Geçersiz sayı: {user_input}")
+            return None
+        except Exception as e:
+            self.log(f"❌ Giriş hatası: {e}")
+            return None
+        finally:
+            curses.noecho()
+            curses.curs_set(0)
+            input_window.clear()
+            input_window.refresh()
+            del input_window
+    
+    def execute_movement(self, command, value):
+        """Hareket komutunu çalıştır"""
+        movement_map = {
+            '1': ('x', value, "Sağa"),
+            '2': ('x', -value, "Sola"),
+            '3': ('z', value, "Yukarı"),
+            '4': ('z', -value, "Aşağı"),
+            '5': ('y', value, "İleri"),
+            '6': ('y', -value, "Geri"),
+            '7': ('yaw', value, "Saat Yönü"),
+            '8': ('yaw', -value, "Ters Saat")
+        }
+        
+        if command in movement_map:
+            axis, target_value, direction = movement_map[command]
+            
+            if axis in ['x', 'y', 'z']:
+                self.movement_target[axis] = target_value
+                self.log(f"🎯 {direction} hareket: {abs(target_value):.1f}m")
+            else:  # yaw
+                self.log(f"🎯 {direction} dönüş: {abs(target_value):.0f}°")
+                self.rotate_yaw(target_value)
+            
+            self.movement_active = True
+            
+            # Hareket thread'ini başlat
+            movement_thread = threading.Thread(target=self.movement_control_loop, daemon=True)
+            movement_thread.start()
+    
+    def rotate_yaw(self, angle):
+        """Yaw dönüşü gerçekleştir"""
+        if not self.mavlink or not self.mavlink.connected or not self.armed:
+            self.log("❌ Dönüş için ARM gerekli!")
+            return
+            
+        try:
+            # Basit yaw kontrolü
+            direction = 1 if angle > 0 else -1
+            duration = abs(angle) / 90  # 90°/saniye hızında
+            
+            # Yaw servo kontrolü
+            for i in range(int(duration * 10)):  # 10Hz
+                self.servo_values['yaw'] = direction * 30  # ±30° servo
+                self.send_servo_commands()
+                time.sleep(0.1)
+            
+            # Servo'yu nötr pozisyona getir
+            self.servo_values['yaw'] = 0
+            self.send_servo_commands()
+            
+            self.log(f"✅ Yaw dönüşü tamamlandı: {angle:.0f}°")
+            
+        except Exception as e:
+            self.log(f"❌ Yaw dönüş hatası: {e}")
+    
+    def movement_control_loop(self):
+        """Hareket kontrol döngüsü"""
+        try:
+            while self.movement_active and self.running:
+                # Basit hareket kontrolü - bu kısım navigation engine ile entegre edilmeli
+                # Şimdilik motor ve servo kontrolü ile basit hareket
+                
+                target_reached = True
+                
+                # X ekseni kontrolü (sağa/sola)
+                if abs(self.movement_target['x']) > 0.1:
+                    direction = 1 if self.movement_target['x'] > 0 else -1
+                    self.servo_values['roll'] = direction * 20  # Roll servo
+                    target_reached = False
+                
+                # Y ekseni kontrolü (ileri/geri)
+                if abs(self.movement_target['y']) > 0.1:
+                    direction = 1 if self.movement_target['y'] > 0 else -1
+                    self.motor_value = direction * 30  # Motor kontrolü
+                    target_reached = False
+                
+                # Z ekseni kontrolü (yukarı/aşağı)
+                if abs(self.movement_target['z']) > 0.1:
+                    direction = 1 if self.movement_target['z'] > 0 else -1
+                    self.servo_values['pitch'] = direction * 20  # Pitch servo
+                    target_reached = False
+                
+                # Komutları gönder
+                if self.armed:
+                    self.send_servo_commands()
+                    self.send_motor_command()
+                
+                # Hedef mesafeye ulaştıysa dur
+                if target_reached:
+                    self.stop_movement()
+                    break
+                
+                # Güncelleme döngüsü
+                time.sleep(0.1)  # 10Hz
+                
+                # Hareket süresini sınırla (güvenlik)
+                if hasattr(self, 'movement_start_time'):
+                    if time.time() - self.movement_start_time > 30:  # 30 saniye max
+                        self.log("⏰ Hareket zaman aşımı!")
+                        self.stop_movement()
+                        break
+                else:
+                    self.movement_start_time = time.time()
+                    
+        except Exception as e:
+            self.log(f"❌ Hareket kontrol hatası: {e}")
+            self.stop_movement()
+    
+    def stop_movement(self):
+        """Hareketi durdur"""
+        self.movement_active = False
+        self.movement_target = {'x': 0, 'y': 0, 'z': 0}
+        
+        # Servolar nötr pozisyona
+        self.servo_values = {'roll': 0, 'pitch': 0, 'yaw': 0}
+        self.motor_value = 0
+        
+        if self.armed:
+            self.send_servo_commands()
+            self.send_motor_command()
+        
+        self.log("🛑 Hareket durduruldu!")
+    
+    def reset_position(self):
+        """Pozisyonu sıfırla"""
+        self.current_position = {'x': 0, 'y': 0, 'z': 0}
+        self.movement_target = {'x': 0, 'y': 0, 'z': 0}
+        self.integrated_angles = {'roll': 0, 'pitch': 0, 'yaw': 0}
+        self.log("🔄 Pozisyon sıfırlandı!")
     
     def update_servo_control(self):
-        """Real-time servo kontrolünü güncelle"""
+        """Real-time servo kontrolünü güncelle - optimize edilmiş"""
         # Pitch kontrol
         if 'w' in self.active_keys:
-            self.servo_values['pitch'] = min(45, self.servo_values['pitch'] + 2)
+            self.servo_values['pitch'] = min(45, self.servo_values['pitch'] + 3)
         elif 's' in self.active_keys:
-            self.servo_values['pitch'] = max(-45, self.servo_values['pitch'] - 2)
+            self.servo_values['pitch'] = max(-45, self.servo_values['pitch'] - 3)
         else:
-            # Otomatik sıfırlama
+            # Otomatik sıfırlama - hızlı
             if self.servo_values['pitch'] > 0:
-                self.servo_values['pitch'] = max(0, self.servo_values['pitch'] - 1)
+                self.servo_values['pitch'] = max(0, self.servo_values['pitch'] - 2)
             elif self.servo_values['pitch'] < 0:
-                self.servo_values['pitch'] = min(0, self.servo_values['pitch'] + 1)
+                self.servo_values['pitch'] = min(0, self.servo_values['pitch'] + 2)
         
         # Roll kontrol
         if 'a' in self.active_keys:
-            self.servo_values['roll'] = min(45, self.servo_values['roll'] + 2)
+            self.servo_values['roll'] = min(45, self.servo_values['roll'] + 3)
         elif 'd' in self.active_keys:
-            self.servo_values['roll'] = max(-45, self.servo_values['roll'] - 2)
+            self.servo_values['roll'] = max(-45, self.servo_values['roll'] - 3)
         else:
             if self.servo_values['roll'] > 0:
-                self.servo_values['roll'] = max(0, self.servo_values['roll'] - 1)
+                self.servo_values['roll'] = max(0, self.servo_values['roll'] - 2)
             elif self.servo_values['roll'] < 0:
-                self.servo_values['roll'] = min(0, self.servo_values['roll'] + 1)
+                self.servo_values['roll'] = min(0, self.servo_values['roll'] + 2)
         
         # Yaw kontrol
         if 'q' in self.active_keys:
-            self.servo_values['yaw'] = min(45, self.servo_values['yaw'] + 2)
+            self.servo_values['yaw'] = min(45, self.servo_values['yaw'] + 3)
         elif 'e' in self.active_keys:
-            self.servo_values['yaw'] = max(-45, self.servo_values['yaw'] - 2)
+            self.servo_values['yaw'] = max(-45, self.servo_values['yaw'] - 3)
         else:
             if self.servo_values['yaw'] > 0:
-                self.servo_values['yaw'] = max(0, self.servo_values['yaw'] - 1)
+                self.servo_values['yaw'] = max(0, self.servo_values['yaw'] - 2)
             elif self.servo_values['yaw'] < 0:
-                self.servo_values['yaw'] = min(0, self.servo_values['yaw'] + 1)
+                self.servo_values['yaw'] = min(0, self.servo_values['yaw'] + 2)
         
         # Servo komutlarını gönder
         self.send_servo_commands()
         
-        # Tuş durumunu temizle (bir frame sonra)
+        # Tuş durumunu temizle
         self.active_keys.clear()
     
     def send_servo_commands(self):
@@ -536,10 +935,8 @@ class TerminalROVGUI:
             return
         
         try:
-            # Motor PWM değerini hesapla (1500 ± %motor_value)
-            pwm_value = 1500 + (self.motor_value * 4)  # ±400 PWM range
+            pwm_value = 1500 + (self.motor_value * 4)
             self.mavlink.send_raw_motor_pwm(int(pwm_value))
-            self.log(f"🎮 Motor: {self.motor_value}% (PWM: {pwm_value})")
         except Exception as e:
             self.log(f"❌ Motor komut hatası: {e}")
     
@@ -553,6 +950,7 @@ class TerminalROVGUI:
             if self.armed:
                 if self.mavlink.disarm_system():
                     self.armed = False
+                    self.stop_movement()  # Hareketi durdur
                     self.log("🟢 Sistem DISARM edildi")
                 else:
                     self.log("❌ DISARM başarısız!")
@@ -652,7 +1050,7 @@ class TerminalROVGUI:
         current_address = i2c_config.get("depth_sensor_address", "0x76")
         current_bus = i2c_config.get("bus_number", 1)
         
-        config_window.addstr(3, 4, f"Mevcut I2C Ayarları:")
+        config_window.addstr(3, 4, f"Mevut I2C Ayarları:")
         config_window.addstr(4, 6, f"Bus: {current_bus}")
         config_window.addstr(5, 6, f"D300 Adres: {current_address}")
         
@@ -899,38 +1297,15 @@ class TerminalROVGUI:
         gps_window.refresh()
         del gps_window
     
-    def update_imu_history(self, imu_data):
+    def update_imu_history(self):
         """IMU verilerini history'ye ekle"""
-        if not imu_data or len(imu_data) < 6:
-            return
-        
         try:
-            accel_x, accel_y, accel_z, gyro_x, gyro_y, gyro_z = imu_data
-            
-            # Roll, Pitch, Yaw hesapla (basit yaklaşım)
-            roll = gyro_x * 57.3  # rad to deg approximation
-            pitch = gyro_y * 57.3
-            yaw = gyro_z * 57.3
-            
-            # History'yi güncelle
-            self.imu_history['roll'].pop(0)
-            self.imu_history['roll'].append(roll)
-            
-            self.imu_history['pitch'].pop(0)
-            self.imu_history['pitch'].append(pitch)
-            
-            self.imu_history['yaw'].pop(0)
-            self.imu_history['yaw'].append(yaw)
-            
-            self.imu_history['accel_x'].pop(0)
-            self.imu_history['accel_x'].append(accel_x)
-            
-            self.imu_history['accel_y'].pop(0)
-            self.imu_history['accel_y'].append(accel_y)
-            
-            self.imu_history['accel_z'].pop(0)
-            self.imu_history['accel_z'].append(accel_z)
-            
+            self.imu_history['roll'].append(self.imu_data['roll'])
+            self.imu_history['pitch'].append(self.imu_data['pitch'])
+            self.imu_history['yaw'].append(self.imu_data['yaw'])
+            self.imu_history['accel_x'].append(self.imu_data['accel_x'])
+            self.imu_history['accel_y'].append(self.imu_data['accel_y'])
+            self.imu_history['accel_z'].append(self.imu_data['accel_z'])
         except Exception as e:
             pass
     
@@ -1065,37 +1440,39 @@ class TerminalROVGUI:
                 pass
     
     def main_loop(self):
-        """Ana döngü"""
+        """Ana döngü - optimize edilmiş"""
         last_update = time.time()
         
         while self.running:
             try:
                 current_time = time.time()
                 
-                # Ekranı temizle (60FPS yerine 20FPS)
-                if current_time - last_update > 0.05:
+                # UI güncelleme 30Hz
+                if current_time - last_update > 0.033:  # 30Hz = 33ms
                     self.stdscr.erase()
                     
                     # UI bileşenlerini çiz
                     self.draw_header() 
+                    self.draw_real_sensor_data() # Gerçek sensör verilerini çiz
+                    self.draw_movement_menu() # Hareket menüsünü çiz
                     self.draw_controls()
-                    self.draw_commands()
                     self.draw_logs()
-                    self.draw_graphs() # Yeni eklenen grafik çizimi
+                    self.draw_performance_graphs() # Performans grafikleri
                     
                     # Ekranı yenile
                     self.stdscr.refresh()
+                    last_update = current_time
                 
                 # Klavye girişini kontrol et
                 self.handle_keyboard()
                 
-                # Real-time servo kontrolü (10Hz)
-                if current_time - last_update > 0.1:
+                # Real-time servo kontrolü (20Hz)
+                if current_time - getattr(self, 'last_servo_update', 0) > 0.05:
                     self.update_servo_control()
-                    last_update = current_time
+                    self.last_servo_update = current_time
                 
-                # FPS limiti - 15 FPS optimal
-                time.sleep(0.066)  # ~15 FPS
+                # CPU eficiancy için minimal sleep
+                time.sleep(0.001)  # 1ms - daha responsive
                 
             except KeyboardInterrupt:
                 self.running = False
@@ -1103,8 +1480,13 @@ class TerminalROVGUI:
                 self.log(f"❌ Ana döngü hatası: {e}")
     
     def cleanup(self):
-        """Temizlik işlemleri"""
+        """Temizlik işlemleri - optimize edilmiş"""
         self.log("🔄 Sistem kapatılıyor...")
+        
+        # Data thread'ini durdur
+        self.data_thread_running = False
+        if self.data_thread and self.data_thread.is_alive():
+            self.data_thread.join(timeout=2)
         
         # Servolar neutral pozisyona
         if self.mavlink and self.mavlink.connected:
@@ -1142,7 +1524,7 @@ class TerminalROVGUI:
         self.main_loop()
 
 if __name__ == "__main__":
-    print("🚀 TEKNOFEST Su Altı ROV - Terminal GUI başlatılıyor...")
+    print("🚀 TEKNOFEST Su Altı ROV - Real-Time Terminal GUI başlatılıyor...")
     
     # Çalışma dizinini kontrol et
     if not os.path.exists("config"):
