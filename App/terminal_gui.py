@@ -82,22 +82,27 @@ class TerminalROVGUI:
         # Logs
         self.log_messages = deque(maxlen=100)
         
-        # Real IMU data - optimized buffers
+        # Real IMU data - direct from MAVLink TCP
         self.imu_data = {
             'accel_x': 0, 'accel_y': 0, 'accel_z': 0,
             'gyro_x': 0, 'gyro_y': 0, 'gyro_z': 0,
             'roll': 0, 'pitch': 0, 'yaw': 0,
-            'timestamp': 0
+            'timestamp': 0,
+            'connected': False
         }
         
-        # IMU history for graphs - smaller buffers for better performance
-        self.imu_history = {
-            'roll': deque([0] * 60, maxlen=60),
-            'pitch': deque([0] * 60, maxlen=60), 
-            'yaw': deque([0] * 60, maxlen=60),
-            'accel_x': deque([0] * 60, maxlen=60),
-            'accel_y': deque([0] * 60, maxlen=60),
-            'accel_z': deque([0] * 60, maxlen=60)
+        # Simple data storage - no complex history
+        self.sensor_readings = {
+            'roll_deg': 0.0,
+            'pitch_deg': 0.0, 
+            'yaw_deg': 0.0,
+            'accel_x_mg': 0.0,  # milli-g values (larger numbers)
+            'accel_y_mg': 0.0,
+            'accel_z_mg': 0.0,
+            'gyro_x_dps': 0.0,  # degrees per second (larger numbers)
+            'gyro_y_dps': 0.0,
+            'gyro_z_dps': 0.0,
+            'update_count': 0
         }
         
         # Real depth data
@@ -244,32 +249,44 @@ class TerminalROVGUI:
                 time.sleep(0.1)
     
     def update_sensor_data(self):
-        """Tüm sensör verilerini güncelle"""
+        """Tüm sensör verilerini güncelle - Direkt TCP MAVLink"""
         current_time = time.time()
         
-        # IMU verilerini güncelle
+        # MAVLink TCP'den direkt IMU verilerini al
         if self.mavlink and self.mavlink.connected:
             try:
+                # Raw IMU data from MAVLink TCP
                 raw_imu = self.mavlink.get_imu_data()
                 if raw_imu and len(raw_imu) >= 6:
                     with self.data_lock:
-                        self.imu_data['accel_x'] = raw_imu[0]
-                        self.imu_data['accel_y'] = raw_imu[1]
-                        self.imu_data['accel_z'] = raw_imu[2]
-                        self.imu_data['gyro_x'] = raw_imu[3]
-                        self.imu_data['gyro_y'] = raw_imu[4]
-                        self.imu_data['gyro_z'] = raw_imu[5]
+                        # Convert to meaningful large values
+                        # Acceleration: g to milli-g (1g = 1000mg)
+                        self.imu_data['accel_x'] = raw_imu[0] * 1000  # mg
+                        self.imu_data['accel_y'] = raw_imu[1] * 1000  # mg
+                        self.imu_data['accel_z'] = raw_imu[2] * 1000  # mg
+                        
+                        # Gyroscope: rad/s to degrees/s
+                        self.imu_data['gyro_x'] = math.degrees(raw_imu[3])  # deg/s
+                        self.imu_data['gyro_y'] = math.degrees(raw_imu[4])  # deg/s
+                        self.imu_data['gyro_z'] = math.degrees(raw_imu[5])  # deg/s
+                        
                         self.imu_data['timestamp'] = current_time
+                        self.imu_data['connected'] = True
                         
-                        # Gerçek roll/pitch/yaw hesapla
-                        self.calculate_real_orientation()
+                        # Calculate real orientation from TCP data
+                        self.calculate_real_orientation_tcp()
                         
-                        # History güncelle
-                        self.update_imu_history()
+                        # Update sensor readings with large values
+                        self.update_sensor_readings()
+                        
+                else:
+                    with self.data_lock:
+                        self.imu_data['connected'] = False
                         
             except Exception as e:
-                pass
-        
+                with self.data_lock:
+                    self.imu_data['connected'] = False
+                    
         # Depth sensor verilerini güncelle
         if self.depth_sensor:
             try:
@@ -295,60 +312,83 @@ class TerminalROVGUI:
             except Exception as e:
                 pass
     
-    def calculate_real_orientation(self):
-        """Gerçek roll/pitch/yaw hesapla - Accelerometer + Gyroscope fusion"""
+    def calculate_real_orientation_tcp(self):
+        """TCP MAVLink verilerinden gerçek roll/pitch/yaw hesapla - Büyük değerler"""
         try:
             dt = time.time() - self.last_imu_time if self.last_imu_time > 0 else 0.02
             self.last_imu_time = time.time()
             
-            # Accelerometer'dan roll/pitch hesapla
-            accel_x = self.imu_data['accel_x']
-            accel_y = self.imu_data['accel_y'] 
-            accel_z = self.imu_data['accel_z']
+            # Accelerometer'dan roll/pitch hesapla (milli-g values)
+            accel_x_g = self.imu_data['accel_x'] / 1000.0  # mg to g
+            accel_y_g = self.imu_data['accel_y'] / 1000.0  # mg to g
+            accel_z_g = self.imu_data['accel_z'] / 1000.0  # mg to g
             
-            # Roll (x-axis rotation)
-            roll_accel = math.atan2(accel_y, math.sqrt(accel_x*accel_x + accel_z*accel_z))
-            roll_accel = math.degrees(roll_accel)
+            # Roll ve Pitch hesaplama (degrees)
+            if abs(accel_z_g) > 0.001:  # Prevent division by zero
+                roll_accel = math.atan2(accel_y_g, accel_z_g)
+                pitch_accel = math.atan2(-accel_x_g, math.sqrt(accel_y_g*accel_y_g + accel_z_g*accel_z_g))
+                
+                roll_accel = math.degrees(roll_accel)
+                pitch_accel = math.degrees(pitch_accel)
+            else:
+                roll_accel = 0
+                pitch_accel = 0
             
-            # Pitch (y-axis rotation)
-            pitch_accel = math.atan2(-accel_x, math.sqrt(accel_y*accel_y + accel_z*accel_z))
-            pitch_accel = math.degrees(pitch_accel)
+            # Gyroscope integration (already in deg/s)
+            gyro_x_dps = self.imu_data['gyro_x']  # deg/s
+            gyro_y_dps = self.imu_data['gyro_y']  # deg/s
+            gyro_z_dps = self.imu_data['gyro_z']  # deg/s
             
-            # Gyroscope integration
-            gyro_x = math.degrees(self.imu_data['gyro_x'])
-            gyro_y = math.degrees(self.imu_data['gyro_y'])
-            gyro_z = math.degrees(self.imu_data['gyro_z'])
+            # Simple complementary filter (95% gyro, 5% accel for more stability)
+            alpha = 0.95
             
-            # Complementary filter (0.98 gyro, 0.02 accel)
-            alpha = 0.98
+            self.integrated_angles['roll'] = alpha * (self.integrated_angles['roll'] + gyro_x_dps * dt) + (1 - alpha) * roll_accel
+            self.integrated_angles['pitch'] = alpha * (self.integrated_angles['pitch'] + gyro_y_dps * dt) + (1 - alpha) * pitch_accel
+            self.integrated_angles['yaw'] += gyro_z_dps * dt  # Pure integration for yaw
             
-            self.integrated_angles['roll'] = alpha * (self.integrated_angles['roll'] + gyro_x * dt) + (1 - alpha) * roll_accel
-            self.integrated_angles['pitch'] = alpha * (self.integrated_angles['pitch'] + gyro_y * dt) + (1 - alpha) * pitch_accel
-            self.integrated_angles['yaw'] += gyro_z * dt  # Yaw sadece gyro'dan
-            
-            # Yaw wrap-around
-            if self.integrated_angles['yaw'] > 180:
+            # Yaw normalization (-180 to +180)
+            while self.integrated_angles['yaw'] > 180:
                 self.integrated_angles['yaw'] -= 360
-            elif self.integrated_angles['yaw'] < -180:
+            while self.integrated_angles['yaw'] < -180:
                 self.integrated_angles['yaw'] += 360
             
-            # IMU data'ya kaydet
+            # Update IMU data with calculated values
             self.imu_data['roll'] = self.integrated_angles['roll']
-            self.imu_data['pitch'] = self.integrated_angles['pitch']
+            self.imu_data['pitch'] = self.integrated_angles['pitch'] 
             self.imu_data['yaw'] = self.integrated_angles['yaw']
             
         except Exception as e:
-            pass
+            # Use raw gyro integration if accelerometer fails
+            dt = time.time() - self.last_imu_time if self.last_imu_time > 0 else 0.02
+            self.integrated_angles['roll'] += self.imu_data['gyro_x'] * dt
+            self.integrated_angles['pitch'] += self.imu_data['gyro_y'] * dt
+            self.integrated_angles['yaw'] += self.imu_data['gyro_z'] * dt
+            
+            self.imu_data['roll'] = self.integrated_angles['roll']
+            self.imu_data['pitch'] = self.integrated_angles['pitch']
+            self.imu_data['yaw'] = self.integrated_angles['yaw']
     
-    def update_imu_history(self):
-        """IMU history'yi güncelle"""
+    def update_sensor_readings(self):
+        """Sensor readings'i büyük değerlerle güncelle"""
         try:
-            self.imu_history['roll'].append(self.imu_data['roll'])
-            self.imu_history['pitch'].append(self.imu_data['pitch'])
-            self.imu_history['yaw'].append(self.imu_data['yaw'])
-            self.imu_history['accel_x'].append(self.imu_data['accel_x'])
-            self.imu_history['accel_y'].append(self.imu_data['accel_y'])
-            self.imu_history['accel_z'].append(self.imu_data['accel_z'])
+            # Copy current values (already in large format)
+            self.sensor_readings['roll_deg'] = self.imu_data['roll']
+            self.sensor_readings['pitch_deg'] = self.imu_data['pitch']
+            self.sensor_readings['yaw_deg'] = self.imu_data['yaw']
+            
+            # Acceleration in milli-g (1000mg = 1g)
+            self.sensor_readings['accel_x_mg'] = self.imu_data['accel_x']
+            self.sensor_readings['accel_y_mg'] = self.imu_data['accel_y']
+            self.sensor_readings['accel_z_mg'] = self.imu_data['accel_z']
+            
+            # Gyroscope in degrees per second
+            self.sensor_readings['gyro_x_dps'] = self.imu_data['gyro_x']
+            self.sensor_readings['gyro_y_dps'] = self.imu_data['gyro_y']
+            self.sensor_readings['gyro_z_dps'] = self.imu_data['gyro_z']
+            
+            # Update counter
+            self.sensor_readings['update_count'] += 1
+            
         except Exception as e:
             pass
     
@@ -399,46 +439,82 @@ class TerminalROVGUI:
         self.stdscr.addstr(2, 0, "─" * self.width, curses.color_pair(4))
     
     def draw_real_sensor_data(self):
-        """Gerçek sensör verilerini çiz"""
+        """Gerçek sensör verilerini çiz - TCP MAVLink büyük değerler"""
         start_row = 4
         
         with self.data_lock:
-            # Gerçek IMU verileri - sütun 1
-            self.stdscr.addstr(start_row, 2, "📊 GERÇEK IMU VERİLERİ:", curses.color_pair(4) | curses.A_BOLD)
-            self.stdscr.addstr(start_row + 1, 4, f"Roll:  {self.imu_data['roll']:+7.2f}°", curses.color_pair(1))
-            self.stdscr.addstr(start_row + 2, 4, f"Pitch: {self.imu_data['pitch']:+7.2f}°", curses.color_pair(1))
-            self.stdscr.addstr(start_row + 3, 4, f"Yaw:   {self.imu_data['yaw']:+7.2f}°", curses.color_pair(1))
-            self.stdscr.addstr(start_row + 4, 4, f"AccX:  {self.imu_data['accel_x']:+7.3f}", curses.color_pair(6))
-            self.stdscr.addstr(start_row + 5, 4, f"AccY:  {self.imu_data['accel_y']:+7.3f}", curses.color_pair(6))
-            self.stdscr.addstr(start_row + 6, 4, f"AccZ:  {self.imu_data['accel_z']:+7.3f}", curses.color_pair(6))
+            # TCP MAVLink IMU verileri - Büyük değerler
+            self.stdscr.addstr(start_row, 2, "📊 TCP MAVLINK IMU VERİLERİ:", curses.color_pair(4) | curses.A_BOLD)
             
-            # Gerçek Depth verileri - sütun 2
-            self.stdscr.addstr(start_row, 35, "🌊 GERÇEK DERİNLİK VERİSİ:", curses.color_pair(4) | curses.A_BOLD)
-            if self.depth_data['connected']:
-                self.stdscr.addstr(start_row + 1, 37, f"Derinlik:  {self.depth_data['depth_m']:6.2f}m", curses.color_pair(1))
-                self.stdscr.addstr(start_row + 2, 37, f"Sıcaklık:  {self.depth_data['temperature_c']:6.1f}°C", curses.color_pair(1))
-                self.stdscr.addstr(start_row + 3, 37, f"Basınç:    {self.depth_data['pressure_mbar']:6.1f}mb", curses.color_pair(1))
-                data_age = time.time() - self.depth_data.get('timestamp', 0)
-                self.stdscr.addstr(start_row + 4, 37, f"Veri yaşı: {data_age:.1f}s", curses.color_pair(1 if data_age < 1 else 3))
+            # Connection status
+            if self.imu_data.get('connected', False):
+                conn_status = "✅ TCP BAĞLI"
+                conn_color = curses.color_pair(1)
             else:
-                self.stdscr.addstr(start_row + 1, 37, "❌ Bağlantı yok", curses.color_pair(2))
-                self.stdscr.addstr(start_row + 2, 37, "💡 I2C kontrol et", curses.color_pair(3))
+                conn_status = "❌ TCP BAĞLI DEĞİL"
+                conn_color = curses.color_pair(2)
+            
+            self.stdscr.addstr(start_row, 35, conn_status, conn_color)
+            
+            # Orientation - Large values in degrees
+            self.stdscr.addstr(start_row + 1, 4, f"Roll:  {self.sensor_readings['roll_deg']:+8.1f}°", curses.color_pair(1))
+            self.stdscr.addstr(start_row + 2, 4, f"Pitch: {self.sensor_readings['pitch_deg']:+8.1f}°", curses.color_pair(1))
+            self.stdscr.addstr(start_row + 3, 4, f"Yaw:   {self.sensor_readings['yaw_deg']:+8.1f}°", curses.color_pair(1))
+            
+            # Acceleration - Large values in milli-g (1000mg = 1g)
+            self.stdscr.addstr(start_row + 1, 25, f"AccX: {self.sensor_readings['accel_x_mg']:+7.0f}mg", curses.color_pair(6))
+            self.stdscr.addstr(start_row + 2, 25, f"AccY: {self.sensor_readings['accel_y_mg']:+7.0f}mg", curses.color_pair(6))
+            self.stdscr.addstr(start_row + 3, 25, f"AccZ: {self.sensor_readings['accel_z_mg']:+7.0f}mg", curses.color_pair(6))
+            
+            # Gyroscope - Large values in degrees per second
+            self.stdscr.addstr(start_row + 1, 45, f"GyroX: {self.sensor_readings['gyro_x_dps']:+6.1f}°/s", curses.color_pair(5))
+            self.stdscr.addstr(start_row + 2, 45, f"GyroY: {self.sensor_readings['gyro_y_dps']:+6.1f}°/s", curses.color_pair(5))
+            self.stdscr.addstr(start_row + 3, 45, f"GyroZ: {self.sensor_readings['gyro_z_dps']:+6.1f}°/s", curses.color_pair(5))
+            
+            # Update counter
+            self.stdscr.addstr(start_row + 4, 4, f"Updates: {self.sensor_readings['update_count']:>6}", curses.color_pair(3))
+            
+            # Data freshness
+            if self.imu_data.get('timestamp', 0) > 0:
+                data_age = time.time() - self.imu_data['timestamp']
+                freshness_color = curses.color_pair(1) if data_age < 0.1 else curses.color_pair(3) if data_age < 1 else curses.color_pair(2)
+                self.stdscr.addstr(start_row + 4, 20, f"Age: {data_age:.2f}s", freshness_color)
         
-        # Servo kontrol durumu - sütun 3
-        self.stdscr.addstr(start_row, 70, "🎮 SERVO KONTROL:", curses.color_pair(4) | curses.A_BOLD)
-        self.stdscr.addstr(start_row + 1, 72, f"Roll:  {self.servo_values['roll']:+4.0f}°", curses.color_pair(5))
-        self.stdscr.addstr(start_row + 2, 72, f"Pitch: {self.servo_values['pitch']:+4.0f}°", curses.color_pair(5))
-        self.stdscr.addstr(start_row + 3, 72, f"Yaw:   {self.servo_values['yaw']:+4.0f}°", curses.color_pair(5))
-        self.stdscr.addstr(start_row + 4, 72, f"Motor: {self.motor_value:+4.0f}%", curses.color_pair(5))
+        # I2C Depth verilerini göster
+        self.stdscr.addstr(start_row, 70, "🌊 I2C DERİNLİK (0x76):", curses.color_pair(4) | curses.A_BOLD)
+        if self.depth_data['connected']:
+            self.stdscr.addstr(start_row + 1, 72, f"Derinlik:  {self.depth_data['depth_m']:6.2f}m", curses.color_pair(1))
+            self.stdscr.addstr(start_row + 2, 72, f"Sıcaklık:  {self.depth_data['temperature_c']:6.1f}°C", curses.color_pair(1))
+            self.stdscr.addstr(start_row + 3, 72, f"Basınç:    {self.depth_data['pressure_mbar']:6.1f}mb", curses.color_pair(1))
+            
+            if self.depth_data.get('timestamp', 0) > 0:
+                data_age = time.time() - self.depth_data['timestamp']
+                age_color = curses.color_pair(1) if data_age < 1 else curses.color_pair(3)
+                self.stdscr.addstr(start_row + 4, 72, f"Age: {data_age:.1f}s", age_color)
+        else:
+            self.stdscr.addstr(start_row + 1, 72, "❌ I2C Bağlantı Yok", curses.color_pair(2))
+            self.stdscr.addstr(start_row + 2, 72, "💡 0x76 adres kontrol", curses.color_pair(3))
+        
+        # Servo kontrol durumu - Sağ alt
+        self.stdscr.addstr(start_row + 6, 4, "🎮 SERVO KONTROL DURUMU:", curses.color_pair(4) | curses.A_BOLD)
+        self.stdscr.addstr(start_row + 7, 6, f"Roll:  {self.servo_values['roll']:+4.0f}° [A/D]", curses.color_pair(5))
+        self.stdscr.addstr(start_row + 8, 6, f"Pitch: {self.servo_values['pitch']:+4.0f}° [W/S]", curses.color_pair(5))
+        self.stdscr.addstr(start_row + 9, 6, f"Yaw:   {self.servo_values['yaw']:+4.0f}° [Q/E]", curses.color_pair(5))
+        self.stdscr.addstr(start_row + 10, 6, f"Motor: {self.motor_value:+4.0f}% [O/L]", curses.color_pair(5))
         
         # Movement status
         if self.movement_active:
-            self.stdscr.addstr(start_row + 5, 72, "🎯 HAREKET AKTİF", curses.color_pair(3) | curses.A_BOLD)
-            self.stdscr.addstr(start_row + 6, 72, f"Hedef: {self.movement_target['x']:.1f}m", curses.color_pair(3))
+            self.stdscr.addstr(start_row + 6, 45, "🎯 HAREKET AKTİF", curses.color_pair(3) | curses.A_BOLD)
+            self.stdscr.addstr(start_row + 7, 45, f"Target X: {self.movement_target['x']:+5.1f}m", curses.color_pair(3))
+            self.stdscr.addstr(start_row + 8, 45, f"Target Y: {self.movement_target['y']:+5.1f}m", curses.color_pair(3))
+            self.stdscr.addstr(start_row + 9, 45, f"Target Z: {self.movement_target['z']:+5.1f}m", curses.color_pair(3))
+        else:
+            self.stdscr.addstr(start_row + 6, 45, "⭕ HAREKET BEKLEMİDE", curses.color_pair(6))
+            self.stdscr.addstr(start_row + 7, 45, "M tuşu: Hareket menü", curses.color_pair(6))
     
     def draw_movement_menu(self):
         """Hareket menüsünü çiz"""
-        menu_row = 12
+        menu_row = 17  # Updated position
         
         self.stdscr.addstr(menu_row, 2, "🎯 HAREKET KOMUTLARI:", curses.color_pair(4) | curses.A_BOLD)
         
@@ -461,7 +537,7 @@ class TerminalROVGUI:
     
     def draw_controls(self):
         """Kontrol bilgilerini çiz"""
-        cmd_row = 17
+        cmd_row = 22  # Updated position
         
         self.stdscr.addstr(cmd_row, 2, "⌨️  MANUEL KONTROL:", curses.color_pair(4) | curses.A_BOLD)
         
@@ -517,58 +593,7 @@ class TerminalROVGUI:
                 except:
                     pass
     
-    def draw_performance_graphs(self):
-        """Performans grafikleri - kompakt"""
-        if self.height < 25 or self.width < 100:
-            return
-            
-        graph_row = 22
-        
-        try:
-            with self.data_lock:
-                # Mini grafikler çiz
-                self.draw_mini_graph(2, graph_row, 25, 3, list(self.imu_history['roll']), "ROLL", 4)
-                self.draw_mini_graph(30, graph_row, 25, 3, list(self.imu_history['pitch']), "PITCH", 4)
-                self.draw_mini_graph(58, graph_row, 25, 3, list(self.imu_history['yaw']), "YAW", 4)
-                
-        except Exception as e:
-            pass
-    
-    def draw_mini_graph(self, x, y, width, height, data, title, color_pair=1):
-        """Mini ASCII grafik çiz - optimize edilmiş"""
-        try:
-            if not data or len(data) == 0:
-                return
-            
-            # Başlık
-            self.stdscr.addstr(y, x, f"{title}:", curses.color_pair(color_pair) | curses.A_BOLD)
-            
-            # Son değer
-            last_value = data[-1] if data else 0
-            self.stdscr.addstr(y, x + len(title) + 2, f"{last_value:+6.1f}°", curses.color_pair(color_pair))
-            
-            # Mini trend göstergesi
-            if len(data) >= 2:
-                trend = "↗" if data[-1] > data[-2] else "↘" if data[-1] < data[-2] else "→"
-                trend_color = curses.color_pair(1) if trend == "→" else curses.color_pair(3)
-                self.stdscr.addstr(y, x + len(title) + 12, trend, trend_color)
-            
-            # Basit çubuk grafik
-            recent_data = data[-width+2:] if len(data) >= width-2 else data
-            if len(recent_data) > 0:
-                max_val = max(abs(v) for v in recent_data)
-                if max_val > 0:
-                    for i, value in enumerate(recent_data[-15:]):  # Son 15 değer
-                        if i >= width - 2:
-                            break
-                        bar_height = int(abs(value) / max_val * 2)  # 0-2 yükseklik
-                        char = "█" if bar_height >= 2 else "▓" if bar_height >= 1 else "░"
-                        try:
-                            self.stdscr.addstr(y + 1, x + i, char, curses.color_pair(color_pair))
-                        except:
-                            pass
-        except Exception as e:
-            pass
+
     
     def handle_keyboard(self):
         """Klavye girişini işle - optimize edilmiş"""
@@ -1300,144 +1325,71 @@ class TerminalROVGUI:
     def update_imu_history(self):
         """IMU verilerini history'ye ekle"""
         try:
-            self.imu_history['roll'].append(self.imu_data['roll'])
-            self.imu_history['pitch'].append(self.imu_data['pitch'])
-            self.imu_history['yaw'].append(self.imu_data['yaw'])
-            self.imu_history['accel_x'].append(self.imu_data['accel_x'])
-            self.imu_history['accel_y'].append(self.imu_data['accel_y'])
-            self.imu_history['accel_z'].append(self.imu_data['accel_z'])
+            self.sensor_readings['roll_deg'] = self.imu_data['roll']
+            self.sensor_readings['pitch_deg'] = self.imu_data['pitch']
+            self.sensor_readings['yaw_deg'] = self.imu_data['yaw']
+            self.sensor_readings['accel_x_mg'] = self.imu_data['accel_x']
+            self.sensor_readings['accel_y_mg'] = self.imu_data['accel_y']
+            self.sensor_readings['accel_z_mg'] = self.imu_data['accel_z']
+            self.sensor_readings['gyro_x_dps'] = self.imu_data['gyro_x']
+            self.sensor_readings['gyro_y_dps'] = self.imu_data['gyro_y']
+            self.sensor_readings['gyro_z_dps'] = self.imu_data['gyro_z']
+            self.sensor_readings['update_count'] = time.time()
         except Exception as e:
             pass
     
-    def draw_ascii_graph(self, x, y, width, height, data, title, color_pair=1):
-        """ASCII grafik çiz"""
-        try:
-            if not data or len(data) == 0:
-                return
-            
-            # Başlık
-            self.stdscr.addstr(y, x, title, curses.color_pair(color_pair) | curses.A_BOLD)
-            
-            # Veri normalizasyonu
-            min_val = min(data)
-            max_val = max(data)
-            
-            if max_val == min_val:
-                range_val = 1
-            else:
-                range_val = max_val - min_val
-            
-            # Grafik çerçevesi
-            for i in range(height):
-                self.stdscr.addstr(y + 1 + i, x, "│", curses.color_pair(4))
-                self.stdscr.addstr(y + 1 + i, x + width - 1, "│", curses.color_pair(4))
-            
-            # Alt ve üst çizgi
-            self.stdscr.addstr(y + 1, x, "┌" + "─" * (width - 2) + "┐", curses.color_pair(4))
-            self.stdscr.addstr(y + height, x, "└" + "─" * (width - 2) + "┘", curses.color_pair(4))
-            
-            # Veri noktalarını çiz
-            for i, value in enumerate(data[-width+2:]):  # Son width-2 değeri al
-                if i >= width - 2:
-                    break
-                
-                # Y pozisyonu hesapla
-                normalized = (value - min_val) / range_val if range_val > 0 else 0.5
-                graph_y = int((1 - normalized) * (height - 2))  # Ters çevir
-                graph_y = max(0, min(height - 3, graph_y))
-                
-                # Grafik karakteri
-                char = "█" if normalized > 0.7 else "▓" if normalized > 0.3 else "░"
-                
-                try:
-                    self.stdscr.addstr(y + 2 + graph_y, x + 1 + i, char, curses.color_pair(color_pair))
-                except:
-                    pass
-            
-            # Min/Max değerlerini göster
-            if height > 4:
-                self.stdscr.addstr(y + 1, x + width + 1, f"Max: {max_val:+.2f}", curses.color_pair(color_pair))
-                self.stdscr.addstr(y + height, x + width + 1, f"Min: {min_val:+.2f}", curses.color_pair(color_pair))
-                
-        except Exception as e:
-            pass
+
     
-    def draw_progress_bar(self, x, y, width, value, max_value, title, color_pair=1):
-        """İlerleme çubuğu çiz"""
-        try:
-            # Başlık
-            self.stdscr.addstr(y, x, title, curses.color_pair(4) | curses.A_BOLD)
-            
-            # Değer yüzdesi
-            percentage = abs(value) / max_value if max_value > 0 else 0
-            percentage = min(1.0, max(0.0, percentage))
-            
-            # Bar uzunluğu
-            filled_length = int(width * percentage)
-            
-            # Bar çiz
-            bar_str = ""
-            for i in range(width):
-                if i < filled_length:
-                    if value >= 0:
-                        bar_str += "█"
-                    else:
-                        bar_str += "▓"
-                else:
-                    bar_str += "░"
-            
-            # Renk seçimi - pozitif/negatif
-            if value >= 0:
-                bar_color = color_pair
-            else:
-                bar_color = curses.color_pair(2)  # Kırmızı
-            
-            self.stdscr.addstr(y + 1, x, f"[{bar_str}]", bar_color)
-            self.stdscr.addstr(y + 1, x + width + 3, f"{value:+6.1f}", curses.color_pair(4))
-            
-        except Exception as e:
-            pass
-    
-    def draw_graphs(self):
-        """IMU grafikleri ve progress barları çiz"""
-        if self.height < 30 or self.width < 120:  # Yeterli yer yoksa çizme
+    def draw_tcp_data_status(self):
+        """TCP veri durumu özeti - Basit ve etkili"""
+        if self.height < 30:
             return
-        
-        graph_start_row = 20
+            
+        status_row = 27
         
         try:
-            # Motor durumu progress barları
-            self.draw_progress_bar(2, graph_start_row, 20, self.motor_value, 100, "🎮 MOTOR GÜÇ", 1)
-            
-            # Servo durumu progress barları
-            self.draw_progress_bar(2, graph_start_row + 3, 20, self.servo_values['roll'], 45, "📐 ROLL", 1)
-            self.draw_progress_bar(2, graph_start_row + 6, 20, self.servo_values['pitch'], 45, "📐 PITCH", 1)
-            self.draw_progress_bar(2, graph_start_row + 9, 20, self.servo_values['yaw'], 45, "📐 YAW", 1)
-            
-            # IMU grafikleri (sadece MAVLink bağlıysa)
-            if self.mavlink and self.mavlink.connected:
-                # YAW grafiği
-                self.draw_ascii_graph(30, graph_start_row, 30, 6, 
-                                    self.imu_history['yaw'], "YAW (°)", 4)
+            with self.data_lock:
+                self.stdscr.addstr(status_row, 2, "📡 TCP MAVLink Veri Durumu:", curses.color_pair(4) | curses.A_BOLD)
                 
-                # PITCH grafiği  
-                self.draw_ascii_graph(30, graph_start_row + 7, 30, 6,
-                                    self.imu_history['pitch'], "PITCH (°)", 4)
+                # IMU data status
+                if self.imu_data.get('connected', False):
+                    imu_status = f"✅ IMU: {self.sensor_readings['update_count']:>4} updates"
+                    imu_color = curses.color_pair(1)
+                else:
+                    imu_status = "❌ IMU: Bağlantı yok"
+                    imu_color = curses.color_pair(2)
                 
-                # ROLL grafiği
-                self.draw_ascii_graph(70, graph_start_row, 30, 6,
-                                    self.imu_history['roll'], "ROLL (°)", 4)
+                self.stdscr.addstr(status_row + 1, 4, imu_status, imu_color)
                 
-                # Acceleration X grafiği
-                self.draw_ascii_graph(70, graph_start_row + 7, 30, 6,
-                                    self.imu_history['accel_x'], "ACCEL X", 3)
+                # Show current significant values
+                if self.imu_data.get('connected', False):
+                    # Show largest current values for visibility
+                    max_accel = max(abs(self.sensor_readings['accel_x_mg']), 
+                                  abs(self.sensor_readings['accel_y_mg']), 
+                                  abs(self.sensor_readings['accel_z_mg']))
+                    max_gyro = max(abs(self.sensor_readings['gyro_x_dps']), 
+                                 abs(self.sensor_readings['gyro_y_dps']), 
+                                 abs(self.sensor_readings['gyro_z_dps']))
+                    
+                    self.stdscr.addstr(status_row + 1, 30, f"Max Accel: {max_accel:>5.0f}mg", curses.color_pair(6))
+                    self.stdscr.addstr(status_row + 1, 50, f"Max Gyro: {max_gyro:>5.1f}°/s", curses.color_pair(5))
+                    
+                    # TCP connection quality
+                    data_age = time.time() - self.imu_data.get('timestamp', 0)
+                    if data_age < 0.1:
+                        quality = "🟢 EXCELLENT"
+                        quality_color = curses.color_pair(1)
+                    elif data_age < 0.5:
+                        quality = "🟡 GOOD"
+                        quality_color = curses.color_pair(3)
+                    else:
+                        quality = "🔴 POOR"
+                        quality_color = curses.color_pair(2)
+                    
+                    self.stdscr.addstr(status_row + 1, 70, f"Quality: {quality}", quality_color)
                 
         except Exception as e:
-            # Hata durumunda basit mesaj göster
-            try:
-                self.stdscr.addstr(graph_start_row, 2, f"📊 Grafik Hatası: {str(e)[:40]}", curses.color_pair(2))
-            except:
-                pass
+            pass
     
     def main_loop(self):
         """Ana döngü - optimize edilmiş"""
@@ -1457,7 +1409,7 @@ class TerminalROVGUI:
                     self.draw_movement_menu() # Hareket menüsünü çiz
                     self.draw_controls()
                     self.draw_logs()
-                    self.draw_performance_graphs() # Performans grafikleri
+                    self.draw_tcp_data_status()
                     
                     # Ekranı yenile
                     self.stdscr.refresh()
