@@ -1127,94 +1127,139 @@ class AdvancedTerminalGUI:
                     self.log(f"   {line}")
     
     def update_servo_control(self):
-        """Real-time servo kontrolü"""
-        # Pitch kontrol
+        """Real-time servo kontrolü - YAW PROBLEMİ DÜZELTİLDİ"""
+        # Smooth control parameters
+        pitch_step = 2.5
+        roll_step = 2.5
+        yaw_step = 4.0  # YAW için daha büyük adım
+        decay_rate = 1.5  # Otomatik sıfırlama hızı
+        
+        # Pitch kontrol - SMOOTH
         if 'w' in self.active_keys:
-            self.servo_values['pitch'] = min(45, self.servo_values['pitch'] + 3)
+            self.servo_values['pitch'] = min(45, self.servo_values['pitch'] + pitch_step)
         elif 's' in self.active_keys:
-            self.servo_values['pitch'] = max(-45, self.servo_values['pitch'] - 3)
+            self.servo_values['pitch'] = max(-45, self.servo_values['pitch'] - pitch_step)
         else:
-            # Otomatik sıfırlama
-            if self.servo_values['pitch'] > 0:
-                self.servo_values['pitch'] = max(0, self.servo_values['pitch'] - 2)
-            elif self.servo_values['pitch'] < 0:
-                self.servo_values['pitch'] = min(0, self.servo_values['pitch'] + 2)
+            # Smooth otomatik sıfırlama
+            if abs(self.servo_values['pitch']) > 0.5:
+                if self.servo_values['pitch'] > 0:
+                    self.servo_values['pitch'] = max(0, self.servo_values['pitch'] - decay_rate)
+                else:
+                    self.servo_values['pitch'] = min(0, self.servo_values['pitch'] + decay_rate)
+            else:
+                self.servo_values['pitch'] = 0
         
-        # Roll kontrol
+        # Roll kontrol - SMOOTH
         if 'a' in self.active_keys:
-            self.servo_values['roll'] = min(45, self.servo_values['roll'] + 3)
+            self.servo_values['roll'] = min(45, self.servo_values['roll'] + roll_step)
         elif 'd' in self.active_keys:
-            self.servo_values['roll'] = max(-45, self.servo_values['roll'] - 3)
+            self.servo_values['roll'] = max(-45, self.servo_values['roll'] - roll_step)
         else:
-            if self.servo_values['roll'] > 0:
-                self.servo_values['roll'] = max(0, self.servo_values['roll'] - 2)
-            elif self.servo_values['roll'] < 0:
-                self.servo_values['roll'] = min(0, self.servo_values['roll'] + 2)
+            # Smooth otomatik sıfırlama
+            if abs(self.servo_values['roll']) > 0.5:
+                if self.servo_values['roll'] > 0:
+                    self.servo_values['roll'] = max(0, self.servo_values['roll'] - decay_rate)
+                else:
+                    self.servo_values['roll'] = min(0, self.servo_values['roll'] + decay_rate)
+            else:
+                self.servo_values['roll'] = 0
         
-        # Yaw kontrol - DÜZELTİLDİ VE GÜÇLENDİRİLDİ
+        # YAW kontrol - TAMAMEN YENİ VE GÜÇLENDİRİLMİŞ SYSTEM
+        yaw_changed = False
+        
         if 'q' in self.active_keys:
-            self.servo_values['yaw'] = min(45, self.servo_values['yaw'] + 8)  # Daha hızlı artış
-            self.log(f"🎯 YAW SAĞ: {self.servo_values['yaw']}° (Q tuşu aktif)")
+            old_yaw = self.servo_values['yaw']
+            self.servo_values['yaw'] = min(45, self.servo_values['yaw'] + yaw_step)
+            yaw_changed = True
+            
+            # Sadece değer değiştiğinde log
+            if self.servo_values['yaw'] != old_yaw:
+                self.log(f"🎯 YAW RIGHT: {old_yaw:.1f}° → {self.servo_values['yaw']:.1f}° (Q key active)")
+                
         elif 'e' in self.active_keys:
-            self.servo_values['yaw'] = max(-45, self.servo_values['yaw'] - 8)  # Daha hızlı azalış
-            self.log(f"🎯 YAW SOL: {self.servo_values['yaw']}° (E tuşu aktif)")
+            old_yaw = self.servo_values['yaw']
+            self.servo_values['yaw'] = max(-45, self.servo_values['yaw'] - yaw_step)
+            yaw_changed = True
+            
+            # Sadece değer değiştiğinde log
+            if self.servo_values['yaw'] != old_yaw:
+                self.log(f"🎯 YAW LEFT: {old_yaw:.1f}° → {self.servo_values['yaw']:.1f}° (E key active)")
+                
         else:
-            # Otomatik sıfırlama - HIZLANDIRILDI
-            if self.servo_values['yaw'] > 2:
-                self.servo_values['yaw'] = max(0, self.servo_values['yaw'] - 3)
-            elif self.servo_values['yaw'] < -2:
-                self.servo_values['yaw'] = min(0, self.servo_values['yaw'] + 3)
-            elif abs(self.servo_values['yaw']) <= 2:
-                self.servo_values['yaw'] = 0  # Küçük değerleri direkt sıfırla
+            # YAW Smooth auto-return to neutral - IMPROVED
+            if abs(self.servo_values['yaw']) > 0.8:  # Threshold artırıldı
+                old_yaw = self.servo_values['yaw']
+                
+                if self.servo_values['yaw'] > 0:
+                    self.servo_values['yaw'] = max(0, self.servo_values['yaw'] - (decay_rate * 1.2))
+                else:
+                    self.servo_values['yaw'] = min(0, self.servo_values['yaw'] + (decay_rate * 1.2))
+                
+                # Neutral'a yakın değerler için debug
+                if abs(old_yaw) > 1 and abs(self.servo_values['yaw']) <= 1:
+                    self.log(f"🎯 YAW NEUTRAL: {old_yaw:.1f}° → {self.servo_values['yaw']:.1f}° (auto-return)")
+                    
+            elif abs(self.servo_values['yaw']) <= 0.8:
+                # Küçük değerleri direkt sıfırla
+                if self.servo_values['yaw'] != 0:
+                    self.log(f"🎯 YAW ZERO: {self.servo_values['yaw']:.1f}° → 0.0° (force neutral)")
+                self.servo_values['yaw'] = 0
         
-        # Servo komutlarını gönder
-        self.send_servo_commands()
+        # Servo komutlarını gönder - YAW priority ile
+        self.send_servo_commands(yaw_priority=yaw_changed)
         
         # Tuş durumunu temizle
         self.active_keys.clear()
     
-    def send_servo_commands(self):
-        """Servo komutlarını TCP üzerinden gönder - YAW DÜZELTİLDİ"""
-        # YAW özel debug - her YAW değişikliğinde log
-        if abs(self.servo_values['yaw']) > 0:
-            self.log(f"🎯 YAW AKTIF: {self.servo_values['yaw']}° (R={self.servo_values['roll']}° P={self.servo_values['pitch']}°)")
+    def send_servo_commands(self, yaw_priority=False):
+        """Servo komutlarını TCP üzerinden gönder - YAW PROBLEMİ ÇÖZÜLDÜ"""
         
-        # Diğer servo hareketleri için genel log
-        elif abs(self.servo_values['roll']) > 0 or abs(self.servo_values['pitch']) > 0:
-            self.log(f"📡 Servo: R={self.servo_values['roll']}° P={self.servo_values['pitch']}° Y={self.servo_values['yaw']}°")
+        # Logging strategy - sadece önemli değişiklikler
+        if yaw_priority and abs(self.servo_values['yaw']) > 0:
+            # YAW hareketi aktif - detaylı log
+            self.log(f"🎯 YAW COMMAND: {self.servo_values['yaw']:.1f}° | R:{self.servo_values['roll']:.1f}° P:{self.servo_values['pitch']:.1f}°")
+        elif not yaw_priority and (abs(self.servo_values['roll']) > 2 or abs(self.servo_values['pitch']) > 2):
+            # Roll/Pitch hareketi - normal log
+            self.log(f"📡 SERVO: R={self.servo_values['roll']:.1f}° P={self.servo_values['pitch']:.1f}° Y={self.servo_values['yaw']:.1f}°")
         
-        # MAVLink bağlantı kontrolü
+        # MAVLink bağlantı kontrolü - STREAMLINED
         if not self.mavlink or not self.mavlink.connected:
-            if abs(self.servo_values['yaw']) > 0:
-                self.log("⚠️ TCP MAVLink bağlantısı yok - YAW komutu gönderilemiyor!")
+            # Sadece YAW aktifken uyarı göster (spam önleme)
+            if yaw_priority:
+                self.log("⚠️ TCP MAVLink disconnected - YAW command ignored!")
             return
             
         if not self.armed:
-            if abs(self.servo_values['yaw']) > 0:
-                self.log("⚠️ DISARMED durumda - YAW komutu gönderilemiyor! (SPACE ile ARM et)")
+            # Sadece YAW aktifken uyarı göster (spam önleme)
+            if yaw_priority:
+                self.log("⚠️ DISARMED - YAW ignored! Press SPACE to ARM")
             return
         
-        # Gerçek servo komutlarını gönder
+        # GERÇEK SERVO KOMUTLARI - High Priority YAW
         try:
-            # YAW için özel log
-            if abs(self.servo_values['yaw']) > 0:
-                self.log(f"✅ YAW MAVLink gönderiliyor: {self.servo_values['yaw']}° (Mode: {self.control_mode})")
-            
+            # Real-time servo command transmission
             if self.control_mode == "RAW":
-                self.mavlink.control_servos_raw(
+                success = self.mavlink.control_servos_raw(
                     self.servo_values['roll'],
                     self.servo_values['pitch'],
                     self.servo_values['yaw']
                 )
-            else:  # PID
-                self.mavlink.control_servos_pid(
+            else:  # PID mode
+                success = self.mavlink.control_servos_pid(
                     self.servo_values['roll'],
                     self.servo_values['pitch'],
                     self.servo_values['yaw']
                 )
+            
+            # Success feedback - sadece YAW priority'sinde
+            if yaw_priority and success:
+                self.log(f"✅ YAW transmitted: {self.servo_values['yaw']:.1f}° via {self.control_mode}")
                 
         except Exception as e:
-            self.log(f"❌ Servo komut hatası (YAW={self.servo_values['yaw']}°): {e}")
+            # Error feedback - sadece önemli hatalar
+            if yaw_priority or abs(self.servo_values['roll']) > 10 or abs(self.servo_values['pitch']) > 10:
+                self.log(f"❌ Servo transmission error: {e}")
+                self.log(f"🔧 Values: R={self.servo_values['roll']:.1f}° P={self.servo_values['pitch']:.1f}° Y={self.servo_values['yaw']:.1f}°")
     
     def send_motor_command(self):
         """Motor komutunu TCP üzerinden gönder"""

@@ -7,7 +7,16 @@ Hangi fiziksel port çalışıyor bulalım
 import time
 from pymavlink import mavutil
 
-MAV_ADDRESS = 'tcp:127.0.0.1:5777'
+# MAVLink bağlantı adresi - DYNAMIC CONFIGURATION SYSTEM
+try:
+    from connection_config import get_test_constants
+    CONFIG = get_test_constants()
+    MAV_ADDRESS = CONFIG['MAV_ADDRESS']
+    print(f"📡 Using dynamic connection: {MAV_ADDRESS}")
+except ImportError:
+    # Fallback to static config
+    MAV_ADDRESS = 'tcp:127.0.0.1:5777'
+    print(f"⚠️ Using fallback connection: {MAV_ADDRESS}")
 
 def test_all_outputs():
     """Tüm output'ları test et"""
