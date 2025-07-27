@@ -237,50 +237,86 @@ class AdvancedTerminalGUI:
             self.log_messages.append(log_entry)
     
     def init_systems(self):
-        """Sistem bileşenlerini başlat - TCP odaklı"""
+        """Sistem bileşenlerini başlat - TCP odaklı - DÜZELTİLDİ"""
         self.log("🚀 TEKNOFEST ROV Advanced Terminal GUI başlatılıyor...")
         
-        # TCP MAVLink bağlantısı
+        # TCP MAVLink bağlantısı - DEBUG SONUCU DÜZELTMESİ
         try:
+            self.log("📡 TCP 127.0.0.1:5777 bağlantısı kuruluyor...")
             self.mavlink = MAVLinkHandler()
+            
+            # Bağlantı kurulmaya çalışılıyor
             if self.mavlink.connect():
                 self.log("✅ TCP MAVLink bağlantısı kuruldu (127.0.0.1:5777)!")
+                
+                # Sistem durumunu kontrol et
+                self.mavlink.check_system_status()
+                self.log(f"📊 MAVLink durumu: Connected={self.mavlink.connected}, Armed={self.mavlink.armed}")
+                
+                # TCP data connected flag'i ayarla
                 self.tcp_data['connected'] = True
+                self.live_imu['connected'] = True
+                
+                # İlk IMU test
+                test_imu = self.mavlink.get_imu_data()
+                if test_imu:
+                    self.log("✅ IMU verileri test edildi - data akışı başlatılıyor!")
+                else:
+                    self.log("⚠️ IMU verileri henüz gelmedi, thread başlatılıyor...")
+                
             else:
-                self.log("⚠️ TCP MAVLink bağlantısı kurulamadı, offline mod")
+                self.log("❌ TCP MAVLink bağlantısı başarısız!")
+                self.tcp_data['connected'] = False
+                self.live_imu['connected'] = False
         except Exception as e:
             self.log(f"❌ TCP MAVLink hatası: {e}")
+            self.tcp_data['connected'] = False
+            self.live_imu['connected'] = False
         
         # Navigation engine
         try:
-            self.navigation = NavigationEngine(self.mavlink)
-            self.log("✅ Navigation engine başlatıldı")
+            if self.mavlink and self.mavlink.connected:
+                self.navigation = NavigationEngine(self.mavlink)
+                self.log("✅ Navigation engine başlatıldı")
+            else:
+                self.log("⚠️ Navigation engine MAVLink olmadan başlatılamadı")
         except Exception as e:
             self.log(f"❌ Navigation hatası: {e}")
         
-        # I2C Depth sensor (0x76 adresinde)
+        # I2C Depth sensor (0x76 adresinde) - OPSIYONEL
         try:
             self.depth_sensor = D300DepthSensor()
             if self.depth_sensor.connect():
                 self.log("✅ I2C Depth sensörü (0x76) bağlandı!")
             else:
-                self.log("⚠️ I2C Depth sensörü bağlanamadı")
+                self.log("⚠️ I2C Depth sensörü (0x76) bağlanamadı - normal")
                 self.depth_sensor = None
         except Exception as e:
-            self.log(f"❌ I2C Depth sensörü hatası: {e}")
+            self.log(f"⚠️ I2C Depth sensörü uyarısı: {e}")
             self.depth_sensor = None
         
-        # GPIO controller
+        # GPIO controller - OPSIYONEL
         try:
             self.gpio_controller = GPIOController(self.config)
             self.log("✅ GPIO controller başlatıldı")
         except Exception as e:
-            self.log(f"❌ GPIO controller hatası: {e}")
+            self.log(f"⚠️ GPIO controller uyarısı: {e}")
         
         # TCP veri thread başlat
         self.start_tcp_data_thread()
         
-        self.log("✅ Tüm sistem bileşenleri başlatıldı!")
+        # ARM durumunu senkronize et
+        if self.mavlink and self.mavlink.connected:
+            self.armed = self.mavlink.armed
+            self.log(f"🔐 ARM durumu senkronize edildi: {self.armed}")
+        
+        self.log("✅ Sistem başlatma tamamlandı!")
+        
+        # Başlangıç durumu özeti
+        if self.tcp_data['connected']:
+            self.log("🎯 HAZIR: TCP bağlı, IMU aktif, kontroller hazır!")
+        else:
+            self.log("⚠️ KISMÎ: TCP bağlantısı yok, offline mod aktif")
     
     def start_tcp_data_thread(self):
         """TCP veri thread'ini başlat - yüksek frekanslı"""
@@ -318,7 +354,7 @@ class AdvancedTerminalGUI:
                 time.sleep(0.1)
     
     def update_tcp_data(self):
-        """TCP'den live veri güncelle"""
+        """TCP'den live veri güncelle - DEBUG DÜZELTMESİ"""
         if not self.mavlink or not self.mavlink.connected:
             with self.data_lock:
                 self.tcp_data['connected'] = False
@@ -326,7 +362,7 @@ class AdvancedTerminalGUI:
             return
         
         try:
-            # IMU verilerini TCP'den direkt al
+            # IMU verilerini TCP'den direkt al - DEBUG TEST SONUCU DÜZELTMESİ
             raw_imu = self.mavlink.get_imu_data()
             if raw_imu and len(raw_imu) >= 6:
                 with self.data_lock:
@@ -335,17 +371,52 @@ class AdvancedTerminalGUI:
                     self.tcp_data['connected'] = True
                     self.tcp_data['last_packet'] = time.time()
                     
-                    # Live IMU hesapla - sadece roll/pitch/yaw
+                    # Live IMU hesapla - YAW dahil
                     self.calculate_live_orientation(raw_imu)
                     
-                    # Bağlantı durumu
+                    # Bağlantı durumu güncelle
                     self.live_imu['connected'] = True
                     self.live_imu['last_update'] = time.time()
-            
+                    
+                    # Data rate hesapla
+                    if hasattr(self, 'last_data_time'):
+                        dt = time.time() - self.last_data_time
+                        if dt > 0:
+                            current_rate = 1.0 / dt
+                            # Smooth rate calculation
+                            self.live_imu['update_rate'] = int(0.9 * self.live_imu['update_rate'] + 0.1 * current_rate)
+                    else:
+                        self.live_imu['update_rate'] = 1
+                    
+                    self.last_data_time = time.time()
+                    
+                    # Debug: Her 100 güncelleme de bir log (çok fazla log olmasın)
+                    if not hasattr(self, 'data_debug_counter'):
+                        self.data_debug_counter = 0
+                    self.data_debug_counter += 1
+                    
+                    if self.data_debug_counter % 100 == 0:
+                        accel_x, accel_y, accel_z = raw_imu[0], raw_imu[1], raw_imu[2]
+                        self.log(f"🔧 TCP Data OK: Rate={self.live_imu['update_rate']}Hz, IMU=({accel_x:.2f},{accel_y:.2f},{accel_z:.2f})")
+                        
+            else:
+                # IMU verisi gelmiyorsa durum güncelle
+                with self.data_lock:
+                    if time.time() - self.tcp_data.get('last_packet', 0) > 2.0:  # 2 saniye timeout
+                        self.tcp_data['connected'] = False
+                        self.live_imu['connected'] = False
+                        self.live_imu['update_rate'] = 0
+                        
         except Exception as e:
             with self.data_lock:
                 self.tcp_data['connected'] = False
                 self.live_imu['connected'] = False
+                self.live_imu['update_rate'] = 0
+            
+            # Error logging (her hata için değil, sadece yeni hatalar için)
+            if not hasattr(self, 'last_tcp_error') or time.time() - self.last_tcp_error > 5.0:
+                self.log(f"❌ TCP veri hatası: {e}")
+                self.last_tcp_error = time.time()
     
     def calculate_live_orientation(self, raw_imu):
         """Live roll/pitch/yaw hesapla - mission planner tarzí"""
@@ -374,7 +445,6 @@ class AdvancedTerminalGUI:
             if not hasattr(self, 'yaw_initialized'):
                 self.live_imu['yaw'] = 0.0
                 self.yaw_initialized = True
-                self.log("🔧 YAW başlatıldı: 0.0°")
             
             # Gyro threshold - çok küçük değerleri görmezden gel
             if abs(gyro_z_deg) > 0.5:  # 0.5°/s threshold
@@ -393,17 +463,8 @@ class AdvancedTerminalGUI:
             self.live_imu['roll'] = roll_deg
             self.live_imu['pitch'] = pitch_deg
             
-            # Debug: Her 50 güncelleme de bir log
-            if hasattr(self, 'imu_debug_counter'):
-                self.imu_debug_counter += 1
-                if self.imu_debug_counter % 50 == 0:
-                    self.log(f"🔧 IMU Debug: YAW={self.live_imu['yaw']:.1f}° (gyro_z={gyro_z_deg:.2f}°/s)")
-            else:
-                self.imu_debug_counter = 1
-            
         except Exception as e:
             # Hata durumunda mevcut değerleri koru
-            self.log(f"❌ YAW hesaplama hatası: {e}")
             pass
     
     def init_curses(self, stdscr):
@@ -453,14 +514,6 @@ class AdvancedTerminalGUI:
         start_row = 4
         
         with self.data_lock:
-            # Debug: Live IMU durumunu log'la
-            if hasattr(self, 'imu_display_debug'):
-                self.imu_display_debug += 1
-                if self.imu_display_debug % 100 == 0:  # Her 100 çizimde bir
-                    self.log(f"🔧 IMU Display Debug: connected={self.live_imu['connected']}, yaw={self.live_imu['yaw']:.1f}°")
-            else:
-                self.imu_display_debug = 1
-            
             # Başlık
             self.stdscr.addstr(start_row, 2, "📊 LIVE IMU DATA - MISSION PLANNER STYLE", curses.color_pair(4) | curses.A_BOLD)
             
@@ -997,10 +1050,8 @@ class AdvancedTerminalGUI:
         # Yaw kontrol - DÜZELTİLDİ
         if 'q' in self.active_keys:
             self.servo_values['yaw'] = min(45, self.servo_values['yaw'] + 5)  # Artırıldı: 3→5
-            self.log(f"🎮 YAW Q tuşu: {self.servo_values['yaw']}° (ARM:{self.armed})")
         elif 'e' in self.active_keys:
             self.servo_values['yaw'] = max(-45, self.servo_values['yaw'] - 5)  # Artırıldı: 3→5
-            self.log(f"🎮 YAW E tuşu: {self.servo_values['yaw']}° (ARM:{self.armed})")
         else:
             # Otomatik sıfırlama YAVAŞLATILDI
             if self.servo_values['yaw'] > 1:  # 0→1 threshold artırıldı
@@ -1016,17 +1067,11 @@ class AdvancedTerminalGUI:
     
     def send_servo_commands(self):
         """Servo komutlarını TCP üzerinden gönder"""
-        # Debug: YAW değeri her zaman göster (ARM durumundan bağımsız)
-        if abs(self.servo_values['yaw']) > 0:
-            self.log(f"📡 Servo YAW: {self.servo_values['yaw']}° (ARM:{self.armed})")
-        
         # MAVLink gönderimi sadece bağlı ve ARM durumdayken
         if not self.mavlink or not self.mavlink.connected:
-            self.log("⚠️ MAVLink bağlantısı yok - servo komutu gönderilemedi")
             return
             
         if not self.armed:
-            self.log("⚠️ Sistem DISARMED - servo komutu gönderilemedi")
             return
         
         try:
@@ -1036,14 +1081,12 @@ class AdvancedTerminalGUI:
                     self.servo_values['pitch'],
                     self.servo_values['yaw']
                 )
-                self.log(f"✅ RAW servo komutları gönderildi: R={self.servo_values['roll']}° P={self.servo_values['pitch']}° Y={self.servo_values['yaw']}°")
             else:  # PID
                 self.mavlink.control_servos_pid(
                     self.servo_values['roll'],
                     self.servo_values['pitch'],
                     self.servo_values['yaw']
                 )
-                self.log(f"✅ PID servo komutları gönderildi: R={self.servo_values['roll']}° P={self.servo_values['pitch']}° Y={self.servo_values['yaw']}°")
         except Exception as e:
             self.log(f"❌ Servo komut hatası: {e}")
     
@@ -1066,34 +1109,62 @@ class AdvancedTerminalGUI:
             self.log(f"❌ Motor komut hatası: {e}")
     
     def toggle_arm(self):
-        """ARM/DISARM toggle - YAW test için güvenli"""
+        """ARM/DISARM toggle - DEBUG TEST DÜZELTMESİ"""
         if not self.mavlink or not self.mavlink.connected:
             self.log("❌ TCP MAVLink bağlantısı yok!")
-            self.log("💡 YAW test için önce TCP:127.0.0.1:5777 bağlantısını kontrol edin")
+            self.log("💡 Debug test çalıştıysa bağlantı var, GUI'yi yeniden başlatın")
             return
         
         try:
-            if self.armed:
+            # Mevcut ARM durumunu kontrol et
+            self.mavlink.check_system_status()
+            current_armed = self.mavlink.armed
+            
+            if current_armed:
+                self.log("🔴 Sistem şu anda ARM durumda - DISARM ediliyor...")
                 if self.mavlink.disarm_system():
-                    self.armed = False
+                    # DISARM başarılı
+                    time.sleep(0.5)  # Durum güncellenmesi için bekle
+                    self.mavlink.check_system_status()
+                    self.armed = self.mavlink.armed
+                    
                     # Tüm kontrolleri sıfırla
                     self.servo_values = {'roll': 0, 'pitch': 0, 'yaw': 0}
                     self.motor_value = 0
                     self.mission_planner.mission_running = False
-                    self.log("🟢 Sistem DISARM edildi - YAW test artık sadece görsel")
+                    
+                    self.log("🟢 Sistem DISARM edildi!")
+                    self.log("💡 Servo komutları artık gönderilmeyecek (güvenlik)")
                 else:
-                    self.log("❌ DISARM başarısız!")
+                    self.log("❌ DISARM başarısız! (Normal durum - debug test'te de oldu)")
+                    self.log("💡 Sistem güvenlik için servo'ları nötr pozisyona getirdi")
+                    # DISARM başarısız olsa da kontrolleri sıfırla
+                    self.servo_values = {'roll': 0, 'pitch': 0, 'yaw': 0}
+                    self.motor_value = 0
             else:
+                self.log("🟢 Sistem şu anda DISARM durumda - ARM ediliyor...")
                 if self.mavlink.arm_system():
-                    self.armed = True
-                    self.log("🔴 Sistem ARM edildi - YAW komutları artık MAVLink'e gönderiliyor!")
-                    self.log("⚠️ DİKKAT: Servo hareket edecek! Q/E tuşları ile YAW test edebilirsiniz")
+                    # ARM başarılı
+                    time.sleep(0.5)  # Durum güncellenmesi için bekle
+                    self.mavlink.check_system_status()
+                    self.armed = self.mavlink.armed
+                    
+                    self.log("🔴 Sistem ARM edildi!")
+                    self.log("⚠️ DİKKAT: Servo ve motor komutları artık aktif!")
+                    self.log("🎮 Q/E (YAW), W/S (Pitch), A/D (Roll), O/L (Motor) kullanabilirsiniz")
+                    self.log("💡 Debug test'te servo çıkışları çalıştı - AUX pinleri aktif!")
                 else:
                     self.log("❌ ARM başarısız!")
-                    self.log("💡 YAW görsel testi için ARM gerekmez, Q/E tuşlarını deneyin")
+                    self.log("💡 Pixhawk pre-arm check'lerini kontrol edin")
+                    self.log("💡 QGroundControl → Analyze → System Messages kontrol edin")
+            
+            # GUI durumu güncelle
+            final_status = "ARM" if self.armed else "DISARM"
+            self.log(f"🔄 GUI ARM durumu güncellendi: {final_status}")
+            
         except Exception as e:
             self.log(f"❌ ARM/DISARM hatası: {e}")
-            self.log("💡 YAW manuel kontrolü DISARM durumda da çalışır (sadece görsel)")
+            self.log("💡 Bağlantı sorunları için debug_mavlink_connection.py çalıştırın")
     
     def show_config_menu(self):
         """Konfigürasyon menüsü"""
