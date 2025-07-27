@@ -348,7 +348,7 @@ class AdvancedTerminalGUI:
                 self.live_imu['connected'] = False
     
     def calculate_live_orientation(self, raw_imu):
-        """Live roll/pitch/yaw hesapla - mission planner tarzı"""
+        """Live roll/pitch/yaw hesapla - mission planner tarzí"""
         try:
             # Raw IMU verilerini al (SI units)
             accel_x, accel_y, accel_z = raw_imu[0], raw_imu[1], raw_imu[2]
@@ -366,27 +366,38 @@ class AdvancedTerminalGUI:
                 roll_deg = self.live_imu['roll']
                 pitch_deg = self.live_imu['pitch']
             
-            # Gyroscope integration for yaw - DÜZELTİLDİ
+            # YAW integration - DÜZELTİLDİ
             dt = 0.02  # 50Hz
             gyro_z_deg = math.degrees(gyro_z)
-            yaw_deg = self.live_imu['yaw'] + (gyro_z_deg * dt)
             
-            # Yaw normalize (-180 to +180)
-            while yaw_deg > 180:
-                yaw_deg -= 360
-            while yaw_deg < -180:
-                yaw_deg += 360
+            # İlk kez çalışıyorsa YAW'ı 0'dan başlat
+            if not hasattr(self, 'yaw_initialized'):
+                self.live_imu['yaw'] = 0.0
+                self.yaw_initialized = True
+                self.log("🔧 YAW başlatıldı: 0.0°")
+            
+            # Gyro threshold - çok küçük değerleri görmezden gel
+            if abs(gyro_z_deg) > 0.5:  # 0.5°/s threshold
+                yaw_deg = self.live_imu['yaw'] + (gyro_z_deg * dt)
+                
+                # Yaw normalize (-180 to +180)
+                while yaw_deg > 180:
+                    yaw_deg -= 360
+                while yaw_deg < -180:
+                    yaw_deg += 360
+                    
+                self.live_imu['yaw'] = yaw_deg
+            # Eğer gyro çok küçükse YAW değerini koru
             
             # Live IMU güncelle
             self.live_imu['roll'] = roll_deg
             self.live_imu['pitch'] = pitch_deg
-            self.live_imu['yaw'] = yaw_deg
             
             # Debug: Her 50 güncelleme de bir log
             if hasattr(self, 'imu_debug_counter'):
                 self.imu_debug_counter += 1
                 if self.imu_debug_counter % 50 == 0:
-                    self.log(f"🔧 IMU Debug: YAW={yaw_deg:.1f}° (gyro_z={gyro_z_deg:.2f}°/s)")
+                    self.log(f"🔧 IMU Debug: YAW={self.live_imu['yaw']:.1f}° (gyro_z={gyro_z_deg:.2f}°/s)")
             else:
                 self.imu_debug_counter = 1
             
@@ -538,7 +549,7 @@ class AdvancedTerminalGUI:
         # Real-time kontrol durumu
         self.stdscr.addstr(start_row + 1, 4, f"Roll:  {self.servo_values['roll']:+4.0f}° [A/D]", curses.color_pair(5))
         self.stdscr.addstr(start_row + 2, 4, f"Pitch: {self.servo_values['pitch']:+4.0f}° [W/S]", curses.color_pair(5))
-        self.stdscr.addstr(start_row + 3, 4, f"Yaw:   {self.servo_values['yaw']:+4.0f}° [Q/E]", curses.color_pair(5))
+        self.stdscr.addstr(start_row + 3, 4, f"Yaw:   {self.servo_values['yaw']:+4.0f}° [Q/E]", curses.color_pair(1 if abs(self.servo_values['yaw']) > 0 else 5))  # YAW renk düzeltmesi
         self.stdscr.addstr(start_row + 4, 4, f"Motor: {self.motor_value:+4.0f}% [O/L]", curses.color_pair(1 if abs(self.motor_value) < 50 else 3))
         
         # Komut menüsü
@@ -983,18 +994,19 @@ class AdvancedTerminalGUI:
             elif self.servo_values['roll'] < 0:
                 self.servo_values['roll'] = min(0, self.servo_values['roll'] + 2)
         
-        # Yaw kontrol
+        # Yaw kontrol - DÜZELTİLDİ
         if 'q' in self.active_keys:
-            self.servo_values['yaw'] = min(45, self.servo_values['yaw'] + 3)
-            self.log(f"🎮 YAW Q tuşu: {self.servo_values['yaw']}°")
+            self.servo_values['yaw'] = min(45, self.servo_values['yaw'] + 5)  # Artırıldı: 3→5
+            self.log(f"🎮 YAW Q tuşu: {self.servo_values['yaw']}° (ARM:{self.armed})")
         elif 'e' in self.active_keys:
-            self.servo_values['yaw'] = max(-45, self.servo_values['yaw'] - 3)
-            self.log(f"🎮 YAW E tuşu: {self.servo_values['yaw']}°")
+            self.servo_values['yaw'] = max(-45, self.servo_values['yaw'] - 5)  # Artırıldı: 3→5
+            self.log(f"🎮 YAW E tuşu: {self.servo_values['yaw']}° (ARM:{self.armed})")
         else:
-            if self.servo_values['yaw'] > 0:
-                self.servo_values['yaw'] = max(0, self.servo_values['yaw'] - 2)
-            elif self.servo_values['yaw'] < 0:
-                self.servo_values['yaw'] = min(0, self.servo_values['yaw'] + 2)
+            # Otomatik sıfırlama YAVAŞLATILDI
+            if self.servo_values['yaw'] > 1:  # 0→1 threshold artırıldı
+                self.servo_values['yaw'] = max(0, self.servo_values['yaw'] - 1)  # 2→1 azaltıldı
+            elif self.servo_values['yaw'] < -1:  # 0→-1 threshold artırıldı
+                self.servo_values['yaw'] = min(0, self.servo_values['yaw'] + 1)  # 2→1 azaltıldı
         
         # Servo komutlarını gönder
         self.send_servo_commands()
@@ -1004,26 +1016,34 @@ class AdvancedTerminalGUI:
     
     def send_servo_commands(self):
         """Servo komutlarını TCP üzerinden gönder"""
-        if not self.mavlink or not self.mavlink.connected or not self.armed:
+        # Debug: YAW değeri her zaman göster (ARM durumundan bağımsız)
+        if abs(self.servo_values['yaw']) > 0:
+            self.log(f"📡 Servo YAW: {self.servo_values['yaw']}° (ARM:{self.armed})")
+        
+        # MAVLink gönderimi sadece bağlı ve ARM durumdayken
+        if not self.mavlink or not self.mavlink.connected:
+            self.log("⚠️ MAVLink bağlantısı yok - servo komutu gönderilemedi")
+            return
+            
+        if not self.armed:
+            self.log("⚠️ Sistem DISARMED - servo komutu gönderilemedi")
             return
         
         try:
-            # Debug: YAW değeri sıfır değilse log
-            if abs(self.servo_values['yaw']) > 0:
-                self.log(f"📡 Servo YAW gönderiliyor: {self.servo_values['yaw']}°")
-            
             if self.control_mode == "RAW":
                 self.mavlink.control_servos_raw(
                     self.servo_values['roll'],
                     self.servo_values['pitch'],
                     self.servo_values['yaw']
                 )
+                self.log(f"✅ RAW servo komutları gönderildi: R={self.servo_values['roll']}° P={self.servo_values['pitch']}° Y={self.servo_values['yaw']}°")
             else:  # PID
                 self.mavlink.control_servos_pid(
                     self.servo_values['roll'],
                     self.servo_values['pitch'],
                     self.servo_values['yaw']
                 )
+                self.log(f"✅ PID servo komutları gönderildi: R={self.servo_values['roll']}° P={self.servo_values['pitch']}° Y={self.servo_values['yaw']}°")
         except Exception as e:
             self.log(f"❌ Servo komut hatası: {e}")
     
@@ -1046,9 +1066,10 @@ class AdvancedTerminalGUI:
             self.log(f"❌ Motor komut hatası: {e}")
     
     def toggle_arm(self):
-        """ARM/DISARM toggle"""
+        """ARM/DISARM toggle - YAW test için güvenli"""
         if not self.mavlink or not self.mavlink.connected:
             self.log("❌ TCP MAVLink bağlantısı yok!")
+            self.log("💡 YAW test için önce TCP:127.0.0.1:5777 bağlantısını kontrol edin")
             return
         
         try:
@@ -1059,17 +1080,20 @@ class AdvancedTerminalGUI:
                     self.servo_values = {'roll': 0, 'pitch': 0, 'yaw': 0}
                     self.motor_value = 0
                     self.mission_planner.mission_running = False
-                    self.log("🟢 Sistem DISARM edildi")
+                    self.log("🟢 Sistem DISARM edildi - YAW test artık sadece görsel")
                 else:
                     self.log("❌ DISARM başarısız!")
             else:
                 if self.mavlink.arm_system():
                     self.armed = True
-                    self.log("🔴 Sistem ARM edildi - DİKKAT!")
+                    self.log("🔴 Sistem ARM edildi - YAW komutları artık MAVLink'e gönderiliyor!")
+                    self.log("⚠️ DİKKAT: Servo hareket edecek! Q/E tuşları ile YAW test edebilirsiniz")
                 else:
                     self.log("❌ ARM başarısız!")
+                    self.log("💡 YAW görsel testi için ARM gerekmez, Q/E tuşlarını deneyin")
         except Exception as e:
             self.log(f"❌ ARM/DISARM hatası: {e}")
+            self.log("💡 YAW manuel kontrolü DISARM durumda da çalışır (sadece görsel)")
     
     def show_config_menu(self):
         """Konfigürasyon menüsü"""
