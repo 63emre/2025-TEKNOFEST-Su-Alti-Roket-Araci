@@ -366,24 +366,38 @@ class AdvancedTerminalGUI:
                 roll_deg = self.live_imu['roll']
                 pitch_deg = self.live_imu['pitch']
             
-            # Gyroscope integration for yaw
+            # YAW - Gyroscope integration ile DAHA STABİL
             dt = 0.02  # 50Hz
             gyro_z_deg = math.degrees(gyro_z)
-            yaw_deg = self.live_imu['yaw'] + (gyro_z_deg * dt)
             
-            # Yaw normalize (-180 to +180)
+            # YAW drift'i azaltmak için dead zone ekle
+            if abs(gyro_z_deg) > 1.0:  # 1°/s threshold
+                yaw_deg = self.live_imu['yaw'] + (gyro_z_deg * dt)
+            else:
+                yaw_deg = self.live_imu['yaw']  # Drift'i önle
+            
+            # YAW normalize (-180 to +180)
             while yaw_deg > 180:
                 yaw_deg -= 360
             while yaw_deg < -180:
                 yaw_deg += 360
             
-            # Live IMU güncelle
+            # Live IMU güncelle - YAW için debug info
             self.live_imu['roll'] = roll_deg
             self.live_imu['pitch'] = pitch_deg
             self.live_imu['yaw'] = yaw_deg
             
+            # YAW debug bilgisi (çok sık olmasın diye)
+            if hasattr(self, 'yaw_debug_counter'):
+                self.yaw_debug_counter += 1
+            else:
+                self.yaw_debug_counter = 0
+            
+            if self.yaw_debug_counter % 250 == 0:  # Her 5 saniyede bir
+                self.log(f"🧭 YAW Debug: gyro_z={gyro_z_deg:.1f}°/s, yaw={yaw_deg:.1f}°")
+            
         except Exception as e:
-            # Hata durumunda mevcut değerleri koru
+            self.log(f"❌ YAW hesaplama hatası: {e}")
             pass
     
     def init_curses(self, stdscr):
@@ -465,14 +479,18 @@ class AdvancedTerminalGUI:
                 pitch_color = curses.color_pair(1) if abs(pitch_val) < 30 else curses.color_pair(3) if abs(pitch_val) < 60 else curses.color_pair(2)
                 self.stdscr.addstr(start_row + 3, 4, f"PITCH: {pitch_val:+7.1f}°", pitch_color | curses.A_BOLD)
                 
-                # Yaw - her zaman mavi
+                # YAW - BÜYÜK VE NET! Magenta renk
                 yaw_val = self.live_imu['yaw']
-                self.stdscr.addstr(start_row + 4, 4, f"YAW:   {yaw_val:+7.1f}°", curses.color_pair(4) | curses.A_BOLD)
+                yaw_color = curses.color_pair(5)  # Magenta - daha belirgin
+                self.stdscr.addstr(start_row + 4, 4, f"YAW:   {yaw_val:+7.1f}°", yaw_color | curses.A_BOLD)
                 
-                # Görsel çubuklar (0-30-60-90 derece)
-                self.draw_angle_bar(start_row + 2, 25, roll_val, "Roll")
-                self.draw_angle_bar(start_row + 3, 25, pitch_val, "Pitch")
-                self.draw_angle_bar(start_row + 4, 25, yaw_val, "Yaw")
+                # YAW ek bilgi
+                self.stdscr.addstr(start_row + 4, 20, f"[Q/E: Yaw Control]", curses.color_pair(6))
+                
+                # Görsel çubuklar
+                self.draw_angle_bar(start_row + 2, 45, roll_val, "Roll")
+                self.draw_angle_bar(start_row + 3, 45, pitch_val, "Pitch")
+                self.draw_yaw_compass(start_row + 4, 45, yaw_val)  # YAW için özel compass
                 
             else:
                 self.stdscr.addstr(start_row + 2, 4, "ROLL:  ---- °", curses.color_pair(2))
@@ -503,6 +521,42 @@ class AdvancedTerminalGUI:
         except:
             pass
     
+    def draw_yaw_compass(self, row, col, yaw_angle):
+        """YAW için özel compass çiz"""
+        try:
+            # YAW compass - 360° döner
+            compass_size = 30
+            center = compass_size // 2
+            
+            # Açıyı normalize et (0-360)
+            normalized_yaw = yaw_angle % 360
+            if normalized_yaw < 0:
+                normalized_yaw += 360
+            
+            # Compass çizimi
+            compass = ['·'] * compass_size
+            
+            # Ana yönleri işaretle
+            north_pos = center  # 0°/360° = Kuzey
+            east_pos = int(center + compass_size * 0.25) % compass_size  # 90° = Doğu
+            south_pos = int(center + compass_size * 0.5) % compass_size  # 180° = Güney  
+            west_pos = int(center + compass_size * 0.75) % compass_size  # 270° = Batı
+            
+            compass[north_pos] = 'N'
+            compass[east_pos] = 'E'
+            compass[south_pos] = 'S'
+            compass[west_pos] = 'W'
+            
+            # Mevcut YAW pozisyonunu işaretle
+            current_pos = int((normalized_yaw / 360.0) * compass_size) % compass_size
+            compass[current_pos] = '█'
+            
+            compass_str = ''.join(compass)
+            self.stdscr.addstr(row, col, f"{compass_str} YAW:{normalized_yaw:5.1f}°", curses.color_pair(5))
+            
+        except:
+            pass
+    
     def draw_controls_and_menu(self):
         """Kontrol ve menü bilgileri"""
         start_row = 9
@@ -518,19 +572,23 @@ class AdvancedTerminalGUI:
         """Ana kontrol menüsü"""
         self.stdscr.addstr(start_row, 2, "⌨️  MANUEL KONTROL:", curses.color_pair(4) | curses.A_BOLD)
         
-        # Real-time kontrol durumu
+        # Real-time kontrol durumu - YAW VURGULANDı
         self.stdscr.addstr(start_row + 1, 4, f"Roll:  {self.servo_values['roll']:+4.0f}° [A/D]", curses.color_pair(5))
         self.stdscr.addstr(start_row + 2, 4, f"Pitch: {self.servo_values['pitch']:+4.0f}° [W/S]", curses.color_pair(5))
-        self.stdscr.addstr(start_row + 3, 4, f"Yaw:   {self.servo_values['yaw']:+4.0f}° [Q/E]", curses.color_pair(5))
+        
+        # YAW - BÜYÜK VE BELİRGİN
+        yaw_color = curses.color_pair(4) | curses.A_BOLD if abs(self.servo_values['yaw']) > 0 else curses.color_pair(5)
+        self.stdscr.addstr(start_row + 3, 4, f"YAW:   {self.servo_values['yaw']:+4.0f}° [Q/E] <<<", yaw_color)
+        
         self.stdscr.addstr(start_row + 4, 4, f"Motor: {self.motor_value:+4.0f}% [O/L]", curses.color_pair(1 if abs(self.motor_value) < 50 else 3))
         
         # Komut menüsü
         self.stdscr.addstr(start_row + 6, 2, "📋 MENÜ KOMUTLARI:", curses.color_pair(4) | curses.A_BOLD)
         
         commands = [
-            "W/S: Pitch ±",       "A/D: Roll ±",        "Q/E: Yaw ±",
+            "W/S: Pitch ±",       "A/D: Roll ±",        "Q/E: Yaw ± (YAW!)",
             "O/L: Motor ±",       "PgUp/PgDn: Güçlü Motor", "Space: ARM/DISARM",
-            "R/F: RAW/PID",       "0: Mission Plan",    "T: Test Scripts",
+            "R: RAW/PID/YAW Reset", "0: Mission Plan",    "T: Test Scripts",
             "C: Config",          "V: Vibration",       "G: GPS Data",
             "X: Exit (Pencere)",  "",                   ""
         ]
@@ -688,10 +746,19 @@ class AdvancedTerminalGUI:
         elif key == ord(' '):  # Space
             self.toggle_arm()
         
-        # Kontrol modu
+        # Kontrol modu ve YAW reset
         elif key == ord('r'):
-            self.control_mode = "RAW"
-            self.log("🎛️ Kontrol modu: RAW PWM")
+            if self.control_mode == "RAW":
+                # R'yi iki kez basarsa YAW reset
+                self.control_mode = "PID"
+                self.log("🎛️ Kontrol modu: PID")
+            else:
+                # YAW RESET ÖZELLIĞI
+                self.live_imu['yaw'] = 0.0
+                self.servo_values['yaw'] = 0
+                self.log("🧭 YAW SIFIRLANDI!")
+                self.control_mode = "RAW"
+                self.log("🎛️ Kontrol modu: RAW PWM")
         elif key == ord('f'):
             self.control_mode = "PID"
             self.log("🎛️ Kontrol modu: PID")
