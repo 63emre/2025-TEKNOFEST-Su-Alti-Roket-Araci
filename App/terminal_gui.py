@@ -252,7 +252,8 @@ class AdvancedTerminalGUI:
             self.log("📡 TCP 127.0.0.1:5777 bağlantısı kuruluyor...")
             self.mavlink = MAVLinkHandler()
             
-            # Bağlantı kurulmaya çalışılıyor
+            # Bağlantı kurulmaya çalışılıyor - TIMEOUT ARTIRALDI
+            self.log("⏳ TCP bağlantısı kuruluyor (timeout: 20s)...")
             if self.mavlink.connect():
                 self.log("✅ TCP MAVLink bağlantısı kuruldu (127.0.0.1:5777)!")
                 
@@ -272,11 +273,16 @@ class AdvancedTerminalGUI:
                     self.log("⚠️ IMU verileri henüz gelmedi, thread başlatılıyor...")
                 
             else:
-                self.log("❌ TCP MAVLink bağlantısı başarısız!")
+                self.log("❌ TCP MAVLink bağlantısı başliyor ama connect() False döndü!")
+                self.log("🔧 Debug: TCP test script çalışıyor ama GUI bağlanamıyor")
+                self.log("💡 Çözüm: mavlink_handler.py timeout veya config sorunu")
                 self.tcp_data['connected'] = False
                 self.live_imu['connected'] = False
         except Exception as e:
-            self.log(f"❌ TCP MAVLink hatası: {e}")
+            self.log(f"❌ TCP MAVLink exception hatası: {e}")
+            self.log(f"🔧 Exception türü: {type(e).__name__}")
+            import traceback
+            self.log(f"🔍 Traceback: {traceback.format_exc()}")
             self.tcp_data['connected'] = False
             self.live_imu['connected'] = False
         

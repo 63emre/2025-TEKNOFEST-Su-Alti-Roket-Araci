@@ -71,9 +71,9 @@ class MAVLinkHandler:
                 use_native=False  # Pi5 uyumluluk için
             )
             
-            # Heartbeat bekle - timeout artırıldı
-            print("⏳ Heartbeat bekleniyor...")
-            self.master.wait_heartbeat(timeout=15)
+            # Heartbeat bekle - GUI için timeout artırıldı
+            print("⏳ Heartbeat bekleniyor (20s timeout)...")
+            self.master.wait_heartbeat(timeout=20)
             
             self.connected = True
             print("✅ TCP MAVLink bağlantısı başarılı!")
@@ -87,7 +87,11 @@ class MAVLinkHandler:
             
         except Exception as e:
             print(f"❌ TCP MAVLink bağlantı hatası: {e}")
+            print(f"🔧 Exception türü: {type(e).__name__}")
             print("💡 Kontrol et: ArduSub çalışıyor mu? TCP port açık mı?")
+            print(f"🔍 Connection string: {connection_string}")
+            import traceback
+            print(f"📄 Traceback: {traceback.format_exc()}")
             self.connected = False
             return False
     
