@@ -58,16 +58,27 @@ class MAVLinkHandler:
             }
     
     def connect(self):
-        """Pixhawk'a bağlan"""
+        """Pixhawk'a TCP bağlantısı - Pi5 + PiOS OPTİMİZE"""
         try:
             connection_string = self.config["mavlink"]["connection_string"]
-            print(f"🔌 Pixhawk'a bağlanıyor: {connection_string}")
+            print(f"🔌 TCP MAVLink bağlantısı kuruluyor: {connection_string}")
             
-            self.master = mavutil.mavlink_connection(connection_string)
-            self.master.wait_heartbeat(timeout=10)
+            # Pi5 için TCP bağlantı optimize
+            self.master = mavutil.mavlink_connection(
+                connection_string,
+                baud=57600,  # TCP için önemli değil ama set edelim
+                source_system=255,  # Ground station ID
+                use_native=False  # Pi5 uyumluluk için
+            )
+            
+            # Heartbeat bekle - timeout artırıldı
+            print("⏳ Heartbeat bekleniyor...")
+            self.master.wait_heartbeat(timeout=15)
             
             self.connected = True
-            print("✅ MAVLink bağlantısı başarılı!")
+            print("✅ TCP MAVLink bağlantısı başarılı!")
+            print(f"📡 Target System: {self.master.target_system}")
+            print(f"📡 Target Component: {self.master.target_component}")
             
             # Sistem durumunu kontrol et
             self.check_system_status()
@@ -75,7 +86,9 @@ class MAVLinkHandler:
             return True
             
         except Exception as e:
-            print(f"❌ Bağlantı hatası: {e}")
+            print(f"❌ TCP MAVLink bağlantı hatası: {e}")
+            print("💡 Kontrol et: ArduSub çalışıyor mu? TCP port açık mı?")
+            self.connected = False
             return False
     
     def disconnect(self):
@@ -265,23 +278,39 @@ class MAVLinkHandler:
             return self.control_servos_raw(roll_output, pitch_output, yaw_output)
     
     def get_imu_data(self):
-        """IMU verilerini al"""
-        if not self.connected:
+        """IMU verilerini al - Pi5 + TCP optimize"""
+        if not self.connected or not self.master:
             return None
             
         try:
-            msg = self.master.recv_match(type='RAW_IMU', blocking=False, timeout=0.1)
+            # Pi5'te TCP üzerinden IMU verisi almayı optimize et
+            msg = self.master.recv_match(type='RAW_IMU', blocking=False, timeout=0.05)
             if msg:
-                # Convert to SI units
-                accel_x = msg.xacc / 1000.0  # mg to m/s²
-                accel_y = msg.yacc / 1000.0
-                accel_z = msg.zacc / 1000.0
-                gyro_x = math.radians(msg.xgyro / 1000.0)  # mrad/s to rad/s
-                gyro_y = math.radians(msg.ygyro / 1000.0)
-                gyro_z = math.radians(msg.zgyro / 1000.0)
+                # Convert to SI units - DÜZELTİLDİ
+                accel_x = msg.xacc / 1000.0 * 9.81  # mg to m/s² (gravity included)
+                accel_y = msg.yacc / 1000.0 * 9.81
+                accel_z = msg.zacc / 1000.0 * 9.81
+                gyro_x = msg.xgyro / 1000.0 * (math.pi / 180.0)  # mdeg/s to rad/s
+                gyro_y = msg.ygyro / 1000.0 * (math.pi / 180.0)
+                gyro_z = msg.zgyro / 1000.0 * (math.pi / 180.0)
                 
                 return accel_x, accel_y, accel_z, gyro_x, gyro_y, gyro_z
-        except:
+            
+            # Alternatif: SCALED_IMU mesajını dene
+            msg_scaled = self.master.recv_match(type='SCALED_IMU', blocking=False, timeout=0.05)
+            if msg_scaled:
+                # SCALED_IMU formatı
+                accel_x = msg_scaled.xacc / 1000.0  # mg to m/s²
+                accel_y = msg_scaled.yacc / 1000.0
+                accel_z = msg_scaled.zacc / 1000.0
+                gyro_x = msg_scaled.xgyro / 1000.0 * (math.pi / 180.0)  # mrad/s to rad/s
+                gyro_y = msg_scaled.ygyro / 1000.0 * (math.pi / 180.0)
+                gyro_z = msg_scaled.zgyro / 1000.0 * (math.pi / 180.0)
+                
+                return accel_x, accel_y, accel_z, gyro_x, gyro_y, gyro_z
+                
+        except Exception as e:
+            # Sessiz hata - çok fazla log olmasın
             pass
         return None
     

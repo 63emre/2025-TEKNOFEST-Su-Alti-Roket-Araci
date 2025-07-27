@@ -7,20 +7,15 @@ TCP-Based Real-time Control & Mission Planning System
 import sys
 import os
 
-# Windows curses desteği
+# Pi5 + PiOS curses desteği - BASİTLEŞTİRİLDİ
 try:
     import curses
-except ImportError:
-    print("❌ Windows'ta curses desteklenmiyor!")
-    print("💡 Çözüm: pip install windows-curses")
-    try:
-        import subprocess
-        subprocess.check_call([sys.executable, "-m", "pip", "install", "windows-curses"])
-        import curses
-        print("✅ windows-curses başarıyla yüklendi!")
-    except Exception as e:
-        print(f"❌ Otomatik yükleme başarısız: {e}")
-        sys.exit(1)
+    print("✅ Terminal UI hazır (Pi5 + PiOS)")
+except ImportError as e:
+    print(f"❌ Terminal UI hatası: {e}")
+    print("💡 Pi'de normalde curses yüklü olmalı")
+    print("🔧 Çözüm: sudo apt update && sudo apt install python3-dev")
+    sys.exit(1)
 
 import threading
 import time
@@ -30,15 +25,29 @@ import math
 from datetime import datetime
 from collections import deque
 
-# Local imports
+# Local imports - BASİTLEŞTİRİLDİ
 try:
     from mavlink_handler import MAVLinkHandler
-    from navigation_engine import NavigationEngine
-    from vibration_monitor import VibrationMonitor
-    from depth_sensor import D300DepthSensor
-    from gpio_controller import GPIOController
+    # Opsiyonel imports - hata verirse devam et
+    try:
+        from depth_sensor import D300DepthSensor
+        HAS_DEPTH_SENSOR = True
+    except ImportError:
+        HAS_DEPTH_SENSOR = False
+        print("⚠️ Depth sensor modülü yok - I2C özelliği devre dışı")
+    
+    try:
+        from gpio_controller import GPIOController  
+        HAS_GPIO = True
+    except ImportError:
+        HAS_GPIO = False
+        print("⚠️ GPIO controller yok - LED/Buzzer devre dışı")
+        
+    # Navigation ve vibration monitor şimdilik kaldırıldı - basit terminal için gerekli değil
+    
 except ImportError as e:
-    print(f"❌ Import hatası: {e}")
+    print(f"❌ Kritik import hatası: {e}")
+    print("💡 En azından mavlink_handler.py gerekli!")
     sys.exit(1)
 
 class MissionPlanner:
@@ -146,10 +155,8 @@ class TestScriptManager:
 class AdvancedTerminalGUI:
     def __init__(self):
         """Advanced Terminal GUI başlatıcı"""
-        # Sistem bileşenleri
+        # Sistem bileşenleri - BASİTLEŞTİRİLDİ
         self.mavlink = None
-        self.navigation = None
-        self.vibration_monitor = None
         self.depth_sensor = None
         self.gpio_controller = None
         
@@ -273,34 +280,35 @@ class AdvancedTerminalGUI:
             self.tcp_data['connected'] = False
             self.live_imu['connected'] = False
         
-        # Navigation engine
-        try:
-            if self.mavlink and self.mavlink.connected:
-                self.navigation = NavigationEngine(self.mavlink)
-                self.log("✅ Navigation engine başlatıldı")
-            else:
-                self.log("⚠️ Navigation engine MAVLink olmadan başlatılamadı")
-        except Exception as e:
-            self.log(f"❌ Navigation hatası: {e}")
+        # Opsiyonel bileşenler - hata verirse devam et
         
         # I2C Depth sensor (0x76 adresinde) - OPSIYONEL
-        try:
-            self.depth_sensor = D300DepthSensor()
-            if self.depth_sensor.connect():
-                self.log("✅ I2C Depth sensörü (0x76) bağlandı!")
-            else:
-                self.log("⚠️ I2C Depth sensörü (0x76) bağlanamadı - normal")
+        if HAS_DEPTH_SENSOR:
+            try:
+                self.depth_sensor = D300DepthSensor()
+                if self.depth_sensor.connect():
+                    self.log("✅ I2C Depth sensörü (0x76) bağlandı!")
+                else:
+                    self.log("⚠️ I2C Depth sensörü (0x76) bağlanamadı")
+                    self.depth_sensor = None
+            except Exception as e:
+                self.log(f"⚠️ I2C Depth sensör hatası: {e}")
                 self.depth_sensor = None
-        except Exception as e:
-            self.log(f"⚠️ I2C Depth sensörü uyarısı: {e}")
+        else:
             self.depth_sensor = None
+            self.log("ℹ️ Depth sensor modülü yüklü değil")
         
-        # GPIO controller - OPSIYONEL
-        try:
-            self.gpio_controller = GPIOController(self.config)
-            self.log("✅ GPIO controller başlatıldı")
-        except Exception as e:
-            self.log(f"⚠️ GPIO controller uyarısı: {e}")
+        # GPIO controller - OPSIYONEL 
+        if HAS_GPIO:
+            try:
+                self.gpio_controller = GPIOController(self.config)
+                self.log("✅ GPIO controller başlatıldı")
+            except Exception as e:
+                self.log(f"⚠️ GPIO controller hatası: {e}")
+                self.gpio_controller = None
+        else:
+            self.gpio_controller = None
+            self.log("ℹ️ GPIO controller modülü yüklü değil")
         
         # TCP veri thread başlat
         self.start_tcp_data_thread()
@@ -1199,14 +1207,23 @@ class AdvancedTerminalGUI:
         # Basit implementasyon - detayları daha sonra
     
     def show_vibration_data(self):
-        """Vibration verilerini göster"""
-        self.log("📈 Vibration verileri gösteriliyor...")
-        # Vibration monitor'den veri al ve göster
+        """Vibration verilerini göster - OPSIYONEL"""
+        if self.mavlink and self.mavlink.connected:
+            self.log("📈 Vibration monitoring şimdilik devre dışı")
+        else:
+            self.log("⚠️ MAVLink bağlantısı gerekli")
     
     def show_gps_data(self):
-        """GPS verilerini göster"""
-        self.log("🗺️ GPS verileri gösteriliyor...")
-        # GPS verilerini al ve göster
+        """GPS verilerini göster - OPSIYONEL"""
+        if self.mavlink and self.mavlink.connected:
+            gps_data = self.mavlink.get_gps_data()
+            if gps_data:
+                lat, lon, alt, sats = gps_data
+                self.log(f"🗺️ GPS: Lat={lat:.6f}° Lon={lon:.6f}° Alt={alt:.1f}m Sats={sats}")
+            else:
+                self.log("🗺️ GPS verisi alınamadı")
+        else:
+            self.log("⚠️ MAVLink bağlantısı gerekli")
     
     def main_loop(self):
         """Ana döngü - optimize edilmiş"""
