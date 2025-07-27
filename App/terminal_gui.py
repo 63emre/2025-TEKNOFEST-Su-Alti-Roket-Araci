@@ -271,11 +271,25 @@ class AdvancedTerminalGUI:
                 print(f"🔧 DEBUG: check_system_status() sonrası mavlink.connected = {self.mavlink.connected}")
                 self.log(f"📊 MAVLink durumu: Connected={self.mavlink.connected}, Armed={self.mavlink.armed}")
                 
-                # TCP data connected flag'i ayarla
+                # TCP data connected flag'i ayarla - DOĞRULAMA İLE
                 self.log("🔧 TCP flags set ediliyor...")
-                self.tcp_data['connected'] = True
-                self.live_imu['connected'] = True
-                self.log(f"✅ TCP flags set edildi: tcp_data={self.tcp_data['connected']}, live_imu={self.live_imu['connected']}")
+                
+                # Double check: Gerçekten bağlı mı?
+                if self.mavlink and self.mavlink.connected:
+                    self.tcp_data['connected'] = True
+                    self.live_imu['connected'] = True
+                    self.log(f"✅ TCP flags set edildi: tcp_data={self.tcp_data['connected']}, live_imu={self.live_imu['connected']}")
+                    
+                    # IMU test - çalışıyor mu kontrol et
+                    test_imu = self.mavlink.get_imu_data()
+                    if test_imu:
+                        self.log("✅ İlk IMU verisi alındı - sistem hazır!")
+                    else:
+                        self.log("⚠️ IMU verisi alınamadı ama bağlantı var")
+                else:
+                    self.log("❌ mavlink.connected False - TCP flags set edilmedi!")
+                    self.tcp_data['connected'] = False
+                    self.live_imu['connected'] = False
                 
                 # İlk IMU test
                 test_imu = self.mavlink.get_imu_data()
@@ -397,15 +411,31 @@ class AdvancedTerminalGUI:
             mavlink_connected = self.mavlink.connected if self.mavlink else False
             self.log(f"🔍 TCP Thread Debug: mavlink={mavlink_exists}, connected={mavlink_connected}")
         
-        if not self.mavlink or not self.mavlink.connected:
+        # TCP Thread connection check - DÜZELTİLDİ
+        if not self.mavlink:
             with self.data_lock:
-                # Sadece ilk kez False yapıyorsa log et
+                self.tcp_data['connected'] = False
+                self.live_imu['connected'] = False
+            return
+        
+        # MAVLink connected check - DAHA TOLERANSLI
+        if not hasattr(self.mavlink, 'connected') or not self.mavlink.connected:
+            # Bağlantı yoksa ama master varsa yeniden kontrol et
+            if hasattr(self.mavlink, 'master') and self.mavlink.master:
+                try:
+                    # Heartbeat kontrol et - timeout olmadan
+                    msg = self.mavlink.master.recv_match(type='HEARTBEAT', blocking=False, timeout=0.1)
+                    if msg:
+                        # Heartbeat varsa bağlantı var demektir
+                        self.mavlink.connected = True
+                except:
+                    pass
+        
+        # Hala bağlantı yoksa False set et
+        if not getattr(self.mavlink, 'connected', False):
+            with self.data_lock:
                 if self.tcp_data.get('connected', False):
-                    self.log("⚠️ TCP Thread: Bağlantı False olarak set ediliyor!")
-                    self.log(f"   mavlink exists: {self.mavlink is not None}")
-                    if self.mavlink:
-                        self.log(f"   mavlink.connected: {self.mavlink.connected}")
-                
+                    self.log("⚠️ TCP Thread: MAVLink bağlantısı kesildi")
                 self.tcp_data['connected'] = False
                 self.live_imu['connected'] = False
             return
