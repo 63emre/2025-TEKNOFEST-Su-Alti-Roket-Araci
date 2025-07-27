@@ -182,8 +182,8 @@ class AdvancedTerminalGUI:
         self.width = 0
         self.current_menu = "main"  # main, mission_plan, test_scripts
         
-        # Logs - optimize edilmiş
-        self.log_messages = deque(maxlen=50)
+        # Logs - debug için artırıldı
+        self.log_messages = deque(maxlen=200)
         
         # Live IMU data - sadece roll/pitch/yaw
         self.live_imu = {
@@ -247,23 +247,35 @@ class AdvancedTerminalGUI:
         """Sistem bileşenlerini başlat - TCP odaklı - DÜZELTİLDİ"""
         self.log("🚀 TEKNOFEST ROV Advanced Terminal GUI başlatılıyor...")
         
-        # TCP MAVLink bağlantısı - DEBUG SONUCU DÜZELTMESİ
+        # TCP MAVLink bağlantısı - DETAYLI DEBUG
         try:
-            self.log("📡 TCP 127.0.0.1:5777 bağlantısı kuruluyor...")
+            self.log("📡 TCP 127.0.0.1:5777 bağlantısı başlatılıyor...")
+            self.log("🔧 MAVLinkHandler() oluşturuluyor...")
             self.mavlink = MAVLinkHandler()
+            self.log("✅ MAVLinkHandler() oluşturuldu")
             
-            # Bağlantı kurulmaya çalışılıyor - TIMEOUT ARTIRALDI
-            self.log("⏳ TCP bağlantısı kuruluyor (timeout: 20s)...")
-            if self.mavlink.connect():
+            # Bağlantı kurulmaya çalışılıyor - DETAYLI LOG
+            self.log("⏳ mavlink.connect() çağrılıyor (timeout: 20s)...")
+            print("🔧 DEBUG: mavlink.connect() çağrılıyor...")  # Terminal'de de gör
+            connect_result = self.mavlink.connect()
+            print(f"🔧 DEBUG: connect() sonucu: {connect_result}")  # Terminal'de de gör
+            self.log(f"🔍 mavlink.connect() sonucu: {connect_result}")
+            
+            if connect_result:
                 self.log("✅ TCP MAVLink bağlantısı kuruldu (127.0.0.1:5777)!")
                 
                 # Sistem durumunu kontrol et
+                self.log("🔍 check_system_status() çağrılıyor...")
+                print(f"🔧 DEBUG: connect() sonrası mavlink.connected = {self.mavlink.connected}")
                 self.mavlink.check_system_status()
+                print(f"🔧 DEBUG: check_system_status() sonrası mavlink.connected = {self.mavlink.connected}")
                 self.log(f"📊 MAVLink durumu: Connected={self.mavlink.connected}, Armed={self.mavlink.armed}")
                 
                 # TCP data connected flag'i ayarla
+                self.log("🔧 TCP flags set ediliyor...")
                 self.tcp_data['connected'] = True
                 self.live_imu['connected'] = True
+                self.log(f"✅ TCP flags set edildi: tcp_data={self.tcp_data['connected']}, live_imu={self.live_imu['connected']}")
                 
                 # İlk IMU test
                 test_imu = self.mavlink.get_imu_data()
@@ -327,10 +339,15 @@ class AdvancedTerminalGUI:
         self.log("✅ Sistem başlatma tamamlandı!")
         
         # Başlangıç durumu özeti
+        print(f"🔧 DEBUG: Final tcp_data['connected'] = {self.tcp_data['connected']}")
+        print(f"🔧 DEBUG: Final live_imu['connected'] = {self.live_imu['connected']}")
+        
         if self.tcp_data['connected']:
             self.log("🎯 HAZIR: TCP bağlı, IMU aktif, kontroller hazır!")
+            print("🔧 DEBUG: HAZIR mesajı yazdırıldı")
         else:
-            self.log("⚠️ KISMÎ: TCP bağlantısı yok, offline mod aktif")
+            self.log("⚠️ KISMÎ: TCP bağlantısı yok, offline mod aktiv")
+            print("🔧 DEBUG: KISMÎ mesajı yazdırıldı")
     
     def start_tcp_data_thread(self):
         """TCP veri thread'ini başlat - yüksek frekanslı"""
@@ -368,9 +385,27 @@ class AdvancedTerminalGUI:
                 time.sleep(0.1)
     
     def update_tcp_data(self):
-        """TCP'den live veri güncelle - DEBUG DÜZELTMESİ"""
+        """TCP'den live veri güncelle - DEBUG EKLENDI"""
+        # DEBUG: Bağlantı durumunu kontrol et
+        if not hasattr(self, 'tcp_debug_counter'):
+            self.tcp_debug_counter = 0
+        self.tcp_debug_counter += 1
+        
+        # Her 100 call'da bir debug
+        if self.tcp_debug_counter % 100 == 0:
+            mavlink_exists = self.mavlink is not None
+            mavlink_connected = self.mavlink.connected if self.mavlink else False
+            self.log(f"🔍 TCP Thread Debug: mavlink={mavlink_exists}, connected={mavlink_connected}")
+        
         if not self.mavlink or not self.mavlink.connected:
             with self.data_lock:
+                # Sadece ilk kez False yapıyorsa log et
+                if self.tcp_data.get('connected', False):
+                    self.log("⚠️ TCP Thread: Bağlantı False olarak set ediliyor!")
+                    self.log(f"   mavlink exists: {self.mavlink is not None}")
+                    if self.mavlink:
+                        self.log(f"   mavlink.connected: {self.mavlink.connected}")
+                
                 self.tcp_data['connected'] = False
                 self.live_imu['connected'] = False
             return
