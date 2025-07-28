@@ -75,7 +75,11 @@ def update_config_file(new_ip):
             config = json.load(f)
         
         # Hem localhost hem de yeni IP'yi test etmek için seçenekler
-        localhost_connection = "tcp:127.0.0.1:5777"
+        # Use serial connection instead of TCP
+        import os  
+        serial_port = os.getenv("MAV_ADDRESS", "/dev/ttyACM0")
+        baud_rate = int(os.getenv("MAV_BAUD", "115200"))
+        localhost_connection = f"{serial_port},{baud_rate}"
         network_connection = f"tcp:{new_ip}:5777"
         
         print(f"\n🔧 Test edilen bağlantı seçenekleri:")

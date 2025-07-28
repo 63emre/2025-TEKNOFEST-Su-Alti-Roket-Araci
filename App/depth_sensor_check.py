@@ -17,9 +17,14 @@ def check_depth_sensor():
     print("=" * 50)
     
     try:
-        # MAVLink bağlantısı
-        print("🔌 MAVLink'e bağlanılıyor...")
-        master = mavutil.mavlink_connection('tcp:127.0.0.1:5777')
+        # Serial MAVLink bağlantısı with environment variables
+        import os
+        serial_port = os.getenv("MAV_ADDRESS", "/dev/ttyACM0")
+        baud_rate = int(os.getenv("MAV_BAUD", "115200"))
+        
+        print("🔌 MAVLink Serial bağlantısı kuruluyor...")
+        print(f"📡 Serial: {serial_port} @ {baud_rate} baud")
+        master = mavutil.mavlink_connection(serial_port, baud=baud_rate, autoreconnect=True)
         
         # Heartbeat bekle
         print("💓 Heartbeat bekleniyor...")
@@ -119,7 +124,9 @@ def check_depth_sensor():
         print("\n👋 Kontrol durduruldu!")
     except Exception as e:
         print(f"\n❌ Hata: {e}")
-        print("💡 MAVLink bağlantısını kontrol et: tcp:127.0.0.1:5777")
+        print("💡 MAVLink serial bağlantısını kontrol et")
+        print("   • Pixhawk'ın bağlı olduğunu kontrol edin")
+        print("   • MAV_ADDRESS ve MAV_BAUD environment variable'larını kontrol edin")
 
 if __name__ == "__main__":
     check_depth_sensor() 

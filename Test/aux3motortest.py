@@ -1,9 +1,18 @@
 from pymavlink import mavutil
 import time
+import os
 
 MOTOR_CH = 11  # AUX3
-master = mavutil.mavlink_connection('tcp:127.0.0.1:5777')
-master.wait_heartbeat()
+
+# Serial MAVLink connection with environment variable support
+serial_port = os.getenv("MAV_ADDRESS", "/dev/ttyACM0")
+baud_rate = int(os.getenv("MAV_BAUD", "115200"))
+
+print(f"🔌 Serial bağlantısı: {serial_port} @ {baud_rate} baud")
+master = mavutil.mavlink_connection(serial_port, baud=baud_rate, autoreconnect=True)
+print("💓 Heartbeat bekleniyor...")
+master.wait_heartbeat(timeout=15)
+print("✅ MAVLink bağlantısı kuruldu")
 
 while True:
     user_input = input("Saniye (q=çıkış): ").strip()

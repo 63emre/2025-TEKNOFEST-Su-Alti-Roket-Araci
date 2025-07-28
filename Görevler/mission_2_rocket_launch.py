@@ -30,7 +30,9 @@ import sys
 import os
 
 # MAVLink connection
-MAV_ADDRESS = 'tcp:127.0.0.1:5777'
+# Serial MAVLink connection with environment variable support
+import os
+MAV_ADDRESS = os.getenv("MAV_ADDRESS", "/dev/ttyACM0") + "," + str(os.getenv("MAV_BAUD", "115200"))
 
 # Mission Parameters
 MISSION_PARAMS = {
@@ -178,10 +180,21 @@ class Mission2RocketLaunch:
     def connect_pixhawk(self):
         """Pixhawk MAVLink bağlantısı"""
         try:
-            print(f"🔌 Pixhawk'a bağlanılıyor: {MAV_ADDRESS}")
-            self.master = mavutil.mavlink_connection(MAV_ADDRESS)
+            print("🔌 Pixhawk'a bağlanılıyor...")
+            
+            # Handle serial vs TCP connection
+            if ',' in MAV_ADDRESS:
+                # Serial connection: port,baud
+                port, baud = MAV_ADDRESS.split(',')
+                print(f"📡 Serial: {port} @ {baud} baud")
+                self.master = mavutil.mavlink_connection(port, baud=int(baud), autoreconnect=True)
+            else:
+                # TCP or other connection
+                print(f"🌐 TCP: {MAV_ADDRESS}")
+                self.master = mavutil.mavlink_connection(MAV_ADDRESS)
+                
             print("💓 Heartbeat bekleniyor...")
-            self.master.wait_heartbeat(timeout=10)
+            self.master.wait_heartbeat(timeout=15)
             self.connected = True
             print("✅ MAVLink bağlantısı başarılı!")
             return True

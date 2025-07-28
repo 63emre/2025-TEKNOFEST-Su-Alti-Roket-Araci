@@ -86,7 +86,14 @@ def test_mavlink_connection():
         
         # MAVLink bağlantısı dene
         print("🔌 MAVLink bağlantısı kuruluyor...")
-        master = mavutil.mavlink_connection('tcp:127.0.0.1:5777', timeout=10)
+        
+        # Serial connection with environment variables
+        import os
+        serial_port = os.getenv("MAV_ADDRESS", "/dev/ttyACM0")
+        baud_rate = int(os.getenv("MAV_BAUD", "115200"))
+        
+        print(f"📡 Serial connection: {serial_port} @ {baud_rate} baud")
+        master = mavutil.mavlink_connection(serial_port, baud=baud_rate, autoreconnect=True)
         
         print("⏳ Heartbeat bekleniyor...")
         master.wait_heartbeat(timeout=15)

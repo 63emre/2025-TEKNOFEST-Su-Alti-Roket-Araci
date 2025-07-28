@@ -38,7 +38,8 @@ class MotorTest:
                     }
                 },
                 'mavlink': {
-                    'connection_string': 'tcp:127.0.0.1:5777',
+                    # Serial MAVLink connection with environment variable support
+                    'connection_string': os.getenv("MAV_ADDRESS", "/dev/ttyACM0") + "," + str(os.getenv("MAV_BAUD", "115200")),
                     'command_timeout': 5
                 }
             }

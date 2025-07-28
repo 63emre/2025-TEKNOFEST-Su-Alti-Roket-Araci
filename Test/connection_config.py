@@ -20,7 +20,7 @@ def get_default_connections():
         "/dev/ttyUSB0,115200",         # Alternative USB serial
         "/dev/ttyUSB1,115200",         # Alternative USB serial  
         "/dev/ttyAMA0,115200",         # Raspberry Pi UART
-        "tcp:127.0.0.1:5777",         # Fallback TCP (if MAVLink proxy running)
+        # TCP connection removed - using serial only for direct connection
     ]
     
     print(f"🔧 Default connections configured:")
@@ -34,6 +34,44 @@ def get_primary_connection():
     serial_port = os.getenv("MAV_ADDRESS", "/dev/ttyACM0")
     baud_rate = int(os.getenv("MAV_BAUD", "115200"))
     return f"{serial_port},{baud_rate}"
+
+def get_test_constants():
+    """Test scriptleri için eski uyumluluk - serial connection döndür"""
+    return {
+        'MAV_ADDRESS': get_primary_connection()
+    }
+
+def create_mavlink_connection(connection_string=None, timeout=15):
+    """Standart MAVLink bağlantısı oluştur - serial veya TCP destekli"""
+    if connection_string is None:
+        connection_string = get_primary_connection()
+    
+    try:
+        print(f"🔌 MAVLink bağlantısı kuruluyor...")
+        
+        if ',' in connection_string:
+            # Serial connection: port,baud
+            port, baud = connection_string.split(',')
+            print(f"📡 Serial: {port} @ {baud} baud")
+            master = mavutil.mavlink_connection(port, baud=int(baud), autoreconnect=True)
+        else:
+            # TCP or other connection
+            print(f"🌐 TCP: {connection_string}")
+            master = mavutil.mavlink_connection(connection_string)
+        
+        print("💓 Heartbeat bekleniyor...")
+        master.wait_heartbeat(timeout=timeout)
+        print("✅ MAVLink bağlantısı başarılı!")
+        
+        return master
+        
+    except Exception as e:
+        print(f"❌ MAVLink bağlantı hatası: {e}")
+        print("💡 Kontrol listesi:")
+        print("   • Pixhawk cihazının bağlı olduğunu kontrol edin")
+        print("   • Serial port ve baud rate ayarlarını kontrol edin")
+        print("   • ArduSub firmware'inin çalıştığını kontrol edin")
+        raise
 
 def test_connection(connection_string, timeout=5):
     """Bağlantıyı test et"""

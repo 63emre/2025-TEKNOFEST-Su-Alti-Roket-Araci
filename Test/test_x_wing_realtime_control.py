@@ -41,16 +41,18 @@ except ImportError:
     HAS_GPIOZERO = False
     print("⚠️ gpiozero not available")
 
-# MAVLink bağlantı adresi - DYNAMIC CONFIGURATION SYSTEM
+# MAVLink Serial bağlantı adresi - DYNAMIC CONFIGURATION SYSTEM
+import os
 try:
-    from connection_config import get_test_constants
-    CONFIG = get_test_constants()
-    MAV_ADDRESS = CONFIG['MAV_ADDRESS']
-    print(f"📡 Using dynamic connection: {MAV_ADDRESS}")
+    from connection_config import get_primary_connection
+    MAV_ADDRESS = get_primary_connection()
+    print(f"📡 Using dynamic serial connection: {MAV_ADDRESS}")
 except ImportError:
-    # Fallback to static config
-    MAV_ADDRESS = 'tcp:127.0.0.1:5777'
-    print(f"⚠️ Using fallback connection: {MAV_ADDRESS}")
+    # Fallback to serial config with environment variables
+    serial_port = os.getenv("MAV_ADDRESS", "/dev/ttyACM0")
+    baud_rate = int(os.getenv("MAV_BAUD", "115200"))
+    MAV_ADDRESS = f"{serial_port},{baud_rate}"
+    print(f"⚠️ Using fallback serial connection: {MAV_ADDRESS}")
 
 # GERÇEK HARDWARE - Servo kanalları (AUX to MAVLink channel mapping)
 SERVO_CHANNELS = {
@@ -250,9 +252,21 @@ class XWingRealtimeController:
     def connect_pixhawk(self):
         """Pixhawk bağlantısı"""
         try:
-            print(f"🔌 Pixhawk'a bağlanılıyor: {MAV_ADDRESS}")
-            self.master = mavutil.mavlink_connection(MAV_ADDRESS)
-            self.master.wait_heartbeat(timeout=10)
+            print(f"🔌 Pixhawk'a bağlanılıyor...")
+            
+            # Handle serial vs TCP connection
+            if ',' in MAV_ADDRESS:
+                # Serial connection: port,baud
+                port, baud = MAV_ADDRESS.split(',')
+                print(f"📡 Serial: {port} @ {baud} baud")
+                self.master = mavutil.mavlink_connection(port, baud=int(baud), autoreconnect=True)
+            else:
+                # TCP or other connection
+                print(f"🌐 TCP: {MAV_ADDRESS}")
+                self.master = mavutil.mavlink_connection(MAV_ADDRESS)
+            
+            print("💓 Heartbeat bekleniyor...")
+            self.master.wait_heartbeat(timeout=15)
             
             self.connected = True
             print("✅ MAVLink bağlantısı başarılı!")

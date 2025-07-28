@@ -216,7 +216,11 @@ class PIDSwimControl:
         print("\n🔌 Pixhawk TCP bağlantısı kuruluyor...")
         
         # MAVLink bağlantısı
-        connection_string = "tcp:127.0.0.1:5777"
+        # Serial MAVLink connection with environment variable support
+import os
+serial_port = os.getenv("MAV_ADDRESS", "/dev/ttyACM0")
+baud_rate = int(os.getenv("MAV_BAUD", "115200"))
+connection_string = f"{serial_port},{baud_rate}"
         try:
             self.mavlink_master = mavutil.mavlink_connection(connection_string)
             self.mavlink_master.wait_heartbeat(timeout=10)

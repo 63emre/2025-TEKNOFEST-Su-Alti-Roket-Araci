@@ -29,7 +29,12 @@ def debug_mavlink_connection():
             config = json.load(f)
         
         tcp_config = config.get("mavlink", {})
-        tcp_config["connection_string"] = "tcp:127.0.0.1:5777"
+        
+        # Use serial connection instead of TCP
+        import os
+        serial_port = os.getenv("MAV_ADDRESS", "/dev/ttyACM0")
+        baud_rate = int(os.getenv("MAV_BAUD", "115200"))
+        tcp_config["connection_string"] = f"{serial_port},{baud_rate}"
         print(f"✅ Config yüklendi: {tcp_config['connection_string']}")
         
     except Exception as e:

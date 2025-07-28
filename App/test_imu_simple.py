@@ -13,9 +13,14 @@ def test_imu_data():
     print("🔍 IMU Test Başlatılıyor...")
     
     try:
-        # TCP bağlantısı
-        print("🔌 TCP bağlantısı kuruluyor...")
-        master = mavutil.mavlink_connection('tcp:127.0.0.1:5777')
+        # Serial bağlantısı with environment variables
+        import os
+        serial_port = os.getenv("MAV_ADDRESS", "/dev/ttyACM0")
+        baud_rate = int(os.getenv("MAV_BAUD", "115200"))
+        
+        print("🔌 Serial bağlantısı kuruluyor...")
+        print(f"📡 Serial: {serial_port} @ {baud_rate} baud")
+        master = mavutil.mavlink_connection(serial_port, baud=baud_rate, autoreconnect=True)
         
         # Heartbeat bekle
         print("💓 Heartbeat bekleniyor...")

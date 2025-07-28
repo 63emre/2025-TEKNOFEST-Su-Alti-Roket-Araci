@@ -272,11 +272,26 @@ class XWingController:
     IMU Filtresi + PID + Servo Control
     """
     
-    def __init__(self, connection_string='tcp:127.0.0.1:5777'):
-        # MAVLink bağlantısı
-        self.master = mavutil.mavlink_connection(connection_string)
-        self.master.wait_heartbeat()
-        print("MAVLink bağlantısı kuruldu")
+    def __init__(self, connection_string='/dev/ttyACM0,115200'):
+        # MAVLink bağlantısı - Serial connection support
+        try:
+            if ',' in connection_string:
+                # Serial connection: port,baud
+                port, baud = connection_string.split(',')
+                print(f"🔌 Serial bağlantısı: {port} @ {baud} baud")
+                self.master = mavutil.mavlink_connection(port, baud=int(baud), autoreconnect=True)
+            else:
+                # TCP or other connection
+                print(f"🌐 TCP bağlantısı: {connection_string}")
+                self.master = mavutil.mavlink_connection(connection_string)
+            
+            print("💓 Heartbeat bekleniyor...")
+            self.master.wait_heartbeat(timeout=15)
+            print("✅ MAVLink bağlantısı kuruldu")
+        except Exception as e:
+            print(f"❌ MAVLink bağlantı hatası: {e}")
+            print("💡 Pixhawk bağlantısını ve port ayarlarını kontrol edin")
+            raise
         
         # Kontrol bileşenleri
         self.imu_filter = IMUFilter()
