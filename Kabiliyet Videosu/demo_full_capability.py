@@ -1,685 +1,523 @@
 #!/usr/bin/env python3
 """
-TEKNOFEST Su Altı Roket Aracı - Tam Kabiliyet Gösterim Videosu
-Tüm şartname gereksinimlerini birleştiren kapsamlı video demo scripti
-2-5 dakika YouTube videosu için optimal çekim sırası
+TEKNOFEST 2025 Su Altı Roket Aracı - Full Capability Demo
+Pixhawk PX4 PIX 2.4.8 Serial MAVLink Comprehensive Demo
+Environment Variable Support: MAV_ADDRESS, MAV_BAUD
+
+COMPLETE SYSTEM DEMONSTRATION:
+- Serial MAVLink communication
+- X-Wing servo control matrix
+- Motor speed control
+- Emergency stop procedures
+- Waterproof testing simulation
+- Rocket separation simulation
+- Live orientation feedback
+
+Protocol: MAVLink via Serial (Port/Baud from environment)
+Hardware: X-Configuration ROV + Rocket Payload + Emergency Systems
 """
 
-import time
-import threading
-import sys
 import os
-from datetime import datetime
+import sys
+import time
+import math
 import json
+import threading
+from datetime import datetime
+from pymavlink import mavutil
 
-# Demo modüllerini import et
-sys.path.append(os.path.dirname(__file__))
+# Environment variables for serial connection
+MAV_ADDRESS = os.getenv("MAV_ADDRESS", "/dev/ttyACM0")
+MAV_BAUD = int(os.getenv("MAV_BAUD", "115200"))
 
-try:
-    from demo_waterproof_test import WaterproofDemo
-    from demo_maneuver_capabilities import ManeuverabilityDemo
-    from demo_rocket_separation import RocketSeparationDemo
-    from demo_emergency_stop import EmergencyStopDemo
-except ImportError as e:
-    print(f"❌ Demo modülü import hatası: {e}")
-    print("💡 Tüm demo scriptlerinin aynı klasörde olduğundan emin olun!")
-    sys.exit(1)
-
-# Video çekim parametreleri
-VIDEO_DURATION_TARGET = 300  # 5 dakika hedef (saniye)
-VIDEO_QUALITY = "720p"       # Minimum şartname gereksinimi
-VIDEO_SEGMENTS = [
-    ("sistem_tanitimi", 30),      # Sistem tanıtımı
-    ("acil_durdurma", 30),        # Acil durdurma testi  
-    ("sizdimazlik", 90),          # Sızdırmazlık testi
-    ("manevrabilite", 120),       # Hareket kabiliyeti
-    ("roket_ayrilma", 45),        # Roket ayrılma
-    ("sonuclar", 15)              # Test sonuçları
-]
+print(f"🚀 TEKNOFEST Full Capability Demo - Serial MAVLink")
+print(f"📡 Serial Configuration:")
+print(f"   Port: {MAV_ADDRESS}")
+print(f"   Baud: {MAV_BAUD}")
 
 class FullCapabilityDemo:
+    """Complete system capability demonstration"""
+    
     def __init__(self):
-        self.video_start_time = None
-        self.video_segments_completed = []
-        self.overall_success = False
+        """Initialize demo system"""
+        self.master = None
+        self.connected = False
+        self.armed = False
         
-        # Demo sonuçları
-        self.demo_results = {
-            'waterproof': False,
-            'maneuverability': False, 
-            'rocket_separation': False,
-            'emergency_stop': False
+        # Demo state
+        self.demo_active = False
+        self.current_phase = "Initialization"
+        
+        # Telemetry data
+        self.current_position = {'lat': 0, 'lon': 0, 'alt': 0}
+        self.current_attitude = {'roll': 0, 'pitch': 0, 'yaw': 0}
+        self.current_depth = 0.0
+        self.system_status = {}
+        
+        # X-Wing Servo Configuration
+        self.servo_channels = {
+            'fin_front_left': 9,   # AUX1 → Channel 9
+            'fin_front_right': 11, # AUX3 → Channel 11
+            'fin_rear_left': 12,   # AUX4 → Channel 12
+            'fin_rear_right': 13,  # AUX5 → Channel 13
+            'main_motor': 14,      # AUX6 → Channel 14
+            'rocket_release': 15   # AUX7 → Channel 15
         }
         
-        # Video telemetri
-        self.video_telemetry = []
-        self.segment_timings = {}
+        # PWM Values
+        self.pwm_min = 1000
+        self.pwm_mid = 1500
+        self.pwm_max = 2000
         
-        # Demo instances
-        self.waterproof_demo = None
-        self.maneuver_demo = None
-        self.rocket_demo = None
-        self.emergency_demo = None
-        
-    def display_video_status(self, current_segment, elapsed_time, total_time):
-        """Video çekim durumunu göster"""
-        print("\n" + "="*80)
-        print("🎬 TEKNOFEST Su Altı Roket Aracı - TAM KABİLİYET VİDEO ÇEKİMİ")
-        print("="*80)
-        
-        timestamp = datetime.now().strftime("%H:%M:%S")
-        progress = (elapsed_time / total_time) * 100 if total_time > 0 else 0
-        
-        print(f"📹 Video Çekim Zamanı: {timestamp}")
-        print(f"⏱️ Video Süresi: {elapsed_time:.0f}s / {total_time:.0f}s ({progress:.1f}%)")
-        print(f"🎯 Mevcut Segment: {current_segment}")
-        
-        # Segment durumu
-        print(f"\n📋 VİDEO SEGMENTLERİ:")
-        for segment_name, duration in VIDEO_SEGMENTS:
-            status_icon = "✅" if segment_name in self.video_segments_completed else ("🔄" if segment_name == current_segment else "⏳")
-            segment_display = {
-                'sistem_tanitimi': 'Sistem Tanıtımı',
-                'acil_durdurma': 'Acil Durdurma', 
-                'sizdimazlik': 'Sızdırmazlık',
-                'manevrabilite': 'Manevrabilite',
-                'roket_ayrilma': 'Roket Ayrılma',
-                'sonuclar': 'Sonuçlar'
-            }.get(segment_name, segment_name)
-            
-            print(f"  {status_icon} {segment_display}: {duration}s")
-        
-        # Demo başarı durumu
-        print(f"\n🏆 DEMO SONUÇLARI:")
-        for demo_name, success in self.demo_results.items():
-            demo_display = {
-                'waterproof': 'Sızdırmazlık',
-                'maneuverability': 'Manevrabilite',
-                'rocket_separation': 'Roket Ayrılma', 
-                'emergency_stop': 'Acil Durdurma'
-            }.get(demo_name, demo_name)
-            
-            status_icon = "✅" if success else "❌"
-            print(f"  {status_icon} {demo_display}")
-        
-        print("="*80)
-    
-    def record_segment_timing(self, segment_name, duration):
-        """Segment zamanlamasını kaydet"""
-        self.segment_timings[segment_name] = {
-            'planned_duration': duration,
-            'actual_duration': duration,  # Gerçek süre demo'dan gelecek
-            'timestamp': time.time()
-        }
-        
-        self.video_segments_completed.append(segment_name)
-    
-    def segment_system_introduction(self):
-        """1. Segment: Sistem Tanıtımı (30s)"""
-        print("\n🎬 1. SEGMENT: SİSTEM TANITIMI (30s)")
-        print("-"*50)
-        print("📋 Video Çekim Talimatları:")
-        print("  🎥 Aracın genel görünümü")
-        print("  🔧 Ana bileşenler tanıtımı")
-        print("  📊 Teknik özellikler overlay")
-        print("  🚀 TEKNOFEST logo ve takım adı")
-        
-        segment_start = time.time()
-        
-        # Sistem tanıtım metnini göster
-        introduction_text = [
-            "🚀 TEKNOFEST 2025 Su Altı Roket Aracı",
-            "💡 Raspberry Pi 4B + Pixhawk 2.4.8 Kontrol",
-            "🔧 4 Adet DS3230MG Su Geçirmez Servo",
-            "⚡ DEGZ M5 Su Altı Motor + 30A ESC", 
-            "🛡️ Tam Sızdırmazlık Tasarımı",
-            "🎯 Otonom Su Altı Navigasyon",
-            "🚀 Model Roket Fırlatma Sistemi"
+        # Demo phases
+        self.demo_phases = [
+            ("Connection Test", self.demo_connection_test),
+            ("System Check", self.demo_system_check),
+            ("X-Wing Servo Demo", self.demo_x_wing_servos),
+            ("Motor Control Demo", self.demo_motor_control),
+            ("Maneuver Capabilities", self.demo_maneuver_capabilities),
+            ("Waterproof Testing", self.demo_waterproof_test),
+            ("Rocket Separation", self.demo_rocket_separation),
+            ("Emergency Procedures", self.demo_emergency_procedures),
+            ("Performance Summary", self.demo_performance_summary)
         ]
         
-        for i, text in enumerate(introduction_text):
-            print(f"  📝 [{i+1}/7] {text}")
-            time.sleep(4)  # Her başlık 4s
-            
-            if time.time() - segment_start >= 30:
-                break
+        # Demo results
+        self.demo_results = {}
         
-        self.record_segment_timing("sistem_tanitimi", 30)
-        print("✅ Sistem tanıtımı tamamlandı!")
-        
-        input("\n⏸️ Sistem tanıtımı çekimi tamam mı? Devam için ENTER...")
-        return True
+        print("✅ Full Capability Demo initialized")
     
-    def segment_emergency_stop(self):
-        """2. Segment: Acil Durdurma Testi (30s)"""
-        print("\n🚨 2. SEGMENT: ACİL DURDURMA TESTİ (30s)")
-        print("-"*50)
-        
-        segment_start = time.time()
-        
-        # Kısa acil durdurma demo
-        self.emergency_demo = EmergencyStopDemo()
-        
-        print("📹 Acil durdurma çekimi başlıyor...")
-        print("📋 Video Çekim Talimatları:")
-        print("  🔘 Buton basımını yakın çekim")
-        print("  🚨 LED uyarı sinyallerini göster")
-        print("  ⏹️ Motor durdurmayı kaydet")
-        print("  💡 Sistem kapanmasını göster")
-        
-        # Basitleştirilmiş emergency demo (30s için optimize)
+    def connect_to_vehicle(self):
+        """Establish serial MAVLink connection"""
         try:
-            if self.emergency_demo.connect_pixhawk():
-                # 15s normal operasyon
-                print("  🚀 Normal operasyon gösterimi (15s)")
-                for i in range(15):
-                    print(f"    📊 Normal operasyon: {15-i}s - ACİL DURDURMA butonuna basın!")
-                    time.sleep(1)
-                    
-                    if self.emergency_demo.emergency_button_pressed:
-                        print("  🚨 ACİL DURDURMA tetiklendi!")
-                        break
-                
-                # 15s emergency response
-                if not self.emergency_demo.emergency_button_pressed:
-                    print("  ⚠️ Manuel acil durdurma simülasyonu")
-                    self.emergency_demo.execute_emergency_stop()
-                
-                self.demo_results['emergency_stop'] = True
-                print("✅ Acil durdurma segment başarılı!")
-                
-        except Exception as e:
-            print(f"❌ Acil durdurma segment hatası: {e}")
-            self.demo_results['emergency_stop'] = False
-        
-        self.record_segment_timing("acil_durdurma", 30)
-        
-        input("\n⏸️ Acil durdurma çekimi tamam mı? Devam için ENTER...")
-        return True
-    
-    def segment_waterproof_test(self):
-        """3. Segment: Sızdırmazlık Testi (90s)"""
-        print("\n💧 3. SEGMENT: SIZDIMAZLIK TESTİ (90s)")
-        print("-"*50)
-        
-        segment_start = time.time()
-        
-        self.waterproof_demo = WaterproofDemo()
-        
-        print("📹 Sızdırmazlık çekimi başlıyor...")
-        print("📋 Video Çekim Talimatları:")
-        print("  🌊 1m+ derinlikte statik test")
-        print("  🚀 Hareket halinde dinamik test")
-        print("  📦 Kapak mekanizması testi")
-        print("  💧 Kabarcık kontrolü yakın çekim")
-        
-        try:
-            if self.waterproof_demo.connect_pixhawk():
-                # Hızlandırılmış sızdırmazlık testi (90s için optimize)
-                print("  🔧 Yüzey kalibrasyonu (15s)")
-                self.waterproof_demo.calibrate_surface_pressure(duration=15)
-                
-                print("  🌊 Derinlik inişi (20s)")
-                # Hızlı derinlik inişi
-                descend_start = time.time()
-                while time.time() - descend_start < 20:
-                    self.waterproof_demo.set_motor_throttle(1400)  # Down thrust
-                    self.waterproof_demo.read_sensors()
-                    print(f"    📊 İniş: {self.waterproof_demo.current_depth:.1f}m")
-                    
-                    if self.waterproof_demo.current_depth >= 1.0:
-                        break
-                    time.sleep(2)
-                
-                print("  ⚖️ Statik sızdırmazlık testi (30s)")
-                static_start = time.time()
-                while time.time() - static_start < 30:
-                    self.waterproof_demo.read_sensors()
-                    leak_status = "SIZ YOK" if not self.waterproof_demo.check_for_leaks() else "SIZINTI!"
-                    print(f"    💧 Statik test: {30-(time.time()-static_start):.0f}s | {leak_status} | {self.waterproof_demo.current_depth:.1f}m")
-                    time.sleep(2)
-                
-                print("  🚀 Dinamik hareket testi (25s)")
-                dynamic_start = time.time()
-                while time.time() - dynamic_start < 25:
-                    # Basit hareket patterns
-                    self.waterproof_demo.set_motor_throttle(1550)  # Forward
-                    self.waterproof_demo.read_sensors()
-                    leak_status = "SIZ YOK" if not self.waterproof_demo.check_for_leaks() else "SIZINTI!"
-                    print(f"    🌊 Dinamik test: {25-(time.time()-dynamic_start):.0f}s | {leak_status}")
-                    time.sleep(2)
-                
-                # Sızdırmazlık başarı kontrolü
-                if not self.waterproof_demo.leak_detected:
-                    self.demo_results['waterproof'] = True
-                    print("✅ Sızdırmazlık segment başarılı!")
-                else:
-                    print("❌ Sızıntı tespit edildi!")
-                
-        except Exception as e:
-            print(f"❌ Sızdırmazlık segment hatası: {e}")
-            self.demo_results['waterproof'] = False
-        
-        self.record_segment_timing("sizdimazlik", 90)
-        
-        input("\n⏸️ Sızdırmazlık çekimi tamam mı? Devam için ENTER...")
-        return True
-    
-    def segment_maneuverability(self):
-        """4. Segment: Manevrabilite Testi (120s)"""
-        print("\n🚀 4. SEGMENT: MANEVRABİLİTE TESTİ (120s)")
-        print("-"*50)
-        
-        segment_start = time.time()
-        
-        self.maneuver_demo = ManeuverabilityDemo()
-        
-        print("📹 Manevrabilite çekimi başlıyor...")
-        print("📋 Video Çekim Talimatları:")
-        print("  ➡️ Düz seyir gösterimi")
-        print("  ↩️↪️ Sol/sağ dönüş manevralar")
-        print("  🔼🔽 Yukarı/aşağı yunuslama")
-        print("  🌊 Su yüzeyine çıkış")
-        
-        try:
-            if self.maneuver_demo.connect_pixhawk():
-                # Demo derinliğine in (20s)
-                print("  📍 Demo derinliğine iniş (20s)")
-                if self.maneuver_demo.descend_to_demo_depth():
-                    
-                    # Hızlandırılmış manevralar (100s)
-                    print("  🚀 Manevrabilite gösterimleri (100s)")
-                    
-                    # Düz seyir (15s)
-                    self.maneuver_demo.maneuver_straight_cruise(15)
-                    
-                    # Sağ dönüş (15s) 
-                    self.maneuver_demo.maneuver_turn_right(15, 90)
-                    
-                    # Sol dönüş (15s)
-                    self.maneuver_demo.maneuver_turn_left(15, 90)
-                    
-                    # Yukarı yunuslama (10s)
-                    self.maneuver_demo.maneuver_pitch_up(10, 20)
-                    
-                    # Aşağı yunuslama (10s)
-                    self.maneuver_demo.maneuver_pitch_down(10, -20)
-                    
-                    # Yüzeye çıkış (35s)
-                    self.maneuver_demo.maneuver_surface_ascent(35)
-                    
-                    # Başarı değerlendirmesi
-                    if self.maneuver_demo.total_maneuver_time >= 60:  # Min 60s şartnamesi
-                        self.demo_results['maneuverability'] = True
-                        print("✅ Manevrabilite segment başarılı!")
-                    else:
-                        print("❌ Yetersiz manevrabilite süresi!")
-                
-        except Exception as e:
-            print(f"❌ Manevrabilite segment hatası: {e}")
-            self.demo_results['maneuverability'] = False
-        
-        self.record_segment_timing("manevrabilite", 120)
-        
-        input("\n⏸️ Manevrabilite çekimi tamam mı? Devam için ENTER...")
-        return True
-    
-    def segment_rocket_separation(self):
-        """5. Segment: Roket Ayrılma Testi (45s)"""
-        print("\n🚀 5. SEGMENT: ROKET AYRILMA TESTİ (45s)")
-        print("-"*50)
-        
-        segment_start = time.time()
-        
-        self.rocket_demo = RocketSeparationDemo()
-        
-        print("📹 Roket ayrılma çekimi başlıyor...")
-        print("📋 Video Çekim Talimatları:")
-        print("  🌊 Su yüzeyine pozisyonlama")
-        print("  📐 +30° pitch açısı ayarı")
-        print("  🚀 Ayrılma mekanizması tetikleme")
-        print("  📂 Kapak açılması yakın çekim")
-        
-        try:
-            if self.rocket_demo.connect_pixhawk():
-                # Yüzeye çıkış (zaten yüzeyde olmalı - önceki segmentten)
-                print("  🌊 Yüzey pozisyonlama (10s)")
-                if not self.rocket_demo.surface_achieved:
-                    self.rocket_demo.ascend_to_surface()
-                
-                # Fırlatma açısı ayarı (20s)
-                print("  📐 Fırlatma açısı ayarı (20s)")
-                angle_success = self.rocket_demo.achieve_launch_angle()
-                
-                # Roket ayrılma (15s)
-                print("  🚀 Roket ayrılma işlemi (15s)")
-                if angle_success:
-                    separation_success = self.rocket_demo.perform_rocket_separation()
-                    
-                    if separation_success:
-                        self.demo_results['rocket_separation'] = True
-                        print("✅ Roket ayrılma segment başarılı!")
-                    else:
-                        print("❌ Roket ayrılma başarısız!")
-                else:
-                    print("❌ Fırlatma açısı elde edilemedi!")
-                
-        except Exception as e:
-            print(f"❌ Roket ayrılma segment hatası: {e}")
-            self.demo_results['rocket_separation'] = False
-        
-        self.record_segment_timing("roket_ayrilma", 45)
-        
-        input("\n⏸️ Roket ayrılma çekimi tamam mı? Devam için ENTER...")
-        return True
-    
-    def segment_results_summary(self):
-        """6. Segment: Sonuçlar Özeti (15s)"""
-        print("\n📊 6. SEGMENT: SONUÇLAR ÖZETİ (15s)")
-        print("-"*50)
-        
-        segment_start = time.time()
-        
-        print("📹 Sonuçlar çekimi başlıyor...")
-        print("📋 Video Çekim Talimatları:")
-        print("  📊 Test sonuçları overlay")
-        print("  🏆 Başarı oranı gösterimi")
-        print("  📈 Performans metrikleri")
-        print("  🎯 TEKNOFEST logo kapanış")
-        
-        # Sonuç özeti
-        successful_demos = sum(self.demo_results.values())
-        total_demos = len(self.demo_results)
-        success_rate = (successful_demos / total_demos) * 100
-        
-        results_summary = [
-            f"📊 TEST SONUÇLARI ÖZETI:",
-            f"💧 Sızdırmazlık: {'✅ BAŞARILI' if self.demo_results['waterproof'] else '❌ BAŞARISIZ'}",
-            f"🚀 Manevrabilite: {'✅ BAŞARILI' if self.demo_results['maneuverability'] else '❌ BAŞARISIZ'}",
-            f"🎯 Roket Ayrılma: {'✅ BAŞARILI' if self.demo_results['rocket_separation'] else '❌ BAŞARISIZ'}",
-            f"🚨 Acil Durdurma: {'✅ BAŞARILI' if self.demo_results['emergency_stop'] else '❌ BAŞARISIZ'}",
-            f"📈 GENEL BAŞARI: {success_rate:.0f}% ({successful_demos}/{total_demos})"
-        ]
-        
-        for i, result in enumerate(results_summary):
-            print(f"  📝 {result}")
-            time.sleep(2.5)  # 15s / 6 items = 2.5s each
-        
-        self.overall_success = success_rate >= 75  # %75 başarı şartı
-        
-        self.record_segment_timing("sonuclar", 15)
-        
-        if self.overall_success:
-            print("🎉 VİDEO DEMOsu BAŞARILI!")
-        else:
-            print("⚠️ Video demo eksiklikleri var!")
-        
-        print("✅ Sonuçlar özeti tamamlandı!")
-        return True
-    
-    def generate_video_report(self):
-        """Video demo raporu oluştur"""
-        total_video_time = time.time() - self.video_start_time if self.video_start_time else 0
-        
-        print("\n" + "="*80)
-        print("📹 TEKNOFEST Su Altı Roket Aracı - TAM KABİLİYET VİDEO RAPORU")
-        print("="*80)
-        
-        print(f"📅 Video Çekim Tarihi: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
-        print(f"⏱️ Toplam Video Süresi: {total_video_time/60:.1f} dakika ({total_video_time:.0f} saniye)")
-        print(f"🎯 Hedef Video Süresi: {VIDEO_DURATION_TARGET/60:.1f} dakika")
-        
-        # Segment analizi
-        print(f"\n📋 VİDEO SEGMENT ANALİZİ:")
-        print("-"*60)
-        
-        total_planned = sum(duration for _, duration in VIDEO_SEGMENTS)
-        
-        for segment_name, planned_duration in VIDEO_SEGMENTS:
-            completed = "✅" if segment_name in self.video_segments_completed else "❌"
-            actual_timing = self.segment_timings.get(segment_name, {})
-            actual_duration = actual_timing.get('actual_duration', 0)
+            print(f"\n📡 Connecting to Pixhawk serial...")
+            print(f"   Port: {MAV_ADDRESS}")
+            print(f"   Baud: {MAV_BAUD}")
             
-            segment_display = {
-                'sistem_tanitimi': 'Sistem Tanıtımı',
-                'acil_durdurma': 'Acil Durdurma',
-                'sizdimazlik': 'Sızdırmazlık', 
-                'manevrabilite': 'Manevrabilite',
-                'roket_ayrilma': 'Roket Ayrılma',
-                'sonuclar': 'Sonuçlar'
-            }.get(segment_name, segment_name)
+            # Serial MAVLink connection
+            self.master = mavutil.mavlink_connection(
+                MAV_ADDRESS,
+                baud=MAV_BAUD,
+                autoreconnect=True
+            )
             
-            print(f"  {completed} {segment_display}: {actual_duration}s / {planned_duration}s")
-        
-        # Demo başarı analizi
-        print(f"\n🏆 DEMO BAŞARI ANALİZİ:")
-        print("-"*60)
-        
-        successful_demos = sum(self.demo_results.values())
-        total_demos = len(self.demo_results)
-        success_rate = (successful_demos / total_demos) * 100
-        
-        for demo_name, success in self.demo_results.items():
-            demo_display = {
-                'waterproof': 'Sızdırmazlık Testi',
-                'maneuverability': 'Manevrabilite Testi',
-                'rocket_separation': 'Roket Ayrılma Testi',
-                'emergency_stop': 'Acil Durdurma Testi'
-            }.get(demo_name, demo_name)
+            print("💓 Waiting for heartbeat...")
+            heartbeat = self.master.wait_heartbeat(timeout=15)
             
-            status_icon = "✅" if success else "❌"
-            print(f"  {status_icon} {demo_display}: {'BAŞARILI' if success else 'BAŞARISIZ'}")
-        
-        print(f"\n📊 GENEL BAŞARI ORANI: {success_rate:.1f}% ({successful_demos}/{total_demos})")
-        
-        # Şartname uygunluğu
-        print(f"\n🎯 ŞARTNAME UYGUNLUĞU:")
-        print("-"*40)
-        
-        video_duration_ok = 120 <= total_video_time <= 300  # 2-5 dakika
-        duration_icon = "✅" if video_duration_ok else "❌"
-        print(f"  {duration_icon} Video Süresi (2-5dk): {total_video_time/60:.1f} dakika")
-        
-        waterproof_ok = self.demo_results.get('waterproof', False)
-        waterproof_icon = "✅" if waterproof_ok else "❌"
-        print(f"  {waterproof_icon} Sızdırmazlık (≥1m derinlik): {'BAŞARILI' if waterproof_ok else 'BAŞARISIZ'}")
-        
-        maneuver_ok = self.demo_results.get('maneuverability', False)
-        maneuver_icon = "✅" if maneuver_ok else "❌"
-        print(f"  {maneuver_icon} Manevrabilite (≥1dk kontrollü): {'BAŞARILI' if maneuver_ok else 'BAŞARISIZ'}")
-        
-        rocket_ok = self.demo_results.get('rocket_separation', False)
-        rocket_icon = "✅" if rocket_ok else "❌"
-        print(f"  {rocket_icon} Roket Ayrılma (+30° eğim): {'BAŞARILI' if rocket_ok else 'BAŞARISIZ'}")
-        
-        emergency_ok = self.demo_results.get('emergency_stop', False)
-        emergency_icon = "✅" if emergency_ok else "❌"
-        print(f"  {emergency_icon} Acil Durdurma (buton çalışması): {'BAŞARILI' if emergency_ok else 'BAŞARISIZ'}")
-        
-        # Video montaj önerileri
-        print(f"\n🎬 VİDEO MONTAJ ÖNERİLERİ:")
-        print("-"*40)
-        
-        if total_video_time > VIDEO_DURATION_TARGET:
-            print(f"  ⚠️ Video uzun ({total_video_time:.0f}s > {VIDEO_DURATION_TARGET}s)")
-            print(f"    💡 Öneري: Segment'leri kısalt veya hızlandır")
-        elif total_video_time < 120:
-            print(f"  ⚠️ Video kısa ({total_video_time:.0f}s < 120s)")
-            print(f"    💡 Öneri: Ek açıklama veya slow-motion ekle")
-        else:
-            print(f"  ✅ Video süresi optimal ({total_video_time:.0f}s)")
-        
-        if success_rate >= 90:
-            print(f"  🎉 Mükemmel performans - pazarlama vurgusu yap")
-        elif success_rate >= 70:
-            print(f"  👍 İyi performans - güçlü yönleri vurgula") 
-        else:
-            print(f"  🔧 Başarısız testleri kısa göster, başarılıları uzat")
-        
-        # Final değerlendirmesi
-        overall_video_success = (video_duration_ok and success_rate >= 75 and 
-                               waterproof_ok and maneuver_ok and emergency_ok)
-        
-        print(f"\n🏆 GENEL VİDEO BAŞARI:")
-        print("="*40)
-        
-        if overall_video_success:
-            print("🎉 MÜKEMMEL! Video TEKNOFEST için hazır!")
-            print("📹 YouTube'a yükleme için optimize edilmiş!")
-            print("🏆 Tüm şartname gereksinimleri karşılandı!")
-        else:
-            print("⚠️ Video iyileştirmeler gerekiyor!")
-            missing_elements = []
-            if not video_duration_ok:
-                missing_elements.append("Video süresi")
-            if not waterproof_ok:
-                missing_elements.append("Sızdırmazlık")
-            if not maneuver_ok:
-                missing_elements.append("Manevrabilite")
-            if not emergency_ok:
-                missing_elements.append("Acil durdurma")
-            print(f"🔧 İyileştirme alanları: {', '.join(missing_elements)}")
-        
-        # Rapor dosyasına kaydet
-        video_report = {
-            'timestamp': datetime.now().isoformat(),
-            'total_video_duration': total_video_time,
-            'target_duration': VIDEO_DURATION_TARGET,
-            'segments_completed': self.video_segments_completed,
-            'segment_timings': self.segment_timings,
-            'demo_results': self.demo_results,
-            'success_rate': success_rate,
-            'overall_success': overall_video_success,
-            'compliance': {
-                'duration_ok': video_duration_ok,
-                'waterproof_ok': waterproof_ok,
-                'maneuver_ok': maneuver_ok,
-                'rocket_ok': rocket_ok,
-                'emergency_ok': emergency_ok
-            }
-        }
-        
-        with open(f'full_capability_video_report_{datetime.now().strftime("%Y%m%d_%H%M%S")}.json', 'w') as f:
-            json.dump(video_report, f, indent=2)
-        
-        print(f"\n💾 Video raporu kaydedildi: full_capability_video_report_*.json")
-        
-        return overall_video_success
-    
-    def run_full_capability_video(self):
-        """Tam kabiliyet video çekimi"""
-        print("🎬 TEKNOFEST Su Altı Roket Aracı - TAM KABİLİYET VİDEO ÇEKİMİ")
-        print("="*80)
-        print("📹 YouTube için 2-5 dakika kabiliyet gösterim videosu")
-        print("🎯 Tüm şartname gereksinimlerini kapsayan demo")
-        print("📊 Hedef süre: 5 dakika (300 saniye)")
-        
-        print("\n📋 VİDEO İÇERİĞİ:")
-        for i, (segment_name, duration) in enumerate(VIDEO_SEGMENTS):
-            segment_display = {
-                'sistem_tanitimi': 'Sistem Tanıtımı',
-                'acil_durdurma': 'Acil Durdurma',
-                'sizdimazlik': 'Sızdırmazlık', 
-                'manevrabilite': 'Manevrabilite',
-                'roket_ayrilma': 'Roket Ayrılma',
-                'sonuclar': 'Sonuçlar'
-            }.get(segment_name, segment_name)
-            print(f"  {i+1}. {segment_display}: {duration}s")
-        
-        print(f"\nToplam: {sum(duration for _, duration in VIDEO_SEGMENTS)} saniye")
-        
-        print("\n⚠️ VİDEO ÇEKİM HAZIRLIĞI:")
-        print("- Kameralar (su üstü + su altı + yakın çekim) hazır mı?")
-        print("- Aydınlatma sistemleri çalışıyor mu?")
-        print("- Telemetri overlay sistemi aktif mi?")
-        print("- Tüm alt sistemler test edildi mi?")
-        print("- Güvenlik ekibi hazır mı?")
-        print("- Hava koşulları çekim için uygun mu?")
-        
-        ready = input("\n✅ Tam kabiliyet video çekimi başlasın mı? (y/n): ").lower()
-        if ready != 'y':
-            print("❌ Video çekimi iptal edildi")
-            return False
-        
-        self.video_start_time = time.time()
-        
-        try:
-            print("\n🎬 TAM KABİLİYET VİDEO ÇEKİMİ BAŞLADI!")
-            print("⏰ Başlama zamanı:", datetime.now().strftime("%H:%M:%S"))
-            
-            # Video segmentleri sırasıyla çek
-            segment_results = []
-            
-            # 1. Sistem tanıtımı
-            segment_results.append(self.segment_system_introduction())
-            
-            # 2. Acil durdurma
-            segment_results.append(self.segment_emergency_stop())
-            
-            # 3. Sızdırmazlık
-            segment_results.append(self.segment_waterproof_test())
-            
-            # 4. Manevrabilite
-            segment_results.append(self.segment_maneuverability())
-            
-            # 5. Roket ayrılma
-            segment_results.append(self.segment_rocket_separation())
-            
-            # 6. Sonuçlar
-            segment_results.append(self.segment_results_summary())
-            
-            # Video raporu
-            video_success = self.generate_video_report()
-            
-            if video_success and all(segment_results):
-                print("\n🎉 TAM KABİLİYET VİDEO ÇEKİMİ BAŞARILI!")
-                print("📹 Video TEKNOFEST için hazır!")
-                print("🚀 YouTube'a yüklemeye hazır!")
+            if heartbeat:
+                self.connected = True
+                self.armed = bool(heartbeat.base_mode & mavutil.mavlink.MAV_MODE_FLAG_SAFETY_ARMED)
+                print("✅ Serial MAVLink connection established!")
+                print(f"   System ID: {self.master.target_system}")
+                print(f"   Component ID: {self.master.target_component}")
+                print(f"   Vehicle Type: {heartbeat.type}")
+                print(f"   Armed: {'YES' if self.armed else 'NO'}")
+                
+                # Start telemetry monitoring
+                self.start_telemetry_monitoring()
+                return True
             else:
-                print("\n⚠️ Video çekimi tamamlandı ama eksiklikler var!")
-                print("🔧 Montaj aşamasında düzeltmeler gerekebilir!")
-            
-            return video_success
-            
-        except KeyboardInterrupt:
-            print("\n⚠️ Video çekimi kullanıcı tarafından durduruldu")
-            return False
+                print("❌ No heartbeat received!")
+                return False
+                
         except Exception as e:
-            print(f"\n❌ Video çekimi hatası: {e}")
+            print(f"❌ Serial connection failed: {e}")
+            print("💡 Check:")
+            print(f"   • Pixhawk connected to {MAV_ADDRESS}")
+            print(f"   • Correct baud rate: {MAV_BAUD}")
+            print("   • ArduSub firmware running")
             return False
-        finally:
-            self.cleanup_all_demos()
     
-    def cleanup_all_demos(self):
-        """Tüm demo sistemlerini temizle"""
-        print("\n🧹 Video sistemleri temizleniyor...")
+    def start_telemetry_monitoring(self):
+        """Start background telemetry monitoring"""
+        def telemetry_thread():
+            while self.connected:
+                try:
+                    # Position data
+                    pos_msg = self.master.recv_match(type='GLOBAL_POSITION_INT', blocking=False)
+                    if pos_msg:
+                        self.current_position = {
+                            'lat': pos_msg.lat / 1e7,
+                            'lon': pos_msg.lon / 1e7,
+                            'alt': pos_msg.alt / 1000.0
+                        }
+                    
+                    # Attitude data
+                    att_msg = self.master.recv_match(type='ATTITUDE', blocking=False)
+                    if att_msg:
+                        self.current_attitude = {
+                            'roll': math.degrees(att_msg.roll),
+                            'pitch': math.degrees(att_msg.pitch),
+                            'yaw': math.degrees(att_msg.yaw)
+                        }
+                    
+                    # System status
+                    sys_msg = self.master.recv_match(type='SYS_STATUS', blocking=False)
+                    if sys_msg:
+                        self.system_status = {
+                            'voltage': sys_msg.voltage_battery / 1000.0,
+                            'current': sys_msg.current_battery / 100.0,
+                            'battery_remaining': sys_msg.battery_remaining,
+                            'load': sys_msg.load / 10.0
+                        }
+                    
+                    # Depth data (from pressure sensor)
+                    depth_msg = self.master.recv_match(type='SCALED_PRESSURE', blocking=False)
+                    if depth_msg:
+                        depth_m = max(0.0, (depth_msg.press_abs - 1013.25) / 100.0)
+                        self.current_depth = depth_m
+                    
+                    time.sleep(0.1)  # 10Hz monitoring
+                    
+                except Exception as e:
+                    print(f"⚠️ Telemetry error: {e}")
+                    time.sleep(1.0)
         
-        demos_to_cleanup = [
-            self.waterproof_demo,
-            self.maneuver_demo,
-            self.rocket_demo,
-            self.emergency_demo
+        monitor_thread = threading.Thread(target=telemetry_thread, daemon=True)
+        monitor_thread.start()
+        print("🔄 Telemetry monitoring started")
+    
+    def set_servo_pwm(self, channel, pwm_value):
+        """Send servo PWM command"""
+        if not self.connected:
+            return False
+        
+        pwm_value = max(self.pwm_min, min(self.pwm_max, pwm_value))
+        
+        try:
+            self.master.mav.command_long_send(
+                self.master.target_system,
+                self.master.target_component,
+                mavutil.mavlink.MAV_CMD_DO_SET_SERVO,
+                0,  # confirmation
+                channel,  # servo number
+                pwm_value,  # PWM value
+                0, 0, 0, 0, 0  # unused parameters
+            )
+            return True
+        except Exception as e:
+            print(f"❌ Servo command error: {e}")
+            return False
+    
+    def demo_connection_test(self):
+        """Demo Phase 1: Connection and Communication Test"""
+        print("\n" + "="*60)
+        print("📡 PHASE 1: Serial MAVLink Connection Test")
+        print("="*60)
+        
+        results = {'phase': 'Connection Test', 'tests': []}
+        
+        # Test 1: Heartbeat monitoring
+        print("🔍 Test 1: Heartbeat monitoring (10 seconds)...")
+        heartbeat_count = 0
+        start_time = time.time()
+        
+        while time.time() - start_time < 10:
+            msg = self.master.recv_match(type='HEARTBEAT', blocking=False, timeout=1.0)
+            if msg:
+                heartbeat_count += 1
+            time.sleep(1.0)
+        
+        heartbeat_rate = heartbeat_count / 10.0
+        heartbeat_success = heartbeat_rate >= 0.8  # At least 0.8 Hz
+        
+        results['tests'].append({
+            'name': 'Heartbeat Rate',
+            'result': f"{heartbeat_rate:.1f} Hz",
+            'success': heartbeat_success,
+            'expected': '≥0.8 Hz'
+        })
+        
+        print(f"   Result: {heartbeat_rate:.1f} Hz ({'✅ PASS' if heartbeat_success else '❌ FAIL'})")
+        
+        # Test 2: Parameter communication
+        print("\n🔍 Test 2: Parameter communication...")
+        try:
+            self.master.mav.param_request_read_send(
+                self.master.target_system,
+                self.master.target_component,
+                b'SYSID_THISMAV',
+                -1
+            )
+            
+            param_msg = self.master.recv_match(type='PARAM_VALUE', blocking=True, timeout=5)
+            param_success = param_msg is not None
+            
+            results['tests'].append({
+                'name': 'Parameter Communication',  
+                'result': f"System ID: {param_msg.param_value if param_msg else 'N/A'}",
+                'success': param_success,
+                'expected': 'Valid parameter response'
+            })
+            
+            print(f"   Result: {'✅ PASS' if param_success else '❌ FAIL'}")
+            
+        except Exception as e:
+            results['tests'].append({
+                'name': 'Parameter Communication',
+                'result': f"Error: {e}",
+                'success': False,
+                'expected': 'Valid parameter response'
+            })
+            print(f"   Result: ❌ FAIL - {e}")
+        
+        # Test 3: Command acknowledgment
+        print("\n🔍 Test 3: Command acknowledgment...")
+        try:
+            # Send a harmless command (request system info)
+            self.master.mav.command_long_send(
+                self.master.target_system,
+                self.master.target_component,
+                mavutil.mavlink.MAV_CMD_REQUEST_AUTOPILOT_CAPABILITIES,
+                0, 1, 0, 0, 0, 0, 0, 0
+            )
+            
+            ack_msg = self.master.recv_match(type='COMMAND_ACK', blocking=True, timeout=5)
+            ack_success = ack_msg is not None and ack_msg.result == mavutil.mavlink.MAV_RESULT_ACCEPTED
+            
+            results['tests'].append({
+                'name': 'Command Acknowledgment',
+                'result': f"ACK: {ack_msg.result if ack_msg else 'TIMEOUT'}",
+                'success': ack_success,
+                'expected': 'MAV_RESULT_ACCEPTED'
+            })
+            
+            print(f"   Result: {'✅ PASS' if ack_success else '❌ FAIL'}")
+            
+        except Exception as e:
+            results['tests'].append({
+                'name': 'Command Acknowledgment',
+                'result': f"Error: {e}",
+                'success': False,
+                'expected': 'MAV_RESULT_ACCEPTED'
+            })
+            print(f"   Result: ❌ FAIL - {e}")
+        
+        # Phase summary
+        passed_tests = sum(1 for test in results['tests'] if test['success'])
+        total_tests = len(results['tests'])
+        results['overall_success'] = passed_tests == total_tests
+        
+        print(f"\n📊 Connection Test Summary: {passed_tests}/{total_tests} tests passed")
+        self.demo_results['connection_test'] = results
+        
+        return results['overall_success']
+    
+    def demo_system_check(self):
+        """Demo Phase 2: Complete System Check"""
+        print("\n" + "="*60)
+        print("🔍 PHASE 2: Complete System Check")
+        print("="*60)
+        
+        results = {'phase': 'System Check', 'tests': []}
+        
+        # Check 1: Battery status
+        print("⚡ Check 1: Battery and power system...")
+        if self.system_status:
+            voltage = self.system_status['voltage']
+            current = self.system_status['current']
+            battery_pct = self.system_status['battery_remaining']
+            
+            battery_ok = voltage > 20.0  # 6S LiPo minimum
+            
+            results['tests'].append({
+                'name': 'Battery Status',
+                'result': f"{voltage:.1f}V, {current:.1f}A, {battery_pct}%",
+                'success': battery_ok,
+                'expected': '>20.0V (6S LiPo)'
+            })
+            
+            print(f"   Voltage: {voltage:.1f}V")
+            print(f"   Current: {current:.1f}A") 
+            print(f"   Battery: {battery_pct}%")
+            print(f"   Status: {'✅ HEALTHY' if battery_ok else '⚠️ LOW'}")
+        else:
+            results['tests'].append({
+                'name': 'Battery Status',
+                'result': 'No telemetry data',
+                'success': False,
+                'expected': '>20.0V (6S LiPo)'
+            })
+            print("   Status: ❌ NO DATA")
+        
+        # Check 2: GPS status
+        print("\n🛰️ Check 2: GPS system...")
+        try:
+            gps_msg = self.master.recv_match(type='GPS_RAW_INT', blocking=True, timeout=5)
+            if gps_msg:
+                gps_ok = gps_msg.fix_type >= 3 and gps_msg.satellites_visible >= 6
+                
+                results['tests'].append({
+                    'name': 'GPS Status',
+                    'result': f"Fix: {gps_msg.fix_type}, Sats: {gps_msg.satellites_visible}",
+                    'success': gps_ok,
+                    'expected': 'Fix ≥3, Satellites ≥6'
+                })
+                
+                print(f"   Fix Type: {gps_msg.fix_type}")
+                print(f"   Satellites: {gps_msg.satellites_visible}")
+                print(f"   Position: ({gps_msg.lat/1e7:.6f}, {gps_msg.lon/1e7:.6f})")
+                print(f"   Status: {'✅ GOOD' if gps_ok else '⚠️ WEAK'}")
+            else:
+                results['tests'].append({
+                    'name': 'GPS Status',
+                    'result': 'Timeout',
+                    'success': False,
+                    'expected': 'Fix ≥3, Satellites ≥6'
+                })
+                print("   Status: ❌ TIMEOUT")
+        except Exception as e:
+            results['tests'].append({
+                'name': 'GPS Status',
+                'result': f"Error: {e}",
+                'success': False,
+                'expected': 'Fix ≥3, Satellites ≥6'
+            })
+            print(f"   Status: ❌ ERROR - {e}")
+        
+        # Check 3: IMU system
+        print("\n🧭 Check 3: IMU system...")
+        try:
+            imu_msg = self.master.recv_match(type='RAW_IMU', blocking=True, timeout=5)
+            att_msg = self.master.recv_match(type='ATTITUDE', blocking=True, timeout=5)
+            
+            imu_ok = imu_msg is not None and att_msg is not None
+            
+            if imu_ok:
+                results['tests'].append({
+                    'name': 'IMU System',
+                    'result': f"Roll: {self.current_attitude['roll']:.1f}°, Pitch: {self.current_attitude['pitch']:.1f}°, Yaw: {self.current_attitude['yaw']:.1f}°",
+                    'success': True,
+                    'expected': 'Valid IMU data'
+                })
+                
+                print(f"   Roll: {self.current_attitude['roll']:.1f}°")
+                print(f"   Pitch: {self.current_attitude['pitch']:.1f}°")
+                print(f"   Yaw: {self.current_attitude['yaw']:.1f}°")
+                print("   Status: ✅ ACTIVE")
+            else:
+                results['tests'].append({
+                    'name': 'IMU System',
+                    'result': 'No IMU data',
+                    'success': False,
+                    'expected': 'Valid IMU data'
+                })
+                print("   Status: ❌ NO DATA")
+                
+        except Exception as e:
+            results['tests'].append({
+                'name': 'IMU System',
+                'result': f"Error: {e}",
+                'success': False,
+                'expected': 'Valid IMU data'
+            })
+            print(f"   Status: ❌ ERROR - {e}")
+        
+        # Check 4: Depth sensor
+        print("\n📏 Check 4: Depth sensor...")
+        try:
+            depth_msg = self.master.recv_match(type='SCALED_PRESSURE', blocking=True, timeout=5)
+            depth_ok = depth_msg is not None
+            
+            if depth_ok:
+                results['tests'].append({
+                    'name': 'Depth Sensor',
+                    'result': f"Depth: {self.current_depth:.2f}m, Pressure: {depth_msg.press_abs:.1f} hPa",
+                    'success': True,
+                    'expected': 'Valid pressure data'
+                })
+                
+                print(f"   Depth: {self.current_depth:.2f}m")
+                print(f"   Pressure: {depth_msg.press_abs:.1f} hPa")
+                print(f"   Temperature: {depth_msg.temperature/100:.1f}°C")
+                print("   Status: ✅ ACTIVE")
+            else:
+                results['tests'].append({
+                    'name': 'Depth Sensor',
+                    'result': 'No pressure data',
+                    'success': False,
+                    'expected': 'Valid pressure data'
+                })
+                print("   Status: ❌ NO DATA")
+                
+        except Exception as e:
+            results['tests'].append({
+                'name': 'Depth Sensor',
+                'result': f"Error: {e}",
+                'success': False,
+                'expected': 'Valid pressure data'
+            })
+            print(f"   Status: ❌ ERROR - {e}")
+        
+        # Phase summary
+        passed_checks = sum(1 for test in results['tests'] if test['success'])
+        total_checks = len(results['tests'])
+        results['overall_success'] = passed_checks >= total_checks - 1  # Allow 1 failure
+        
+        print(f"\n📊 System Check Summary: {passed_checks}/{total_checks} checks passed")
+        self.demo_results['system_check'] = results
+        
+        return results['overall_success']
+    
+    def demo_x_wing_servos(self):
+        """Demo Phase 3: X-Wing Servo Control Matrix"""
+        print("\n" + "="*60)
+        print("🎮 PHASE 3: X-Wing Servo Control Matrix Demo")
+        print("="*60)
+        
+        results = {'phase': 'X-Wing Servos', 'movements': []}
+        
+        # X-Wing control movements
+        movements = [
+            ("Neutral Position", {9: self.pwm_mid, 11: self.pwm_mid, 12: self.pwm_mid, 13: self.pwm_mid}),
+            ("Roll Left", {9: self.pwm_min, 11: self.pwm_max, 12: self.pwm_min, 13: self.pwm_max}),
+            ("Roll Right", {9: self.pwm_max, 11: self.pwm_min, 12: self.pwm_max, 13: self.pwm_min}),
+            ("Pitch Up", {9: self.pwm_min, 11: self.pwm_min, 12: self.pwm_max, 13: self.pwm_max}),
+            ("Pitch Down", {9: self.pwm_max, 11: self.pwm_max, 12: self.pwm_min, 13: self.pwm_min}),
+            ("Yaw Left", {9: self.pwm_min, 11: self.pwm_max, 12: self.pwm_max, 13: self.pwm_min}),
+            ("Yaw Right", {9: self.pwm_max, 11: self.pwm_min, 12: self.pwm_min, 13: self.pwm_max}),
+            ("Return to Neutral", {9: self.pwm_mid, 11: self.pwm_mid, 12: self.pwm_mid, 13: self.pwm_mid})
         ]
         
-        for demo in demos_to_cleanup:
-            if demo:
-                try:
-                    demo.cleanup()
-                except:
-                    pass
+        for movement_name, servo_values in movements:
+            print(f"\n🎯 Executing: {movement_name}")
+            
+            # Display fin positions
+            fin_names = ['Front Left (Ch9)', 'Front Right (Ch11)', 'Rear Left (Ch12)', 'Rear Right (Ch13)']
+            channels = [9, 11, 12, 13]
+            
+            for fin_name, channel in zip(fin_names, channels):
+                pwm_value = servo_values[channel]
+                direction = "MIN" if pwm_value == self.pwm_min else "MAX" if pwm_value == self.pwm_max else "MID"
+                print(f"   {fin_name}: {pwm_value}µs ({direction})")
+            
+            # Send servo commands
+            success_count = 0
+            for channel, pwm_value in servo_values.items():
+                if self.set_servo_pwm(channel, pwm_value):
+                    success_count += 1
+                time.sleep(0.1)  # Small delay between commands
+            
+            movement_success = success_count == len(servo_values)
+            
+            results['movements'].append({
+                'name': movement_name,
+                'commands_sent': success_count,
+                'total_commands': len(servo_values),
+                'success': movement_success
+            })
+            
+            print(f"   Result: {success_count}/{len(servo_values)} commands sent {'✅' if movement_success else '❌'}")
+            
+            # Hold position for demonstration
+            time.sleep(2.5)
         
-        print("✅ Tüm sistemler temizlendi")
-
-def main():
-    """Ana fonksiyon"""
-    full_demo = FullCapabilityDemo()
-    
-    try:
-        success = full_demo.run_full_capability_video()
-        return 0 if success else 1
-    except KeyboardInterrupt:
-        print("\n⚠️ Program sonlandırıldı")
-        return 1
-
-if __name__ == "__main__":
-    sys.exit(main()) 
+        # Phase summary
+        successful_movements = sum(1 for mov in results['movements'] if mov['success'])
+        total_movements = len(results['movements'])
+        results['overall_success'] = successful_movements >= total_movements - 1
+        
+        print(f"\n📊 X-Wing Servo Demo Summary: {successful_movements}/{total_movements} movements executed")
+        self.demo_results['x_wing_servos'] = results
+        
+        return results['overall_success'] 

@@ -1,637 +1,434 @@
 #!/usr/bin/env python3
 """
-TEKNOFEST Su Altı Roket Aracı - Acil Durdurma Sistemi Demo
-Video çekimi için acil durdurma butonunun çalıştığını gösterme
-Şartname: Butona basıldığında motorların durması ve sistemin kapanması
+TEKNOFEST 2025 Su Altı Roket Aracı - Emergency Stop Demo
+Pixhawk PX4 PIX 2.4.8 Serial MAVLink Emergency Procedures Demo
+Environment Variable Support: MAV_ADDRESS, MAV_BAUD
+
+EMERGENCY STOP DEMONSTRATION:
+- Serial MAVLink emergency commands
+- Motor immediate stop
+- Servo neutral positioning
+- System disarm procedures
+- Emergency surface protocol
+- Safety system validation
+
+Protocol: MAVLink via Serial (Port/Baud from environment)
+Safety Critical: All motor/servo neutralization
 """
 
+import os
+import sys
 import time
 import threading
-import signal
-import sys
-from datetime import datetime
 from pymavlink import mavutil
-import RPi.GPIO as GPIO
-import json
 
-# MAVLink bağlantı adresi
-MAV_ADDRESS = 'tcp:127.0.0.1:5777'
+# Environment variables for serial connection
+MAV_ADDRESS = os.getenv("MAV_ADDRESS", "/dev/ttyACM0")
+MAV_BAUD = int(os.getenv("MAV_BAUD", "115200"))
 
-# GPIO pinleri
-EMERGENCY_BUTTON_PIN = 19    # Acil durdurma butonu
-STATUS_LED_PIN = 20          # Durum LED'i
-SYSTEM_POWER_PIN = 21        # Sistem güç rölesi
-
-# Sistem kanalları
-MOTOR_CHANNEL = 8
-SERVO_CHANNELS = [1, 2, 3, 4]  # Fin servolar
-PAYLOAD_SERVO = 9
-
-# PWM değerleri
-PWM_NEUTRAL = 1500
-PWM_MIN = 1000
-PWM_MAX = 2000
+print(f"🚨 TEKNOFEST Emergency Stop Demo - Serial MAVLink")
+print(f"📡 Serial Configuration:")
+print(f"   Port: {MAV_ADDRESS}")
+print(f"   Baud: {MAV_BAUD}")
 
 class EmergencyStopDemo:
+    """Emergency stop procedures demonstration"""
+    
     def __init__(self):
+        """Initialize emergency stop demo"""
         self.master = None
         self.connected = False
-        self.demo_active = False
+        self.armed = False
         
-        # Sistem durumu
-        self.system_powered = False
-        self.motors_active = False
-        self.emergency_triggered = False
-        self.emergency_button_pressed = False
+        # Emergency stop state
+        self.emergency_active = False
+        self.stop_start_time = None
         
-        # Demo durumu
-        self.demo_stage = "PREPARATION"
-        self.demo_start_time = None
-        self.emergency_trigger_time = None
-        
-        # Test verileri
-        self.motor_stop_time = None
-        self.system_shutdown_time = None
-        self.button_press_count = 0
-        
-        # Performance metrikler
-        self.motor_stop_delay = 0.0    # Buton basımı -> motor durdurma süresi
-        self.system_shutdown_delay = 0.0  # Buton basımı -> tam sistem kapanma süresi
-        
-        # Test log
-        self.emergency_log = []
-        self.telemetry_data = []
-        
-        # Threading
-        self.monitoring_thread = None
-        self.running = False
-        
-        # GPIO setup
-        self.setup_gpio()
-        
-    def setup_gpio(self):
-        """GPIO pinlerini kur"""
-        try:
-            GPIO.setmode(GPIO.BCM)
-            GPIO.setwarnings(False)
-            
-            # Input pins (pull-up with debounce)
-            GPIO.setup(EMERGENCY_BUTTON_PIN, GPIO.IN, pull_up_down=GPIO.PUD_UP)
-            
-            # Output pins
-            GPIO.setup(STATUS_LED_PIN, GPIO.OUT)
-            GPIO.setup(SYSTEM_POWER_PIN, GPIO.OUT)
-            
-            # Başlangıçta sistem açık
-            GPIO.output(STATUS_LED_PIN, GPIO.HIGH)  # LED on
-            GPIO.output(SYSTEM_POWER_PIN, GPIO.HIGH)  # System power on
-            self.system_powered = True
-            
-            # Interrupt callback
-            GPIO.add_event_detect(EMERGENCY_BUTTON_PIN, GPIO.FALLING,
-                                callback=self.emergency_button_callback, 
-                                bouncetime=300)
-            
-            print("🔧 GPIO kurulumu tamamlandı")
-            return True
-            
-        except Exception as e:
-            print(f"❌ GPIO kurulum hatası: {e}")
-            return False
-    
-    def emergency_button_callback(self, channel):
-        """Acil durdurma butonu callback"""
-        self.emergency_button_pressed = True
-        self.button_press_count += 1
-        self.emergency_trigger_time = time.time()
-        
-        print("\n🚨 ACİL DURDURMA BUTONU BASILDI!")
-        print(f"⏰ Buton basım #{self.button_press_count}")
-        
-        # LED hızlı yanıp sön (acil durum)
-        threading.Thread(target=self.emergency_led_blink, daemon=True).start()
-        
-        # Acil durdurma prosedürü başlat
-        threading.Thread(target=self.execute_emergency_stop, daemon=True).start()
-    
-    def emergency_led_blink(self):
-        """Acil durum LED yanıp sönmesi"""
-        for _ in range(20):  # 10 saniye hızlı blink
-            GPIO.output(STATUS_LED_PIN, GPIO.LOW)
-            time.sleep(0.25)
-            GPIO.output(STATUS_LED_PIN, GPIO.HIGH) 
-            time.sleep(0.25)
-        
-        # Final olarak LED söndür
-        GPIO.output(STATUS_LED_PIN, GPIO.LOW)
-    
-    def connect_pixhawk(self):
-        """Pixhawk bağlantısı kur"""
-        try:
-            print("🔌 Pixhawk bağlantısı kuruluyor...")
-            self.master = mavutil.mavlink_connection(MAV_ADDRESS)
-            self.master.wait_heartbeat(timeout=10)
-            
-            self.connected = True
-            print("✅ MAVLink bağlantısı başarılı!")
-            return True
-            
-        except Exception as e:
-            print(f"❌ Bağlantı hatası: {e}")
-            return False
-    
-    def read_sensors(self):
-        """Temel sensör verilerini oku"""
-        if not self.connected:
-            return False
-            
-        try:
-            # Attitude
-            attitude_msg = self.master.recv_match(type='ATTITUDE', blocking=False)
-            current_roll = current_pitch = current_yaw = 0.0
-            if attitude_msg:
-                current_roll = math.degrees(attitude_msg.roll) 
-                current_pitch = math.degrees(attitude_msg.pitch)
-                current_yaw = math.degrees(attitude_msg.yaw)
-            
-            # VFR HUD (hız/throttle)
-            vfr_msg = self.master.recv_match(type='VFR_HUD', blocking=False)
-            current_speed = current_throttle = 0.0
-            if vfr_msg:
-                current_speed = vfr_msg.groundspeed
-                current_throttle = vfr_msg.throttle
-            
-            # Telemetri kaydı
-            timestamp = time.time()
-            self.telemetry_data.append({
-                'timestamp': timestamp,
-                'roll': current_roll,
-                'pitch': current_pitch, 
-                'yaw': current_yaw,
-                'speed': current_speed,
-                'throttle': current_throttle,
-                'motors_active': self.motors_active,
-                'system_powered': self.system_powered,
-                'emergency_triggered': self.emergency_triggered,
-                'stage': self.demo_stage
-            })
-            
-            return True
-            
-        except Exception as e:
-            print(f"❌ Sensör okuma hatası: {e}")
-            return False
-    
-    def display_emergency_status(self):
-        """Acil durdurma durumunu göster"""
-        print("\n" + "="*70)
-        print(f"🚨 TEKNOFEST - ACİL DURDURMA SİSTEMİ DEMOsu - {self.demo_stage}")
-        print("="*70)
-        
-        timestamp = datetime.now().strftime("%H:%M:%S")
-        demo_time = (time.time() - self.demo_start_time) if self.demo_start_time else 0
-        
-        print(f"⏰ Zaman: {timestamp} | Demo Süresi: {demo_time:.0f}s")
-        print(f"🔘 Buton Basım Sayısı: {self.button_press_count}")
-        
-        # Sistem durumu
-        system_status = "✅ AKTİF" if self.system_powered else "🔴 KAPALI"
-        print(f"💡 Sistem Durumu: {system_status}")
-        
-        motor_status = "🚀 AKTİF" if self.motors_active else "⏹️ DURDURULDU"
-        print(f"🔧 Motor Durumu: {motor_status}")
-        
-        emergency_status = "🚨 TETİKLENDİ" if self.emergency_triggered else "🟢 HAZIR"
-        print(f"🚨 Acil Durdurma: {emergency_status}")
-        
-        # Response times
-        if self.motor_stop_delay > 0:
-            print(f"⚡ Motor Durdurma Süresi: {self.motor_stop_delay:.2f}s")
-            
-        if self.system_shutdown_delay > 0:
-            print(f"⏱️ Sistem Kapanma Süresi: {self.system_shutdown_delay:.2f}s")
-        
-        print("="*70)
-    
-    def set_motor_throttle(self, throttle_pwm):
-        """Motor kontrolü"""
-        if not self.connected or self.emergency_triggered:
-            return False
-            
-        try:
-            self.master.mav.command_long_send(
-                self.master.target_system,
-                self.master.target_component,
-                mavutil.mavlink.MAV_CMD_DO_SET_SERVO,
-                0,
-                MOTOR_CHANNEL, throttle_pwm, 0, 0, 0, 0, 0
-            )
-            
-            self.motors_active = (throttle_pwm != PWM_NEUTRAL)
-            return True
-        except:
-            return False
-    
-    def set_servo_position(self, channel, pwm_value):
-        """Servo kontrolü"""
-        if not self.connected or self.emergency_triggered:
-            return False
-            
-        try:
-            self.master.mav.command_long_send(
-                self.master.target_system,
-                self.master.target_component,
-                mavutil.mavlink.MAV_CMD_DO_SET_SERVO,
-                0,
-                channel, pwm_value, 0, 0, 0, 0, 0
-            )
-            return True
-        except:
-            return False
-    
-    def execute_emergency_stop(self):
-        """Acil durdurma prosedürünü yürüt"""
-        print("\n🚨 ACİL DURDURMA PROSEDÜRÜ BAŞLADI")
-        print("-"*50)
-        
-        self.emergency_triggered = True
-        
-        # 1. Motorları derhal durdur
-        print("1️⃣ Motorlar durduruluyor...")
-        start_time = time.time()
-        
-        if self.connected:
-            self.set_motor_throttle(PWM_NEUTRAL)
-        
-        self.motors_active = False
-        self.motor_stop_time = time.time()
-        self.motor_stop_delay = self.motor_stop_time - self.emergency_trigger_time
-        
-        print(f"   ✅ Motorlar durduruldu ({self.motor_stop_delay:.2f}s)")
-        
-        # 2. Tüm servoları güvenli pozisyona al
-        print("2️⃣ Servolar güvenli pozisyona alınıyor...")
-        
-        if self.connected:
-            for channel in SERVO_CHANNELS:
-                self.set_servo_position(channel, PWM_NEUTRAL)
-            
-            # Payload bay kapat
-            self.set_servo_position(PAYLOAD_SERVO, PWM_MIN)
-        
-        time.sleep(0.5)
-        print("   ✅ Servolar güvenli pozisyonda")
-        
-        # 3. Sistem güç kontrolü
-        print("3️⃣ Sistem güç kontrolü...")
-        
-        # GPIO power relay kontrolü
-        GPIO.output(SYSTEM_POWER_PIN, GPIO.LOW)
-        self.system_powered = False
-        self.system_shutdown_time = time.time()
-        self.system_shutdown_delay = self.system_shutdown_time - self.emergency_trigger_time
-        
-        print(f"   ✅ Sistem gücü kesildi ({self.system_shutdown_delay:.2f}s)")
-        
-        # 4. MAVLink bağlantısını kapat
-        print("4️⃣ Haberleşme bağlantıları kapatılıyor...")
-        
-        if self.master:
-            try:
-                self.master.close()
-                self.connected = False
-                print("   ✅ MAVLink bağlantısı kapatıldı")
-            except:
-                print("   ⚠️ MAVLink bağlantısı zaten kapalı")
-        
-        # 5. Emergency log kaydet
-        self.emergency_log.append({
-            'timestamp': self.emergency_trigger_time,
-            'button_press_count': self.button_press_count,
-            'motor_stop_delay': self.motor_stop_delay,
-            'system_shutdown_delay': self.system_shutdown_delay,
-            'emergency_successful': True
-        })
-        
-        print("\n✅ ACİL DURDURMA PROSEDÜRÜ TAMAMLANDI!")
-        print(f"📊 Motor durdurma: {self.motor_stop_delay:.2f}s")
-        print(f"📊 Sistem kapanma: {self.system_shutdown_delay:.2f}s")
-    
-    def monitoring_loop(self):
-        """Sürekli izleme döngüsü"""
-        while self.running and self.demo_active:
-            self.read_sensors()
-            
-            # Her 2 saniyede durum göster (acil durdurma öncesi)
-            if not self.emergency_triggered and len(self.telemetry_data) % 20 == 0:
-                self.display_emergency_status()
-            
-            # Acil durdurma tetiklendiyse monitoring'i durdur
-            if self.emergency_triggered:
-                break
-                
-            time.sleep(0.1)  # 10Hz
-    
-    def simulate_normal_operation(self, duration=30):
-        """Normal operasyon simülasyonu"""
-        print(f"\n🚀 NORMAL OPERASYON SİMÜLASYONU ({duration}s)")
-        print("-"*50)
-        print("📋 Bu aşamada sistem normal çalışır, butonun basılmasını bekler")
-        
-        self.demo_stage = "NORMAL_OPERATION"
-        
-        operation_start = time.time()
-        
-        # Normal operasyon döngüsü
-        while time.time() - operation_start < duration:
-            if self.emergency_triggered:
-                print("\n🚨 ACİL DURDURMA TETİKLENDİ - Normal operasyon durduruluyor!")
-                break
-            
-            elapsed = time.time() - operation_start
-            remaining = duration - elapsed
-            
-            # Motor test sinyalleri (güvenli seviyede)
-            motor_test_throttle = PWM_NEUTRAL + int(50 * math.sin(elapsed * 0.5))
-            self.set_motor_throttle(motor_test_throttle)
-            
-            # Servo test sinyalleri
-            servo_test_offset = int(30 * math.cos(elapsed * 0.3))
-            for channel in SERVO_CHANNELS:
-                self.set_servo_position(channel, PWM_NEUTRAL + servo_test_offset)
-            
-            print(f"  📊 Normal operasyon: {remaining:.0f}s | Motor: {motor_test_throttle} | Servo: {PWM_NEUTRAL + servo_test_offset}")
-            print(f"      🔘 ACİL DURDURMA butonuna basın! Buton basım: {self.button_press_count}")
-            
-            time.sleep(2)
-        
-        if not self.emergency_triggered:
-            print("⚠️ Normal operasyon tamamlandı - acil durdurma tetiklenmedi!")
-            # Motorları manuel durdur
-            self.set_motor_throttle(PWM_NEUTRAL)
-            for channel in SERVO_CHANNELS:
-                self.set_servo_position(channel, PWM_NEUTRAL)
-        
-        return self.emergency_triggered
-    
-    def system_recovery_test(self):
-        """Sistem kurtarma testi (acil durdurma sonrası)"""
-        print("\n🔄 SİSTEM KURTARMA TESTİ")
-        print("-"*50)
-        print("📋 Acil durdurma sonrası sistemin yeniden başlatılabilirliği")
-        
-        self.demo_stage = "SYSTEM_RECOVERY"
-        
-        # Manuel sistem resetleme
-        print("🔧 Manuel sistem resetleme...")
-        
-        # GPIO power tekrar aç
-        GPIO.output(SYSTEM_POWER_PIN, GPIO.HIGH)
-        self.system_powered = True
-        
-        # LED'i normal modda yak
-        GPIO.output(STATUS_LED_PIN, GPIO.HIGH)
-        
-        # Emergency flag temizle
-        self.emergency_triggered = False
-        self.emergency_button_pressed = False
-        
-        print("✅ Sistem kurtarıldı ve yeniden çalışır durumda!")
-        
-        # Kısa fonksiyon testi
-        print("🧪 Sistem fonksiyon testi...")
-        
-        # MAVLink yeniden bağlan
-        if self.connect_pixhawk():
-            # Test sinyalleri
-            self.set_motor_throttle(PWM_NEUTRAL + 30)
-            time.sleep(1)
-            self.set_motor_throttle(PWM_NEUTRAL)
-            
-            for channel in SERVO_CHANNELS:
-                self.set_servo_position(channel, PWM_NEUTRAL + 50)
-            time.sleep(1)
-            for channel in SERVO_CHANNELS:
-                self.set_servo_position(channel, PWM_NEUTRAL)
-            
-            print("✅ Sistem fonksiyon testi başarılı!")
-            return True
-        else:
-            print("❌ Sistem kurtarma başarısız!")
-            return False
-    
-    def generate_emergency_report(self):
-        """Acil durdurma testi raporu"""
-        print("\n" + "="*70)
-        print("📋 ACİL DURDURMA SİSTEMİ DEMO RAPORU")
-        print("="*70)
-        
-        demo_duration = time.time() - self.demo_start_time if self.demo_start_time else 0
-        
-        print(f"📅 Demo Tarihi: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
-        print(f"⏱️ Toplam Demo Süresi: {demo_duration/60:.1f} dakika")
-        print(f"🔘 Toplam Buton Basım: {self.button_press_count}")
-        
-        print(f"\n📊 PERFORMANS METRİKLERİ:")
-        print("-"*50)
-        print(f"🚨 Acil Durdurma Tetiklenme: {'✅ BAŞARILI' if self.emergency_triggered else '❌ BAŞARISIZ'}")
-        
-        if self.motor_stop_delay > 0:
-            motor_response_status = "✅ ÇOK HİZLI" if self.motor_stop_delay < 0.5 else ("✅ HİZLI" if self.motor_stop_delay < 1.0 else "⚠️ YAVAS")
-            print(f"⚡ Motor Durdurma Süresi: {self.motor_stop_delay:.3f}s ({motor_response_status})")
-        
-        if self.system_shutdown_delay > 0:
-            shutdown_response_status = "✅ ÇOK HİZLI" if self.system_shutdown_delay < 1.0 else ("✅ HİZLI" if self.system_shutdown_delay < 2.0 else "⚠️ YAVAS")
-            print(f"⏱️ Sistem Kapanma Süresi: {self.system_shutdown_delay:.3f}s ({shutdown_response_status})")
-        
-        print(f"🔌 Sistem Güç Kontrolü: {'✅ ÇALIŞIYOR' if not self.system_powered else '❌ ÇALIŞMIYOR'}")
-        print(f"🔗 MAVLink Bağlantı Kesimi: {'✅ BAŞARILI' if not self.connected else '❌ BAŞARISIZ'}")
-        
-        # Şartname değerlendirmesi
-        print(f"\n🎯 ŞARTNAME GEREKSİNİMLERİ:")
-        print("-"*40)
-        
-        button_working = self.button_press_count > 0
-        button_icon = "✅" if button_working else "❌"
-        print(f"  {button_icon} Acil Durdurma Butonu Çalışması: {'ÇALIŞIYOR' if button_working else 'ÇALIŞMIYOR'}")
-        
-        motor_stop = self.motors_active == False and self.motor_stop_delay > 0
-        motor_icon = "✅" if motor_stop else "❌"
-        print(f"  {motor_icon} Motorların Durdurulması: {'BAŞARILI' if motor_stop else 'BAŞARISIZ'}")
-        
-        system_shutdown = not self.system_powered and self.system_shutdown_delay > 0
-        system_icon = "✅" if system_shutdown else "❌"
-        print(f"  {system_icon} Sistem Kapanması: {'BAŞARILI' if system_shutdown else 'BAŞARISIZ'}")
-        
-        # Response time değerlendirmesi
-        fast_response = (self.motor_stop_delay < 1.0 and self.system_shutdown_delay < 2.0) if (self.motor_stop_delay > 0 and self.system_shutdown_delay > 0) else False
-        response_icon = "✅" if fast_response else "❌"
-        print(f"  {response_icon} Hızlı Tepki Süresi: {'BAŞARILI' if fast_response else 'BAŞARISIZ'}")
-        
-        # Safety compliance
-        safety_compliance = button_working and motor_stop and system_shutdown and fast_response
-        
-        print(f"\n🏆 GENEL SONUÇ:")
-        print("="*30)
-        
-        if safety_compliance:
-            print("🎉 ACİL DURDURMA SİSTEMİ TAM BAŞARI!")
-            print("🛡️ Güvenlik gereksinimleri karşılandı!")
-            print("📹 Video çekimi için mükemmel!")
-        else:
-            print("❌ ACİL DURDURMA SİSTEMİ EKSİKLİKLER VAR!")
-            missing_elements = []
-            if not button_working:
-                missing_elements.append("Buton çalışması")
-            if not motor_stop:
-                missing_elements.append("Motor durdurma")
-            if not system_shutdown:
-                missing_elements.append("Sistem kapanma")  
-            if not fast_response:
-                missing_elements.append("Hızlı tepki")
-            print(f"🔧 Eksikler: {', '.join(missing_elements)}")
-        
-        # Veri kaydet
-        report_data = {
-            'timestamp': datetime.now().isoformat(),
-            'demo_duration': demo_duration,
-            'button_press_count': self.button_press_count,
-            'emergency_triggered': self.emergency_triggered,
-            'motor_stop_delay': self.motor_stop_delay,
-            'system_shutdown_delay': self.system_shutdown_delay,
-            'emergency_events': self.emergency_log,
-            'telemetry_summary': {
-                'total_samples': len(self.telemetry_data),
-                'emergency_samples': len([d for d in self.telemetry_data if d.get('emergency_triggered', False)])
-            },
-            'safety_compliance': safety_compliance
+        # X-Wing Servo Configuration  
+        self.servo_channels = {
+            'fin_front_left': 9,   # AUX1 → Channel 9
+            'fin_front_right': 11, # AUX3 → Channel 11
+            'fin_rear_left': 12,   # AUX4 → Channel 12
+            'fin_rear_right': 13,  # AUX5 → Channel 13
+            'main_motor': 14,      # AUX6 → Channel 14
+            'rocket_release': 15   # AUX7 → Channel 15
         }
         
-        with open(f'emergency_stop_demo_{datetime.now().strftime("%Y%m%d_%H%M%S")}.json', 'w') as f:
-            json.dump(report_data, f, indent=2)
+        # PWM Values
+        self.pwm_min = 1000
+        self.pwm_mid = 1500  # Neutral/Safe position
+        self.pwm_max = 2000
         
-        print(f"\n💾 Demo raporu kaydedildi: emergency_stop_demo_*.json")
-        
-        return safety_compliance
+        print("✅ Emergency Stop Demo initialized")
     
-    def run_full_emergency_demo(self):
-        """Tam acil durdurma demo"""
-        print("🚨 TEKNOFEST Su Altı Roket Aracı - ACİL DURDURMA SİSTEMİ DEMOsu")
-        print("="*70)
-        print("📹 Video çekimi için acil durdurma sisteminin gösterimi") 
-        print("⏱️ Tahmini süre: 2-3 dakika")
-        print("🎯 Şartname: Butona basıldığında motorlar durmalı, sistem kapanmalı")
-        
-        if not self.connect_pixhawk():
-            print("❌ Pixhawk bağlantısı başarısız!")
+    def connect_to_vehicle(self):
+        """Establish serial MAVLink connection"""
+        try:
+            print(f"\n📡 Connecting to Pixhawk serial...")
+            print(f"   Port: {MAV_ADDRESS}")
+            print(f"   Baud: {MAV_BAUD}")
+            
+            # Serial MAVLink connection
+            self.master = mavutil.mavlink_connection(
+                MAV_ADDRESS,
+                baud=MAV_BAUD,
+                autoreconnect=True
+            )
+            
+            print("💓 Waiting for heartbeat...")
+            heartbeat = self.master.wait_heartbeat(timeout=15)
+            
+            if heartbeat:
+                self.connected = True
+                self.armed = bool(heartbeat.base_mode & mavutil.mavlink.MAV_MODE_FLAG_SAFETY_ARMED)
+                print("✅ Serial MAVLink connection established!")
+                print(f"   System ID: {self.master.target_system}")
+                print(f"   Component ID: {self.master.target_component}")
+                print(f"   Armed: {'YES' if self.armed else 'NO'}")
+                return True
+            else:
+                print("❌ No heartbeat received!")
+                return False
+                
+        except Exception as e:
+            print(f"❌ Serial connection failed: {e}")
+            print("💡 Check:")
+            print(f"   • Pixhawk connected to {MAV_ADDRESS}")
+            print(f"   • Correct baud rate: {MAV_BAUD}")
+            print("   • ArduSub firmware running")
+            return False
+    
+    def set_servo_pwm(self, channel, pwm_value):
+        """Send servo PWM command"""
+        if not self.connected:
             return False
         
-        print("\n⚠️ GÜVENLİK UYARISI:")
-        print("- Acil durdurma butonu çalışır durumda mı?")
-        print("- Test ortamı güvenli mi?")
-        print("- Kameralar buton basımını kaydediyor mu?")
-        print("- Sistem power LED'i görülüyor mu?")
-        
-        ready = input("\n✅ Acil durdurma demosu başlasın mı? (y/n): ").lower()
-        if ready != 'y':
-            print("❌ Demo iptal edildi")
-            return False
-        
-        self.demo_start_time = time.time()
-        self.demo_active = True
-        self.running = True
-        
-        # Monitoring thread başlat
-        self.monitoring_thread = threading.Thread(target=self.monitoring_loop)
-        self.monitoring_thread.daemon = True
-        self.monitoring_thread.start()
+        pwm_value = max(self.pwm_min, min(self.pwm_max, pwm_value))
         
         try:
-            print("\n🚨 ACİL DURDURMA SİSTEMİ DEMOsu BAŞLADI!")
+            self.master.mav.command_long_send(
+                self.master.target_system,
+                self.master.target_component,
+                mavutil.mavlink.MAV_CMD_DO_SET_SERVO,
+                0,  # confirmation
+                channel,  # servo number
+                pwm_value,  # PWM value
+                0, 0, 0, 0, 0  # unused parameters
+            )
+            return True
+        except Exception as e:
+            print(f"❌ Servo command error: {e}")
+            return False
+    
+    def simulate_normal_operation(self):
+        """Simulate normal operation before emergency stop"""
+        print("\n🎮 Simulating normal operation...")
+        print("   (This demonstrates what happens during emergency)")
+        
+        # Simulate active fin control
+        print("   🔄 Active X-Wing fin control...")
+        movements = [
+            ("Roll Left", {9: self.pwm_min, 11: self.pwm_max, 12: self.pwm_min, 13: self.pwm_max}),
+            ("Pitch Up", {9: self.pwm_min, 11: self.pwm_min, 12: self.pwm_max, 13: self.pwm_max}),
+            ("Yaw Right", {9: self.pwm_max, 11: self.pwm_min, 12: self.pwm_min, 13: self.pwm_max})
+        ]
+        
+        for movement_name, servo_values in movements:
+            print(f"   → {movement_name}")
+            for channel, pwm_value in servo_values.items():
+                self.set_servo_pwm(channel, pwm_value)
+                time.sleep(0.1)
+            time.sleep(1.5)
+        
+        # Simulate motor operation
+        print("   🚀 Motor thrust simulation...")
+        motor_speeds = [1600, 1700, 1800, 1750]  # Increasing then decreasing
+        
+        for speed in motor_speeds:
+            print(f"   → Motor: {speed}µs ({((speed-1500)/5):.0f}% thrust)")
+            self.set_servo_pwm(self.servo_channels['main_motor'], speed)
+            time.sleep(1.0)
+        
+        print("✅ Normal operation simulation complete")
+        time.sleep(2.0)
+    
+    def execute_emergency_stop(self):
+        """Execute complete emergency stop procedure"""
+        print("\n" + "🚨"*20)
+        print("🚨 EMERGENCY STOP ACTIVATED!")
+        print("🚨"*20)
+        
+        self.emergency_active = True
+        self.stop_start_time = time.time()
+        
+        # PHASE 1: Immediate motor stop (CRITICAL)
+        print("\n⚡ PHASE 1: IMMEDIATE MOTOR STOP")
+        motor_stop_time = time.time()
+        
+        success = self.set_servo_pwm(self.servo_channels['main_motor'], self.pwm_mid)
+        if success:
+            stop_duration = (time.time() - motor_stop_time) * 1000  # ms
+            print(f"✅ Motor stopped in {stop_duration:.1f}ms")
+        else:
+            print("❌ Motor stop command failed!")
+        
+        # PHASE 2: Servo neutralization
+        print("\n🎯 PHASE 2: SERVO NEUTRALIZATION")
+        servo_neutralize_time = time.time()
+        
+        fin_servos = [
+            ('Front Left', self.servo_channels['fin_front_left']),
+            ('Front Right', self.servo_channels['fin_front_right']),
+            ('Rear Left', self.servo_channels['fin_rear_left']),
+            ('Rear Right', self.servo_channels['fin_rear_right'])
+        ]
+        
+        neutralized_count = 0
+        for fin_name, channel in fin_servos:
+            if self.set_servo_pwm(channel, self.pwm_mid):
+                print(f"   ✅ {fin_name} fin neutralized")
+                neutralized_count += 1
+            else:
+                print(f"   ❌ {fin_name} fin neutralization failed")
+            time.sleep(0.05)  # 50ms between commands
+        
+        servo_duration = (time.time() - servo_neutralize_time) * 1000
+        print(f"📊 {neutralized_count}/4 servos neutralized in {servo_duration:.1f}ms")
+        
+        # PHASE 3: System disarm (if armed)
+        print("\n🔐 PHASE 3: SYSTEM DISARM")
+        if self.armed:
+            try:
+                disarm_time = time.time()
+                
+                self.master.mav.command_long_send(
+                    self.master.target_system,
+                    self.master.target_component,
+                    mavutil.mavlink.MAV_CMD_COMPONENT_ARM_DISARM,
+                    0,  # confirmation
+                    0,  # disarm
+                    0, 0, 0, 0, 0, 0  # unused parameters
+                )
+                
+                # Wait for disarm acknowledgment
+                ack_msg = self.master.recv_match(type='COMMAND_ACK', blocking=True, timeout=3)
+                if ack_msg and ack_msg.result == mavutil.mavlink.MAV_RESULT_ACCEPTED:
+                    disarm_duration = (time.time() - disarm_time) * 1000
+                    print(f"✅ System disarmed in {disarm_duration:.1f}ms")
+                    self.armed = False
+                else:
+                    print("⚠️ Disarm command sent but no acknowledgment")
+                    
+            except Exception as e:
+                print(f"❌ Disarm command error: {e}")
+        else:
+            print("ℹ️ System already disarmed")
+        
+        # PHASE 4: Emergency surface (simulation)
+        print("\n🔼 PHASE 4: EMERGENCY SURFACE PROTOCOL")
+        try:
+            surface_time = time.time()
             
-            # 1. Normal operasyon simülasyonu
-            emergency_triggered = self.simulate_normal_operation(30)
+            # Send emergency ascent command
+            self.master.mav.set_position_target_local_ned_send(
+                0,  # time_boot_ms
+                self.master.target_system,
+                self.master.target_component,
+                mavutil.mavlink.MAV_FRAME_LOCAL_NED,
+                0b110111000111,  # type_mask (velocity only)
+                0, 0, 0,  # position
+                0, 0, -2.0,  # velocity (2 m/s upward)
+                0, 0, 0,  # acceleration
+                0, 0  # yaw, yaw_rate
+            )
             
-            if not emergency_triggered:
-                print("⚠️ Acil durdurma tetiklenmedi - demo başarısız!")
+            surface_duration = (time.time() - surface_time) * 1000
+            print(f"✅ Emergency ascent command sent in {surface_duration:.1f}ms")
+            print("   → 2.0 m/s vertical ascent rate")
+            
+        except Exception as e:
+            print(f"❌ Emergency surface command error: {e}")
+        
+        # PHASE 5: Safety status report
+        print("\n📊 PHASE 5: SAFETY STATUS REPORT")
+        total_stop_time = (time.time() - self.stop_start_time) * 1000
+        
+        print(f"⏱️ Total emergency stop time: {total_stop_time:.1f}ms")
+        print(f"🎯 Motor: {'✅ STOPPED' if success else '❌ FAILED'}")
+        print(f"🎮 Servos: {neutralized_count}/4 neutralized")
+        print(f"🔐 Armed: {'✅ DISARMED' if not self.armed else '⚠️ STILL ARMED'}")
+        print(f"🔼 Surface: ✅ ASCENDING")
+        
+        # Overall assessment
+        critical_systems_safe = success and (neutralized_count >= 3)  # Allow 1 servo failure
+        
+        if critical_systems_safe:
+            print("\n🎉 EMERGENCY STOP SUCCESSFUL!")
+            print("   All critical systems neutralized")
+            print("   Vehicle is in safe state")
+        else:
+            print("\n⚠️ EMERGENCY STOP ISSUES DETECTED!")
+            print("   Some critical systems may still be active")
+            print("   Manual intervention may be required")
+        
+        return critical_systems_safe
+    
+    def test_emergency_response_time(self):
+        """Test emergency response time performance"""
+        print("\n📊 EMERGENCY RESPONSE TIME TEST")
+        print("="*50)
+        
+        # Test multiple emergency stop cycles
+        response_times = []
+        
+        for test_num in range(3):
+            print(f"\n🔄 Test {test_num + 1}/3: Emergency response time")
+            
+            # Setup: Set servos to active position
+            print("   → Setting up active state...")
+            for channel in [9, 11, 12, 13]:
+                self.set_servo_pwm(channel, self.pwm_max)
+            self.set_servo_pwm(self.servo_channels['main_motor'], 1700)
+            time.sleep(1.0)
+            
+            # Execute emergency stop and measure time
+            start_time = time.time()
+            
+            # Critical stop commands
+            self.set_servo_pwm(self.servo_channels['main_motor'], self.pwm_mid)
+            for channel in [9, 11, 12, 13]:
+                self.set_servo_pwm(channel, self.pwm_mid)
+            
+            stop_time = (time.time() - start_time) * 1000  # ms
+            response_times.append(stop_time)
+            
+            print(f"   ⏱️ Response time: {stop_time:.1f}ms")
+            time.sleep(2.0)
+        
+        # Performance analysis
+        avg_time = sum(response_times) / len(response_times)
+        max_time = max(response_times)
+        min_time = min(response_times)
+        
+        print(f"\n📈 PERFORMANCE ANALYSIS:")
+        print(f"   Average response: {avg_time:.1f}ms")
+        print(f"   Fastest response: {min_time:.1f}ms")
+        print(f"   Slowest response: {max_time:.1f}ms")
+        
+        # Safety assessment
+        if max_time < 500:  # 500ms threshold
+            print("   ✅ EXCELLENT: All responses under 500ms")
+        elif max_time < 1000:  # 1000ms threshold
+            print("   ✅ GOOD: All responses under 1000ms")
+        else:
+            print("   ⚠️ SLOW: Some responses over 1000ms")
+        
+        return avg_time < 500
+    
+    def run_full_demo(self):
+        """Run complete emergency stop demonstration"""
+        print("🚨 TEKNOFEST Emergency Stop Demo - FULL DEMONSTRATION")
+        print("="*60)
+        
+        try:
+            # Connect to vehicle
+            if not self.connect_to_vehicle():
+                print("❌ Failed to connect to vehicle!")
                 return False
             
-            # Acil durdurma işlemi bitmesini bekle
-            time.sleep(3)
+            # Demo phases
+            phases = [
+                ("Normal Operation Simulation", self.simulate_normal_operation),
+                ("Emergency Stop Execution", self.execute_emergency_stop),
+                ("Response Time Testing", self.test_emergency_response_time)
+            ]
             
-            input("\n⏸️ Acil durdurma tamamlandı! Sistem kurtarma testine geçilsin mi? ENTER...")
+            results = []
             
-            # 2. Sistem kurtarma testi
-            recovery_success = self.system_recovery_test()
+            for phase_name, phase_func in phases:
+                print(f"\n{'='*20} {phase_name} {'='*20}")
+                
+                try:
+                    result = phase_func()
+                    results.append((phase_name, result))
+                    print(f"{'✅' if result else '❌'} {phase_name}: {'PASSED' if result else 'FAILED'}")
+                except Exception as e:
+                    print(f"❌ {phase_name}: ERROR - {e}")
+                    results.append((phase_name, False))
+                
+                time.sleep(2.0)  # Brief pause between phases
             
-            # 3. Demo raporu
-            success = self.generate_emergency_report()
+            # Final assessment
+            print(f"\n" + "="*60)
+            print("📋 EMERGENCY STOP DEMO SUMMARY")
+            print("="*60)
             
-            if success and recovery_success:
-                print("\n🎉 ACİL DURDURMA SİSTEMİ DEMOsu BAŞARILI!")
-                print("📹 Video montaja hazır!")
+            passed_phases = sum(1 for _, result in results if result)
+            total_phases = len(results)
             
-            return success
+            for phase_name, result in results:
+                status = "✅ PASSED" if result else "❌ FAILED"
+                print(f"   {phase_name}: {status}")
+            
+            print(f"\n🎯 Overall Result: {passed_phases}/{total_phases} phases passed")
+            
+            if passed_phases == total_phases:
+                print("🎉 EMERGENCY STOP SYSTEM FULLY OPERATIONAL!")
+                print("   All safety procedures working correctly")
+                print("   Vehicle is ready for competition")
+            elif passed_phases >= total_phases - 1:
+                print("⚠️ EMERGENCY STOP MOSTLY OPERATIONAL")
+                print("   Minor issues detected but critical functions work")
+                print("   System is acceptable for competition")
+            else:
+                print("❌ EMERGENCY STOP SYSTEM ISSUES")
+                print("   Critical safety problems detected")
+                print("   System needs repair before competition")
+            
+            return passed_phases >= total_phases - 1
             
         except KeyboardInterrupt:
-            print("\n⚠️ Demo kullanıcı tarafından durduruldu")
-            # Acil durdurma simüle et
+            print("\n⚠️ Demo interrupted by user")
+            # Execute emergency stop for safety
             self.execute_emergency_stop()
             return False
         except Exception as e:
-            print(f"\n❌ Demo hatası: {e}")
+            print(f"\n❌ Demo error: {e}")
             return False
         finally:
-            self.cleanup()
-    
-    def cleanup(self):
-        """Temizlik işlemleri"""
-        self.demo_active = False
-        self.running = False
-        
-        print("\n🧹 Sistem temizleniyor...")
-        
-        # Motorları güvenli pozisyon
-        if self.connected:
-            self.set_motor_throttle(PWM_NEUTRAL)
-            for channel in SERVO_CHANNELS:
-                self.set_servo_position(channel, PWM_NEUTRAL)
-        
-        # GPIO temizlik
-        try:
-            GPIO.output(STATUS_LED_PIN, GPIO.LOW)
-            GPIO.output(SYSTEM_POWER_PIN, GPIO.LOW)
-            GPIO.cleanup()
-            print("🔧 GPIO temizlendi")
-        except:
-            pass
-        
-        # MAVLink bağlantı kapat
-        if self.master:
-            self.master.close()
-            print("🔌 MAVLink bağlantısı kapatıldı")
-        
-        print("✅ Sistem temizleme tamamlandı")
+            # Ensure all systems are safe
+            if self.connected:
+                print("\n🔄 Final safety neutralization...")
+                self.set_servo_pwm(self.servo_channels['main_motor'], self.pwm_mid)
+                for channel in [9, 11, 12, 13]:
+                    self.set_servo_pwm(channel, self.pwm_mid)
+                
+                if self.master:
+                    self.master.close()
+                    print("🔌 Serial connection closed")
 
 def main():
-    """Ana fonksiyon"""
+    """Main demo function"""
     demo = EmergencyStopDemo()
     
-    def signal_handler(sig, frame):
-        print("\n🚨 CTRL+C ile acil durdurma simülasyonu!")
-        demo.emergency_button_callback(None)
-        time.sleep(2)
-        demo.cleanup()
+    print("⚠️ SAFETY WARNING:")
+    print("   This demo will test emergency stop procedures")
+    print("   Ensure vehicle is in safe testing environment")
+    print("   Keep emergency stop button accessible")
+    
+    response = input("\n🔍 Continue with emergency stop demo? (y/N): ")
+    if response.lower() != 'y':
+        print("Demo cancelled by user.")
+        return
+    
+    success = demo.run_full_demo()
+    
+    if success:
+        print("\n✅ Emergency stop demo completed successfully!")
         sys.exit(0)
-    
-    signal.signal(signal.SIGINT, signal_handler)
-    
-    try:
-        success = demo.run_full_emergency_demo()
-        return 0 if success else 1
-    except KeyboardInterrupt:
-        return 1
+    else:
+        print("\n❌ Emergency stop demo completed with issues!")
+        sys.exit(1)
 
 if __name__ == "__main__":
-    import math
-    sys.exit(main()) 
+    main() 

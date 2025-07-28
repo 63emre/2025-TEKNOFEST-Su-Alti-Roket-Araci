@@ -9,7 +9,7 @@ Bu dokuman, tüm sistemde kullanılan pin bağlantılarının standardını tan�
 
   ### **MAIN OUTPUT (PWM Çıkışları)**
   ```
-  MAIN 1  → Ana Motor (DEGZ M5 + DEGZ BLU 30A ESC)
+  MAIN 1  → Rezerve (Gelecek geliştirmeler için)
   MAIN 2  → Rezerve (Gelecek geliştirmeler için)
   MAIN 3  → Rezerve 
   MAIN 4  → Rezerve
@@ -19,14 +19,14 @@ Bu dokuman, tüm sistemde kullanılan pin bağlantılarının standardını tan�
   MAIN 8  → Rezerve
   ```
   
-  ### **AUX OUTPUT (Auxiliary PWM Çıkışları)**
+  ### **AUX OUTPUT (Auxiliary PWM Çıkışları) - Pi5 Test Konfigürasyonu**
   ```
   AUX 1   → Fin Servo 1 - Ön Sol (X Düzeninde) (DS3230MG 30kg)
-  AUX 2   → Fin Servo 2 - Ön Sağ (X Düzeninde) (DS3230MG 30kg)  
-  AUX 3   → Fin Servo 3 - Arka Sol (X Düzeninde) (DS3230MG 30kg)
-  AUX 4   → Fin Servo 4 - Arka Sağ (X Düzeninde) (DS3230MG 30kg)
-  AUX 5  → Rezerve
-  AUX 6  → Rezerve
+  AUX 2   → Rezerve
+  AUX 3   → Fin Servo 2 - Ön Sağ (X Düzeninde) (DS3230MG 30kg)  
+  AUX 4   → Fin Servo 3 - Arka Sol (X Düzeninde) (DS3230MG 30kg)
+  AUX 5   → Fin Servo 4 - Arka Sağ (X Düzeninde) (DS3230MG 30kg)
+  AUX 6   → Ana Motor (DEGZ M5 + DEGZ BLU 30A ESC)
   ```
   
   ### **I2C Port**
@@ -35,6 +35,22 @@ Bu dokuman, tüm sistemde kullanılan pin bağlantılarının standardını tan�
   I2C SDA → D300 Derinlik Sensörü SDA  
   I2C VCC → +5V (D300 için)
   I2C GND → Ground
+  ```
+
+  ### **Serial MAVLink Connection**
+  ```
+  USB Port → Raspberry Pi 5 / Development Computer
+  Baud Rate: 115200 (Configurable via MAV_BAUD environment variable)
+  Protocol: MAVLink v2.0
+  
+  Environment Variables:
+  - MAV_ADDRESS="/dev/ttyACM0" (default USB serial port)
+  - MAV_BAUD="115200" (default baud rate)
+  
+  Alternative Ports:
+  - /dev/ttyUSB0 (USB-UART adapter)
+  - /dev/ttyUSB1 (Secondary USB-UART)
+  - /dev/ttyAMA0 (Raspberry Pi UART pins)
   ```
 
 ## **Power Module**
@@ -85,10 +101,7 @@ Kart Üstünden Besleme
 3.3V → GPIO pull-up dirençleri ?
 22.2v → Ana Motor Besleme (ESC üzerinden)
 GND  → Ortak topraklama
-USB  → Pixhawk MAVLink bağlantısı
-
-Li-Polimer Pil Besleme
-100A Röle Besleme (2x9V Li-PO)
+USB  → Pixhawk Serial MAVLink bağlantısı
 ```
 
 ---
@@ -130,7 +143,7 @@ Li-Polimer Pil Besleme
 
 ## 🔧 **SERVO KANAL DETAYLARI**
 
-### **Fin Control Matrix - X Konfigürasyonu (AUX 1-4)**
+### **Fin Control Matrix - X Konfigürasyonu (Pi5 Test: AUX 1,3,4,5)**
 ```
    Ön Sol (AUX 1) ────────────── Ön Sağ (AUX 3)
        │   \                 /   │
@@ -151,12 +164,11 @@ Li-Polimer Pil Besleme
        │   /                 \   │
   Arka Sol (AUX 4) ────────────── Arka Sağ (AUX 5)
 
-X-Konfigürasyon Kontrol Matrisi:
-Roll Control  → AUX 1 & AUX 3 vs AUX 2 & AUX 4 (Çapraz Differential)
-Pitch Control → AUX 1 & AUX 2 vs AUX 3 & AUX 4 (Ön/Arka Differential)  
-Yaw Control   → AUX 1 & AUX 4 vs AUX 2 & AUX 3 (X-Diagonal)
-aux 6 MOTOR
-
+🚀 Pi5 Test X-Konfigürasyon Kontrol Matrisi:
+Roll Control  → AUX 1 & AUX 4 vs AUX 3 & AUX 5 (Sol/Sağ Differential)
+Pitch Control → AUX 1 & AUX 3 vs AUX 4 & AUX 5 (Ön/Arka Differential)  
+Yaw Control   → AUX 1 & AUX 5 vs AUX 3 & AUX 4 (X-Diagonal)
+Motor Control → AUX 6 (Ana İtki)
 ```
 
 ### **PWM Signal Specs**
@@ -172,16 +184,16 @@ Max:           2000 μs (Full Right/Up)
 
 ## 📡 **SENSOR INTERFACES**
 
-### **D300 Derinlik Sensörü (I2C)**
+### **D300 Derinlik Sensörü (I2C) - Pi5 Test Konfigürasyonu**
 ```
-I2C Address: 0x77 (Default)
+I2C Address: 0x76 (Hardware Test)
 Voltage:     3.3V - 5V
 Interface:   I2C (100kHz - 400kHz)
 Data Rate:   10Hz maksimum
 Resolution:  Depth: 0.01m, Temp: 0.01°C
 Range:       0-300m depth, -20°C to +85°C
 
-Raspberry Pi I2C Connection:
+Raspberry Pi 5 I2C Connection:
 GPIO 2 (SDA) ── SDA Pin
 GPIO 3 (SCL) ── SCL Pin  
 5V           ── VCC Pin
@@ -230,17 +242,19 @@ Fail-Safe:        Power loss = Relay açık
 
 ### **Python Code Standards**
 ```python
-# Motor Channels
-MOTOR_CHANNEL = 1           # MAIN 1
+# Pi5 Hardware Test Konfigürasyonu
 
-# Servo Channels - X Konfigürasyonu
+# Motor Channels
+MOTOR_CHANNEL = 6           # AUX 6
+
+# Servo Channels - X Konfigürasyonu (Pi5 Test)
 SERVO_FIN_FRONT_LEFT = 1    # AUX 1 - Ön Sol
-SERVO_FIN_FRONT_RIGHT = 2   # AUX 2 - Ön Sağ  
-SERVO_FIN_REAR_LEFT = 3     # AUX 3 - Arka Sol
-SERVO_FIN_REAR_RIGHT = 4    # AUX 4 - Arka Sağ
-SERVO_ELEVATOR = 5          # AUX 5 - Derinlik Kontrolü
-SERVO_PAYLOAD_BAY = 6       # AUX 6 - Roket Bölmesi
-SERVO_SEPARATION = 7        # AUX 7 - Ayrılma Mekanizması
+SERVO_FIN_FRONT_RIGHT = 3   # AUX 3 - Ön Sağ  
+SERVO_FIN_REAR_LEFT = 4     # AUX 4 - Arka Sol
+SERVO_FIN_REAR_RIGHT = 5    # AUX 5 - Arka Sağ
+# Rezerve Kanallar:
+# AUX 2 - Rezerve
+# AUX 7-8 - Gelecek geliştirmeler
 
 # GPIO Pins - Kontrol
 GPIO_POWER_BUTTON = 18      # Güç Butonu
@@ -261,27 +275,38 @@ GPIO_EXT_BUZZER = 25        # Dış Buzzer
 GPIO_RGB_STRIP = 26         # RGB LED Strip
 
 # I2C Sensors
-I2C_D300_ADDRESS = 0x77     # D300 Derinlik Sensörü
+I2C_D300_ADDRESS = 0x76     # D300 Derinlik Sensörü (Pi5 Test)
 
-# X-Fin Kontrol Matrisi
+# X-Fin Kontrol Matrisi (Pi5 Test - AUX 1,3,4,5)
 FIN_MATRIX = {
-    'roll_positive': [SERVO_FIN_FRONT_LEFT, SERVO_FIN_REAR_LEFT],    # Sol finler
-    'roll_negative': [SERVO_FIN_FRONT_RIGHT, SERVO_FIN_REAR_RIGHT],  # Sağ finler
-    'pitch_positive': [SERVO_FIN_FRONT_LEFT, SERVO_FIN_FRONT_RIGHT], # Ön finler
-    'pitch_negative': [SERVO_FIN_REAR_LEFT, SERVO_FIN_REAR_RIGHT],   # Arka finler
-    'yaw_positive': [SERVO_FIN_FRONT_LEFT, SERVO_FIN_REAR_RIGHT],    # X-Diagonal 1
-    'yaw_negative': [SERVO_FIN_FRONT_RIGHT, SERVO_FIN_REAR_LEFT]     # X-Diagonal 2
+    'roll_positive': [SERVO_FIN_FRONT_LEFT, SERVO_FIN_REAR_LEFT],    # Sol finler (AUX1, AUX4)
+    'roll_negative': [SERVO_FIN_FRONT_RIGHT, SERVO_FIN_REAR_RIGHT],  # Sağ finler (AUX3, AUX5)
+    'pitch_positive': [SERVO_FIN_FRONT_LEFT, SERVO_FIN_FRONT_RIGHT], # Ön finler (AUX1, AUX3)
+    'pitch_negative': [SERVO_FIN_REAR_LEFT, SERVO_FIN_REAR_RIGHT],   # Arka finler (AUX4, AUX5)
+    'yaw_positive': [SERVO_FIN_FRONT_LEFT, SERVO_FIN_REAR_RIGHT],    # X-Diagonal 1 (AUX1, AUX5)
+    'yaw_negative': [SERVO_FIN_FRONT_RIGHT, SERVO_FIN_REAR_LEFT]     # X-Diagonal 2 (AUX3, AUX4)
 }
 ```
 
-### **MAVLink Channel Usage**
+### **MAVLink Channel Usage - Serial Connection**
 ```python
 # MAVLink servo command format:
 # mavutil.mavlink.MAV_CMD_DO_SET_SERVO
 # Parametreler: (channel, pwm_value, 0, 0, 0, 0, 0)
 
+# Serial Connection Configuration
+import os
+from pymavlink import mavutil
+
+# Environment variable support
+MAV_ADDRESS = os.getenv("MAV_ADDRESS", "/dev/ttyACM0")
+MAV_BAUD = int(os.getenv("MAV_BAUD", "115200"))
+
+# MAVLink connection establishment
+master = mavutil.mavlink_connection(MAV_ADDRESS, baud=MAV_BAUD, autoreconnect=True)
+
 # Motor ESC komutları:
-# Channel 1 = MAIN 1 output
+# Channel 6 = AUX 6 output (Pi5 Test Configuration)
 # PWM 1000-2000 range (1500 = neutral/stop)
 ```
 
@@ -303,17 +328,43 @@ echo "Testing main power..."
 sudo python3 -c "import RPi.GPIO as GPIO; GPIO.setmode(GPIO.BCM); GPIO.setup(18, GPIO.IN); print(GPIO.input(18))"
 ```
 
-### **3. I2C Device Detection**
+### **3. I2C Device Detection (Pi5 Test)**
 ```bash
-# D300 sensör tespiti
+# D300 sensör tespiti (Pi5)
 i2cdetect -y 1
-# 0x77 adresinde D300 görünmeli
+# 0x76 adresinde D300 görünmeli (Hardware Test Konfigürasyonu)
 ```
 
-### **4. Pixhawk Connection Test**
+### **4. Pixhawk Serial Connection Test**
 ```bash
-# MAVLink bağlantı testi
-python3 -c "from pymavlink import mavutil; m=mavutil.mavlink_connection('tcp:127.0.0.1:5777'); m.wait_heartbeat(); print('OK')"
+# Serial MAVLink bağlantı testi
+export MAV_ADDRESS="/dev/ttyACM0"
+export MAV_BAUD="115200"
+
+python3 -c "
+import os
+from pymavlink import mavutil
+port = os.getenv('MAV_ADDRESS', '/dev/ttyACM0')
+baud = int(os.getenv('MAV_BAUD', '115200'))
+print(f'Testing connection: {port}@{baud}')
+master = mavutil.mavlink_connection(port, baud=baud)
+master.wait_heartbeat()
+print('Serial MAVLink connection successful!')
+"
+```
+
+### **5. Alternative Connection Methods**
+```bash
+# USB Serial Adapter Test
+export MAV_ADDRESS="/dev/ttyUSB0"
+export MAV_BAUD="115200"
+
+# Raspberry Pi UART Test  
+export MAV_ADDRESS="/dev/ttyAMA0"
+export MAV_BAUD="115200"
+
+# TCP Fallback (if MAVLink proxy is running)
+export MAV_ADDRESS="tcp:127.0.0.1:5777"
 ```
 
 ---
@@ -325,6 +376,12 @@ python3 -c "from pymavlink import mavutil; m=mavutil.mavlink_connection('tcp:127
 - ⚡ **ESC 30A**, motor max 25A çeker, güvenli margin var
 - ⚡ **16A buton**, sadece 3.3V GPIO sinyali taşır, ana akım relay üzerinden
 - ⚡ **Termal koruma**: ESC ve motor sıcaklık monitörleme gerekli
+
+### **Serial Communication**
+- 📡 **Serial port permissions**: `/dev/ttyACM0` erişimi için user'ı `dialout` grubuna ekle
+- 📡 **Baud rate**: 115200 baud standart, 57600/921600 alternatif seçenekler
+- 📡 **USB cable quality**: Veri hatları için kaliteli USB kablo kullan
+- 📡 **Auto-reconnection**: MAVLink bağlantısı koptuğunda otomatik yeniden bağlanma
 
 ### **Su Geçirgenlik**  
 - 💧 Tüm bağlantılar IP67+ standart

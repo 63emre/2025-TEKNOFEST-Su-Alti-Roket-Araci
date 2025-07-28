@@ -1,210 +1,218 @@
 #!/usr/bin/env python3
 """
 TEKNOFEST Su Altı ROV - Advanced Terminal GUI
-TCP-Based Real-time Control & Mission Planning System
-GPIO & I2C Full Integration (Buzzer, LED, Button, D300 Depth Sensor)
+Pixhawk PX4 PIX 2.4.8 Serial MAVLink Control System
+Real-time IMU, Depth Sensor, GPIO Integration
 """
 
-import sys
 import os
-
-# Pi5 + PiOS curses desteği - BASİTLEŞTİRİLDİ
-try:
-    import curses
-    # Terminal UI hazır - print yok
-except ImportError as e:
-    # Terminal UI hatası - print yok, sys.exit direkt
-    sys.exit(1)
-
-import threading
+import sys
+import curses
 import time
-import subprocess
 import json
 import math
-from datetime import datetime
-from collections import deque
+import threading
+import signal
+import traceback
+from concurrent.futures import ThreadPoolExecutor, TimeoutError
 
-# Local imports - BASİTLEŞTİRİLDİ VE GPIO/I2C EKLENDİ
+# Import attempt for MAVLink - debug mode for import issues
 try:
     from mavlink_handler import MAVLinkHandler
-    
-    # GPIO Controller - ZORUNİ DEĞIL AMA KULLANILACAK
-    try:
-        from gpio_controller import GPIOController
-        HAS_GPIO = True
-    except ImportError:
-        HAS_GPIO = False
-    
-    # D300 Depth Sensor - I2C üzerinden
-    try:
-        from depth_sensor import D300DepthSensor
-        HAS_DEPTH_SENSOR = True
-    except ImportError:
-        HAS_DEPTH_SENSOR = False
-        
+    MAVLINK_AVAILABLE = True
+    print("✅ MAVLink handler loaded successfully")
 except ImportError as e:
-    sys.exit(1)
+    print(f"❌ MAVLink handler import error: {e}")
+    MAVLINK_AVAILABLE = False
+
+# GPIO Controller import
+try:
+    from gpio_controller import GPIOController
+    GPIO_AVAILABLE = True
+    print("✅ GPIO controller loaded successfully")
+except ImportError as e:
+    print(f"⚠️ GPIO controller import error: {e}")
+    print("💡 GPIO functions will be disabled in simulation mode")
+    GPIO_AVAILABLE = False
+
+# Depth sensor import
+try:
+    from depth_sensor import D300DepthSensor
+    DEPTH_SENSOR_AVAILABLE = True
+    print("✅ Depth sensor loaded successfully")
+except ImportError as e:
+    print(f"⚠️ Depth sensor import error: {e}")
+    print("💡 Depth sensor will use MAVLink data")
+    DEPTH_SENSOR_AVAILABLE = False
+
+# Navigation engine import
+try:
+    from navigation_engine import NavigationEngine
+    NAVIGATION_AVAILABLE = True
+    print("✅ Navigation engine loaded successfully")
+except ImportError as e:
+    print(f"⚠️ Navigation engine import error: {e}")
+    NAVIGATION_AVAILABLE = False
 
 class GPIOIntegration:
-    """GPIO ve I2C entegrasyon yöneticisi"""
+    """GPIO ve harici sensör entegrasyonu"""
     
     def __init__(self, config):
+        """GPIO integration başlat"""
         self.config = config
         
-        # GPIO controller
-        self.gpio = None
-        if HAS_GPIO:
-            try:
-                self.gpio = GPIOController(config)
-                if self.gpio.initialize():
-                    # Button callback ayarla
-                    self.gpio.setup_button_callback(self.emergency_button_pressed)
-                    self.gpio_ready = True
-                else:
-                    self.gpio_ready = False
-            except Exception as e:
-                self.gpio_ready = False
+        if GPIO_AVAILABLE:
+            self.gpio = GPIOController(config)
+            self.gpio_initialized = self.gpio.initialize()
         else:
-            self.gpio_ready = False
+            self.gpio = None
+            self.gpio_initialized = False
         
-        # D300 Depth sensor
-        self.depth_sensor = None
-        if HAS_DEPTH_SENSOR:
+        # Depth sensor
+        if DEPTH_SENSOR_AVAILABLE:
             try:
-                # İlk önce gerçek sensörü dene
-                self.depth_sensor = D300DepthSensor(config_path="config/hardware_config.json")
-                if self.depth_sensor.connect():
-                    self.depth_sensor.start_monitoring(interval=0.1)  # 10Hz
-                    self.depth_ready = True
-                else:
-                    # Gerçek sensör yoksa simülasyon moduna geç
+                # Önce I2C dene, başarısız olursa simulation
+                self.depth_sensor = D300DepthSensor(simulation_mode=False)
+                if not self.depth_sensor.connect():
+                    # I2C başarısız, simulation'a geç
                     self.depth_sensor = D300DepthSensor(simulation_mode=True)
-                    if self.depth_sensor.connect():
-                        self.depth_sensor.start_monitoring(interval=0.1)
-                        self.depth_ready = True
-                    else:
-                        self.depth_ready = False
+                    self.depth_sensor.connect()
+                    print("🎮 D300 depth sensor simülasyon modunda")
+                self.depth_sensor_available = True
             except Exception as e:
-                self.depth_ready = False
+                print(f"⚠️ Depth sensor başlatma hatası: {e}")
+                self.depth_sensor = None
+                self.depth_sensor_available = False
         else:
-            self.depth_ready = False
+            self.depth_sensor = None
+            self.depth_sensor_available = False
         
-        # Emergency button callback function
+        # Emergency callback
         self.emergency_callback = None
+        
+        if self.gpio_initialized:
+            print("✅ GPIO integration başarıyla başlatıldı")
+        else:
+            print("⚠️ GPIO simülasyon modunda çalışıyor")
     
     def set_emergency_callback(self, callback):
-        """Acil durum butonu callback ayarla"""
+        """Acil durum callback ayarla"""
         self.emergency_callback = callback
     
     def emergency_button_pressed(self):
-        """Acil durum butonu basıldı"""
-        # Log yerine direkt callback çağır
-        if self.gpio_ready:
-            # Acil durum LED/buzzer pattern
-            self.gpio.emergency_led_pattern()
-            self.gpio.buzzer_beep(2000, 0.3, 80)  # 2kHz, 300ms, 80% volume
-        
+        """Acil durum butonu basıldığında çağrılan fonksiyon"""
         if self.emergency_callback:
-            self.emergency_callback()
+            try:
+                self.emergency_callback()
+            except Exception as e:
+                print(f"❌ Emergency callback error: {e}")
+        
+        # LED ve buzzer ile acil durum sinyali
+        if self.gpio_initialized:
+            self.gpio.emergency_led_pattern()
+            self.gpio.buzzer_beep(2000, 1.0, 80)
     
     def set_system_status_led(self, status):
-        """Sistem durum LED ayarla"""
-        if self.gpio_ready:
+        """Sistem durumu LED'i"""
+        if self.gpio_initialized:
             self.gpio.status_led_pattern(status)
     
     def set_connection_status_led(self, connected, armed=False):
-        """Bağlantı durumu LED'i"""
-        if not self.gpio_ready:
+        """Bağlantı durumu LED göstergesi"""
+        if not self.gpio_initialized:
             return
         
-        if armed:
-            self.gpio.set_rgb_led(100, 0, 0)  # ARMED: Kırmızı
-        elif connected:
-            self.gpio.set_rgb_led(0, 100, 0)  # CONNECTED: Yeşil
+        if connected:
+            if armed:
+                self.gpio.set_rgb_led(0, 100, 0)  # Yeşil - Armed
+            else:
+                self.gpio.set_rgb_led(0, 0, 100)  # Mavi - Connected
         else:
-            self.gpio.set_rgb_led(100, 50, 0)  # DISCONNECTED: Turuncu
+            self.gpio.set_rgb_led(100, 0, 0)  # Kırmızı - Disconnected
     
     def beep_success(self):
         """Başarı sesi"""
-        if self.gpio_ready:
-            self.gpio.buzzer_beep(1500, 0.1, 50)
+        if self.gpio_initialized:
+            self.gpio.buzzer_beep(1500, 0.2, 50)
     
     def beep_error(self):
         """Hata sesi"""
-        if self.gpio_ready:
-            self.gpio.buzzer_beep(500, 0.3, 70)
+        if self.gpio_initialized:
+            self.gpio.buzzer_beep(800, 0.5, 70)
     
     def beep_warning(self):
         """Uyarı sesi"""
-        if self.gpio_ready:
-            self.gpio.buzzer_beep(1000, 0.2, 60)
+        if self.gpio_initialized:
+            self.gpio.buzzer_beep(1200, 0.3, 60)
     
     def read_button(self):
-        """Buton durumu oku"""
-        if self.gpio_ready:
+        """Kontrol butonunu oku"""
+        if self.gpio_initialized:
             return self.gpio.read_button()
         return False
     
     def get_depth_data(self):
-        """Derinlik sensörü verisi"""
-        if self.depth_ready and self.depth_sensor:
+        """Depth sensor verilerini al"""
+        if self.depth_sensor_available and self.depth_sensor:
             return self.depth_sensor.get_sensor_data()
         return None
     
     def cleanup(self):
-        """GPIO/I2C temizliği"""
-        if self.gpio and self.gpio_ready:
+        """GPIO temizliği"""
+        if self.gpio_initialized:
             self.gpio.cleanup()
-        
-        if self.depth_sensor and self.depth_ready:
+        if self.depth_sensor_available and self.depth_sensor:
             self.depth_sensor.disconnect()
 
 class MissionPlanner:
-    """Görev planlama sistemi"""
+    """Basit mission planning sistemi"""
     
     def __init__(self):
-        self.mission_queue = []
+        """Mission planner başlat"""
+        self.missions = []
         self.current_mission = None
-        self.mission_running = False
-        self.mission_commands = {
-            '1': {'name': 'SAĞA', 'action': 'strafe_right', 'param': 'distance'},
-            '2': {'name': 'SOLA', 'action': 'strafe_left', 'param': 'distance'},
-            '3': {'name': 'İLERİ', 'action': 'forward', 'param': 'distance'},
-            '4': {'name': 'GERİ', 'action': 'backward', 'param': 'distance'},
-            '5': {'name': 'YUKARI', 'action': 'ascend', 'param': 'distance'},
-            '6': {'name': 'AŞAĞI', 'action': 'descend', 'param': 'distance'},
-            '7': {'name': 'SAG DÖN', 'action': 'yaw_right', 'param': 'angle'},
-            '8': {'name': 'SOL DÖN', 'action': 'yaw_left', 'param': 'angle'},
-            '9': {'name': 'DUR', 'action': 'stop', 'param': 'time'}
+        self.mission_thread = None
+        self.mission_active = False
+        
+        # Mission türleri
+        self.mission_types = {
+            'F': ('İleri Git', 'distance'),
+            'B': ('Geri Git', 'distance'),
+            'L': ('Sol Git', 'distance'),
+            'R': ('Sağ Git', 'distance'),
+            'U': ('Yukarı', 'distance'),
+            'D': ('Aşağı', 'distance'),
+            'Y': ('Yaw Dön', 'angle'),
+            'W': ('Bekle', 'time'),
+            'S': ('Yüzeye Çık', 'none')
         }
     
     def add_mission(self, command, value):
-        """Görev ekle"""
-        if command in self.mission_commands:
-            mission = {
+        """Mission ekle"""
+        if command in self.mission_types:
+            mission_name, param_type = self.mission_types[command]
+            self.missions.append({
                 'command': command,
-                'name': self.mission_commands[command]['name'],
-                'action': self.mission_commands[command]['action'],
+                'name': mission_name,
                 'value': value,
-                'status': 'pending'
-            }
-            self.mission_queue.append(mission)
+                'param_type': param_type
+            })
             return True
         return False
     
     def clear_missions(self):
-        """Görevleri temizle"""
-        self.mission_queue.clear()
-        self.mission_running = False
+        """Tüm mission'ları temizle"""
+        self.missions = []
+        self.mission_active = False
     
     def get_mission_summary(self):
-        """Görev özetini döndür"""
-        return [f"{i+1}. {m['name']} ({m['value']})" for i, m in enumerate(self.mission_queue)]
+        """Mission özetini döndür"""
+        return [f"{m['name']}: {m['value']}" for m in self.missions]
     
     def start_mission(self):
-        """Görev akışını başlat"""
-        if self.mission_queue and not self.mission_running:
-            self.mission_running = True
+        """Mission'ları başlat"""
+        if self.missions and not self.mission_active:
+            self.mission_active = True
             return True
         return False
 
@@ -212,192 +220,207 @@ class TestScriptManager:
     """Test script yönetim sistemi"""
     
     def __init__(self):
-        self.available_scripts = {
-            '1': {'name': 'Motor Testi', 'file': 'Test/test_motor_control.py', 'desc': 'Tüm motorları test et'},
-            '2': {'name': 'Servo Kalibrasyon', 'file': 'scripts/servo_calibration.py', 'desc': 'Servo kalibrasyonu'},
-            '3': {'name': 'IMU Kalibrasyon', 'file': 'scripts/imu_calibration.py', 'desc': 'IMU kalibrasyonu'},
-            '4': {'name': 'Sistem Kontrolü', 'file': 'scripts/system_check.py', 'desc': 'Tam sistem kontrolü'},
-            '5': {'name': 'D300 Test', 'file': 'Test/test_d300_depth_sensor.py', 'desc': 'D300 I2C derinlik test'},
-            '6': {'name': 'GPIO Test', 'file': 'Test/test_gpio_button.py', 'desc': 'GPIO buton/LED test'},
-            '7': {'name': 'Acil Durum Test', 'file': 'scripts/emergency_stop.py', 'desc': 'Acil durum protokolü'},
-            '8': {'name': 'Stabilizasyon Test', 'file': 'Test/test_stabilization.py', 'desc': 'Stabilizasyon test'},
-            '9': {'name': 'Full System Test', 'file': 'Test/test_full_system.py', 'desc': 'Tam sistem testi'}
+        """Test script manager başlat"""
+        self.scripts = {
+            '1': 'Test/test_servo_control.py',
+            '2': 'Test/test_motor_control.py',
+            '3': 'Test/test_aux1_servo.py',
+            '4': 'Test/test_aux3_servo.py',
+            '5': 'Test/test_aux4_servo.py',
+            '6': 'Test/test_aux5_servo.py',
+            '7': 'Test/test_all_aux_servos.py',
+            '8': 'scripts/motor_test.py',
+            '9': 'scripts/emergency_stop.py'
         }
+        
         self.running_script = None
+        self.script_thread = None
     
     def get_script_list(self):
-        """Test script listesini döndür"""
-        return [(k, v['name'], v['desc']) for k, v in self.available_scripts.items()]
+        """Script listesini döndür"""
+        return [(k, v) for k, v in self.scripts.items()]
     
     def run_script(self, script_id, callback=None):
-        """Test scriptini çalıştır"""
-        if script_id in self.available_scripts:
-            script_info = self.available_scripts[script_id]
+        """Script'i çalıştır"""
+        if script_id in self.scripts and not self.running_script:
+            script_path = self.scripts[script_id]
             self.running_script = script_id
             
             def execute_script():
                 try:
-                    result = subprocess.run(
-                        [sys.executable, script_info['file']],
-                        capture_output=True,
-                        text=True,
-                        timeout=60
-                    )
-                    
+                    import subprocess
+                    result = subprocess.run([sys.executable, script_path], 
+                                          capture_output=True, text=True, timeout=30)
+                    success = result.returncode == 0
                     if callback:
-                        callback(script_id, result.returncode == 0, result.stdout, result.stderr)
-                        
-                except subprocess.TimeoutExpired:
-                    if callback:
-                        callback(script_id, False, "", "Timeout")
+                        callback(script_id, success, result.stdout, result.stderr)
                 except Exception as e:
                     if callback:
                         callback(script_id, False, "", str(e))
                 finally:
                     self.running_script = None
             
-            thread = threading.Thread(target=execute_script, daemon=True)
-            thread.start()
+            self.script_thread = threading.Thread(target=execute_script, daemon=True)
+            self.script_thread.start()
             return True
         return False
 
 class AdvancedTerminalGUI:
+    """Terminal GUI ana sınıfı"""
     def __init__(self):
-        """Advanced Terminal GUI başlatıcı - FULL GPIO/I2C INTEGRATION"""
+        """Terminal GUI başlat"""
+        # Environment variable support for serial
+        self.serial_port = os.getenv("MAV_ADDRESS", "/dev/ttyACM0")
+        self.baud_rate = int(os.getenv("MAV_BAUD", "115200"))
         
-        # Config yükle
-        self.load_config()
+        print(f"🔧 Terminal GUI Serial Configuration:")
+        print(f"   Port: {self.serial_port}")
+        print(f"   Baud: {self.baud_rate}")
         
-        # GPIO ve I2C entegrasyonu - YENİ!
+        # Config yükleme
+        self.config = self.load_config()
+        
+        # MAVLink handler
+        if MAVLINK_AVAILABLE:
+            self.mavlink = MAVLinkHandler()
+            self.mavlink_available = True
+        else:
+            self.mavlink = None
+            self.mavlink_available = False
+        
+        # GPIO integration
         self.gpio_integration = GPIOIntegration(self.config)
+        
+        # Navigation engine
+        if NAVIGATION_AVAILABLE and self.mavlink:
+            self.navigation = NavigationEngine(self.mavlink)
+            self.navigation_available = True
+        else:
+            self.navigation = None
+            self.navigation_available = False
+        
+        # Mission planner
+        self.mission_planner = MissionPlanner()
+        
+        # Test script manager
+        self.test_scripts = TestScriptManager()
+        
+        # GUI state
+        self.current_menu = "main"  # main, gpio_test, mission_plan, test_scripts
+        self.menu_selection = 0
+        
+        # Control values
+        self.motor_power = 0.0
+        self.servo_roll = 0.0
+        self.servo_pitch = 0.0
+        self.servo_yaw = 0.0
+        
+        # System data
+        self.imu_data = None
+        self.depth_data = None
+        self.tcp_data = {}
+        self.gpio_data = {}
+        
+        # Logging
+        self.log_messages = []
+        self.max_logs = 100
+        
+        # Threading
+        self.tcp_thread = None
+        self.tcp_running = False
+        self.data_lock = threading.Lock()
+        
+        # GUI settings
+        self.show_imu_details = True
+        self.show_depth_details = True
+        self.show_raw_data = False
+        
+        # Emergency callback setup
         self.gpio_integration.set_emergency_callback(self.emergency_stop_callback)
         
-        # Sistem bileşenleri - BASİTLEŞTİRİLDİ
-        self.mavlink = None
-        
-        # Yeni sistem bileşenleri
-        self.mission_planner = MissionPlanner()
-        self.test_manager = TestScriptManager()
-        
-        # Kontrol durumu
-        self.control_mode = "RAW"  # RAW veya PID
-        self.navigation_mode = "IMU"  # GPS, IMU, HYBRID
-        self.armed = False
-        self.running = True
-        
-        # Real-time kontrol - MOTOR KONTROL EKLENDİ
-        self.active_keys = set()
-        self.servo_values = {'roll': 0, 'pitch': 0, 'yaw': 0}
-        self.motor_value = 0  # Motor değeri
-        self.depth_target = 0
-        
-        # Terminal UI
-        self.stdscr = None
-        self.height = 0
-        self.width = 0
-        self.current_menu = "main"  # main, mission_plan, test_scripts, gpio_test
-        
-        # Logs - debug için artırıldı
-        self.log_messages = deque(maxlen=200)
-        
-        # Live IMU data - sadece roll/pitch/yaw
-        self.live_imu = {
-            'roll': 0.0,
-            'pitch': 0.0, 
-            'yaw': 0.0,
-            'update_rate': 0,
-            'connected': False,
-            'last_update': 0
-        }
-        
-        # TCP Data - direkt TCP'den
-        self.tcp_data = {
-            'imu_raw': [0, 0, 0, 0, 0, 0],  # ax, ay, az, gx, gy, gz
-            'connected': False,
-            'data_rate': 0,
-            'last_packet': 0
-        }
-        
-        # D300 Depth sensor data - YENİ!
-        self.depth_data = {
-            'depth_m': 0.0,
-            'temperature_c': 20.0,
-            'pressure_mbar': 1013.25,
-            'connected': False
-        }
-        
-        # Thread kontrolü
-        self.data_lock = threading.Lock()
-        self.data_thread = None
-        self.data_thread_running = False
+        print("✅ Terminal GUI initialization complete")
     
     def load_config(self):
-        """Konfigürasyon yükle - optimize edilmiş"""
-        try:
-            with open("config/hardware_config.json", 'r') as f:
-                self.config = json.load(f)
-            
-            # TCP bağlantı ayarları
-            tcp_config = self.config.get("mavlink", {})
-            tcp_config["connection_string"] = "tcp:127.0.0.1:5777"
-            self.config["mavlink"] = tcp_config
-            
-        except Exception as e:
-            self.log(f"❌ Config yükleme hatası: {e}")
-            # GERÇEK HARDWARE - Minimal config
-            self.config = {
-                "pixhawk": {
-                    "servos": {
-                        "front_left": 1,   # AUX1 → MAVLink 9 (Ön Sol)
-                        "front_right": 3,  # AUX3 → MAVLink 11 (Ön Sağ)
-                        "rear_left": 4,    # AUX4 → MAVLink 12 (Arka Sol)
-                        "rear_right": 5    # AUX5 → MAVLink 13 (Arka Sağ)
-                    },
-                    "motor": 6,  # AUX6 → MAVLink 14 (Ana Motor)
-                    "pwm_limits": {"servo_min": 1100, "servo_max": 1900, "servo_neutral": 1500, "motor_min": 1000, "motor_max": 2000, "motor_stop": 1500}
+        """Config dosyasını yükle"""
+        config_path = "config/hardware_config.json"
+        
+        # Default config with serial connection
+        default_config = {
+            "pixhawk": {
+                "servo_channels": {
+                    "fin_front_left": 1,
+                    "fin_front_right": 3,
+                    "fin_rear_left": 4,
+                    "fin_rear_right": 5,
+                    "main_motor": 6
                 },
-                "mavlink": {"connection_string": "tcp:127.0.0.1:5777"},
-                "raspberry_pi": {
-                    "gpio": {
-                        "buzzer": 7,
-                        "control_button": 13,
-                        "led_red": 4,
-                        "led_green": 5,
-                        "led_blue": 6,
-                        "warning_led": 8,
-                        "system_status_led": 10
-                    },
-                    "i2c": {"depth_sensor_address": "0x76", "bus_number": 1}
-                }
-            }
+                "pwm_limits": {"min": 1000, "neutral": 1500, "max": 2000}
+            },
+            "raspberry_pi": {
+                "gpio": {
+                    "buzzer": 7, "control_button": 13,
+                    "led_red": 4, "led_green": 5, "led_blue": 6,
+                    "warning_led": 8, "system_status_led": 10
+                },
+                "i2c": {"bus_number": 1, "depth_sensor_address": "0x76"}
+            },
+            "mavlink": {"connection_string": self.serial_port, "baudrate": self.baud_rate},
+            "network": {"web_gui_port": 5000, "log_level": "INFO"}
+        }
+        
+        try:
+            with open(config_path, 'r') as f:
+                config = json.load(f)
+            
+            # Environment variables'dan serial ayarlarını güncelle
+            if "mavlink" in config:
+                config["mavlink"]["connection_string"] = self.serial_port
+                config["mavlink"]["baudrate"] = self.baud_rate
+            
+            print("✅ Config başarıyla yüklendi")
+            return config
+            
+        except FileNotFoundError:
+            print("⚠️ Config dosyası bulunamadı, varsayılan config kullanılıyor")
+            return default_config
+        except json.JSONDecodeError as e:
+            print(f"❌ Config dosyası parse hatası: {e}")
+            return default_config
+        except Exception as e:
+            print(f"❌ Config yükleme hatası: {e}")
+            return default_config
     
     def log(self, message):
         """Thread-safe log"""
-        timestamp = datetime.now().strftime("%H:%M:%S")
+        timestamp = time.strftime("%H:%M:%S")
         log_entry = f"[{timestamp}] {message}"
         
         with self.data_lock:
             self.log_messages.append(log_entry)
+            # Max log limit kontrolü
+            if len(self.log_messages) > self.max_logs:
+                self.log_messages = self.log_messages[-self.max_logs:]
     
     def emergency_stop_callback(self):
         """Acil durum butonu callback"""
         self.log("🚨 ACİL DURUM BUTONU BASILDI - TÜM SİSTEMLER DURDURULUYOR!")
         
         # Tüm kontrolleri sıfırla
-        self.servo_values = {'roll': 0, 'pitch': 0, 'yaw': 0}
-        self.motor_value = 0
+        self.servo_roll = 0.0
+        self.servo_pitch = 0.0
+        self.servo_yaw = 0.0
+        self.motor_power = 0.0
         
-        # Sistem disarm
-        if self.armed:
-            self.armed = False
-            if self.mavlink and self.mavlink.connected:
-                try:
-                    self.mavlink.emergency_stop()
-                except:
-                    pass
+        # MAVLink emergency stop
+        if self.mavlink_available and self.mavlink and self.mavlink.connected:
+            try:
+                self.mavlink.emergency_stop()
+                self.log("✅ MAVLink emergency stop gönderildi!")
+            except Exception as e:
+                self.log(f"❌ Emergency stop hatası: {e}")
         
         # Görevleri durdur
-        self.mission_planner.mission_running = False
+        self.mission_planner.mission_active = False
         
         # Buzzer pattern çal
         self.gpio_integration.beep_error()
@@ -405,334 +428,160 @@ class AdvancedTerminalGUI:
         self.log("✅ Acil durum prosedürü tamamlandı!")
     
     def init_systems(self):
-        """Sistem bileşenlerini başlat - TCP odaklı - DÜZELTİLDİ"""
-        self.log("🚀 TEKNOFEST ROV Advanced Terminal GUI başlatılıyor...")
+        """Sistem bileşenlerini başlat - Serial MAVLink"""
+        self.log("🚀 TEKNOFEST ROV Terminal GUI başlatılıyor...")
+        self.log(f"📡 Serial bağlantı: {self.serial_port} @ {self.baud_rate} baud")
         
         # GPIO sistem durumunu belirt
-        if self.gpio_integration.gpio_ready:
+        if self.gpio_integration.gpio_initialized:
             self.log("✅ GPIO sistemleri hazır - Buzzer/LED/Button aktif!")
             self.gpio_integration.set_system_status_led('connecting')
         else:
-            self.log("⚠️ GPIO sistemler devre dışı - sadece TCP kontrol")
+            self.log("⚠️ GPIO sistemler devre dışı - sadece Serial kontrol")
         
         # D300 derinlik sensörü durumu
-        if self.gpio_integration.depth_ready:
-            self.log("✅ D300 derinlik sensörü hazır - I2C data akışı aktif!")
+        if self.gpio_integration.depth_sensor_available:
+            self.log("✅ D300 derinlik sensörü hazır - I2C/MAVLink data aktif!")
         else:
-            self.log("⚠️ D300 derinlik sensörü devre dışı")
+            self.log("⚠️ D300 derinlik sensörü - sadece MAVLink data")
         
-        # TCP MAVLink bağlantısı - DETAYLI DEBUG
-        try:
-            self.log("📡 TCP 127.0.0.1:5777 bağlantısı başlatılıyor...")
-            self.log("🔧 MAVLinkHandler() oluşturuluyor...")
-            self.mavlink = MAVLinkHandler()
-            self.log("✅ MAVLinkHandler() oluşturuldu")
-            
-            # Bağlantı kurulmaya çalışılıyor - DETAYLI LOG
-            self.log("⏳ mavlink.connect() çağrılıyor (timeout: 20s)...")
-            self.log("🔧 DEBUG: mavlink.connect() çağrılıyor...")
-            connect_result = self.mavlink.connect()
-            self.log(f"🔧 DEBUG: connect() sonucu: {connect_result}")
-            self.log(f"🔍 mavlink.connect() sonucu: {connect_result}")
-            
-            if connect_result:
-                self.log("✅ TCP MAVLink bağlantısı kuruldu (127.0.0.1:5777)!")
+        # Serial MAVLink bağlantısı
+        if self.mavlink_available:
+            try:
+                self.log(f"📡 Serial MAVLink bağlantısı başlatılıyor...")
+                self.log(f"🔧 Port: {self.serial_port}, Baud: {self.baud_rate}")
                 
-                # GPIO LED güncelle
-                self.gpio_integration.set_connection_status_led(True, self.armed)
-                self.gpio_integration.beep_success()
+                connect_result = self.mavlink.connect()
+                self.log(f"🔍 Serial bağlantı sonucu: {connect_result}")
                 
-                # Sistem durumunu kontrol et
-                self.log("🔍 check_system_status() çağrılıyor...")
-                self.log(f"🔧 DEBUG: connect() sonrası mavlink.connected = {self.mavlink.connected}")
-                self.mavlink.check_system_status()
-                self.log(f"🔧 DEBUG: check_system_status() sonrası mavlink.connected = {self.mavlink.connected}")
-                self.log(f"📊 MAVLink durumu: Connected={self.mavlink.connected}, Armed={self.mavlink.armed}")
-                
-                # TCP data connected flag'i ayarla - DOĞRULAMA İLE
-                self.log("🔧 TCP flags set ediliyor...")
-                
-                # Double check: Gerçekten bağlı mı?
-                if self.mavlink and self.mavlink.connected:
-                    # TCP flags'i init time'da set ET - DATA THREAD DEĞİL!
-                    with self.data_lock:
-                        self.tcp_data['connected'] = True
-                        self.live_imu['connected'] = True
-                    self.log(f"✅ TCP flags INIT'te set edildi: tcp_data={self.tcp_data['connected']}, live_imu={self.live_imu['connected']}")
+                if connect_result:
+                    self.log("✅ Serial MAVLink bağlantısı kuruldu!")
+                    self.log(f"📊 Pixhawk System ID: {self.mavlink.master.target_system}")
                     
-                    # İlk IMU test - çalışıyor mu kontrol et
-                    test_imu = self.mavlink.get_imu_data()
-                    if test_imu:
-                        self.log("✅ İlk IMU verisi alındı - sistem hazır!")
-                        self.log(f"🔧 İlk IMU: ax={test_imu[0]:.2f}, ay={test_imu[1]:.2f}, az={test_imu[2]:.2f}")
-                    else:
-                        self.log("⚠️ IMU verisi alınamadı - data thread beklenecek")
+                    # System check
+                    if self.mavlink.check_system_status():
+                        arm_status = "ARMED" if self.mavlink.armed else "DISARMED"
+                        self.log(f"🎯 Pixhawk durumu: {arm_status}")
+                    
+                    # Data stream başlat
+                    self.start_serial_data_thread()
+                    
+                    # GPIO status update
+                    if self.gpio_integration.gpio_initialized:
+                        self.gpio_integration.set_connection_status_led(True, self.mavlink.armed)
+                    
                 else:
-                    self.log("❌ mavlink.connected False - TCP flags set edilmedi!")
-                    with self.data_lock:
-                        self.tcp_data['connected'] = False
-                        self.live_imu['connected'] = False
-                
-            else:
-                self.log("❌ TCP MAVLink bağlantısı başarısız - connect() False döndü!")
-                self.log("🔧 Debug: socat çalışıyor ama MAVLink connect edemedi")
-                self.log("💡 Çözüm: mavlink_handler.py connection string veya timeout sorunu")
-                with self.data_lock:
-                    self.tcp_data['connected'] = False
-                    self.live_imu['connected'] = False
-                
-                # GPIO hata sinyali
-                self.gpio_integration.set_connection_status_led(False, False)
-                self.gpio_integration.beep_error()
-                
-        except Exception as e:
-            self.log(f"❌ TCP MAVLink exception hatası: {e}")
-            self.log(f"🔧 Exception türü: {type(e).__name__}")
-            import traceback
-            self.log(f"🔍 Traceback: {traceback.format_exc()}")
-            with self.data_lock:
-                self.tcp_data['connected'] = False
-                self.live_imu['connected'] = False
-            
-            # GPIO hata sinyali
-            self.gpio_integration.set_connection_status_led(False, False)
-            self.gpio_integration.beep_error()
+                    self.log("❌ Serial MAVLink bağlantısı başarısız!")
+                    self.log(f"💡 Kontrol: {self.serial_port} portu, {self.baud_rate} baud rate")
+                    self.log("💡 Pixhawk bağlı ve ArduSub çalışıyor mu?")
+                    
+            except Exception as e:
+                self.log(f"❌ Serial bağlantı hatası: {e}")
+                self.log("💡 Pixhawk serial bağlantısını kontrol edin")
+        else:
+            self.log("❌ MAVLink handler yüklenemedi - sadece GPIO aktif")
         
-        # TCP veri thread başlat
-        self.start_tcp_data_thread()
-        
-        # ARM durumunu senkronize et
-        if self.mavlink and self.mavlink.connected:
-            self.armed = self.mavlink.armed
-            self.log(f"🔐 ARM durumu senkronize edildi: {self.armed}")
-            # GPIO LED güncelle
-            self.gpio_integration.set_connection_status_led(True, self.armed)
-        
-        self.log("✅ Sistem başlatma tamamlandı!")
-        
-        # Başlangıç durumu özeti - DÜZELTİLDİ!
-        self.log(f"🔧 DEBUG: Final tcp_data['connected'] = {self.tcp_data['connected']}")
-        self.log(f"🔧 DEBUG: Final live_imu['connected'] = {self.live_imu['connected']}")
-        
-        # Son durum kontrolü - DOGRU BİLGİ VER!
-        if self.tcp_data['connected'] and self.mavlink and self.mavlink.connected:
-            self.log("🎯 HAZIR: TCP bağlı, IMU aktif, kontroller hazır!")
-            if self.gpio_integration.gpio_ready:
+        # Final system check
+        self.log("🔍 Sistem kontrolü...")
+        if self.mavlink_available and self.mavlink and self.mavlink.connected:
+            self.log("🎯 HAZIR: Serial bağlı, Pixhawk aktif, kontroller hazır!")
+            if self.gpio_integration.gpio_initialized:
                 self.log("🎯 GPIO: Buzzer/LED/Button aktif, acil durum butonu hazır!")
-            if self.gpio_integration.depth_ready:
+            if self.gpio_integration.depth_sensor_available:
                 self.log("🎯 D300: I2C derinlik sensörü aktif!")
         else:
-            self.log("⚠️ KISMÎ: TCP bağlantısı BAŞARISIZ - offline mod aktiv")
-            self.log(f"🔧 Detay: mavlink={self.mavlink is not None}, connected={getattr(self.mavlink, 'connected', False)}")
+            self.log("⚠️ DİKKAT: Serial bağlantı yok - sadece GPIO/I2C test modu")
+            
+        self.log("✅ Sistem başlatma tamamlandı!")
     
-    def start_tcp_data_thread(self):
-        """TCP veri thread'ini başlat - yüksek frekanslı"""
-        self.data_thread_running = True
-        self.data_thread = threading.Thread(target=self.tcp_data_loop, daemon=True)
-        self.data_thread.start()
-        self.log("🔄 TCP veri thread'i başlatıldı (50Hz)")
+    def start_serial_data_thread(self):
+        """Serial veri thread'ini başlat"""
+        self.tcp_running = True  # Variable adını koruyorum uyumluluk için
+        self.tcp_thread = threading.Thread(target=self.serial_data_loop, daemon=True)
+        self.tcp_thread.start()
+        self.log("🔄 Serial veri thread'i başlatıldı (10Hz)")
     
-    def tcp_data_loop(self):
-        """TCP veri döngüsü - 50Hz live data + GPIO/I2C integration"""
-        last_update = time.time()
-        update_counter = 0
+    def serial_data_loop(self):
+        """Serial veri döngüsü - IMU, GPS, Depth data"""
+        self.log("📡 Serial data loop başlatıldı...")
+        last_log_time = 0
+        data_counter = 0
         
-        while self.data_thread_running and self.running:
+        while self.tcp_running and hasattr(self, 'running') and self.running:
             try:
                 current_time = time.time()
-                dt = current_time - last_update
                 
-                # 50Hz veri güncelleme
-                if dt >= 0.02:  # 20ms = 50Hz
-                    self.update_tcp_data()
-                    self.update_gpio_data()  # YENİ - GPIO/I2C data update
-                    update_counter += 1
-                    
-                    # Her saniye rate hesapla
-                    if update_counter % 50 == 0:
+                # MAVLink'den veri al
+                if self.mavlink_available and self.mavlink and self.mavlink.connected:
+                    # IMU data
+                    imu_data = self.mavlink.get_imu_data()
+                    if imu_data:
                         with self.data_lock:
-                            self.live_imu['update_rate'] = int(50 / max(dt * 50, 1))
+                            self.imu_data = imu_data
+                            self.tcp_data['connected'] = True
+                            self.tcp_data['last_update'] = current_time
+                        data_counter += 1
                     
-                    last_update = current_time
+                    # Depth data (MAVLink'den)
+                    depth_data = self.mavlink.get_depth_data()
+                    if depth_data:
+                        with self.data_lock:
+                            self.depth_data = depth_data
+                            self.depth_data['connected'] = True
+                    
+                    # GPS data
+                    gps_data = self.mavlink.get_gps_data()
+                    if gps_data:
+                        with self.data_lock:
+                            self.tcp_data['gps'] = gps_data
                 
-                time.sleep(0.005)  # 5ms CPU efficiency
+                # GPIO/I2C verilerini güncelle
+                self.update_gpio_data()
+                
+                # Calculate live orientation
+                if self.imu_data:
+                    self.calculate_live_orientation(self.imu_data)
+                
+                # Periodic logging (5 saniyede bir)
+                if current_time - last_log_time > 5.0:
+                    rate = data_counter / 5.0 if data_counter > 0 else 0
+                    self.log(f"📊 Serial data rate: {rate:.1f} Hz, IMU packets: {data_counter}")
+                    last_log_time = current_time
+                    data_counter = 0
+                
+                time.sleep(0.1)  # 10Hz
                 
             except Exception as e:
-                self.log(f"❌ TCP veri döngüsü hatası: {e}")
-                time.sleep(0.1)
+                self.log(f"❌ Serial data loop error: {e}")
+                time.sleep(0.5)
+        
+        self.log("📡 Serial data loop durduruldu")
     
     def update_gpio_data(self):
-        """GPIO ve I2C veri güncelleme - YENİ!"""
-        # D300 derinlik sensörü verisi güncelle
-        if self.gpio_integration.depth_ready:
+        """GPIO ve I2C veri güncelleme"""
+        # D300 derinlik sensörü verisi güncelle (I2C'den direkt)
+        if self.gpio_integration.depth_sensor_available:
             depth_data = self.gpio_integration.get_depth_data()
             if depth_data:
                 with self.data_lock:
-                    self.depth_data.update(depth_data)
+                    # I2C depth data'yı MAVLink ile birleştir
+                    if not self.depth_data or not self.depth_data.get('connected', False):
+                        self.depth_data = depth_data
+                        self.depth_data['source'] = 'I2C'
         
-        # GPIO buton durumu kontrol (interrupt dışında polling de yap)
-        if self.gpio_integration.gpio_ready:
+        # GPIO buton durumu kontrol
+        if self.gpio_integration.gpio_initialized:
             button_pressed = self.gpio_integration.read_button()
-            # Button state değişikliği için log gerekmez, interrupt callback var
+            if button_pressed:
+                self.gpio_integration.emergency_button_pressed()
     
     def update_tcp_data(self):
-        """TCP'den live veri güncelle - DEBUG EKLENDI VE DÜZELTİLDİ"""
-        # DEBUG: Bağlantı durumunu kontrol et
-        if not hasattr(self, 'tcp_debug_counter'):
-            self.tcp_debug_counter = 0
-        self.tcp_debug_counter += 1
-        
-        # Her 250 call'da bir debug (5 saniyede bir @ 50Hz)
-        debug_this_call = (self.tcp_debug_counter % 250 == 0)
-        
-        if debug_this_call:
-            mavlink_exists = self.mavlink is not None
-            mavlink_connected = self.mavlink.connected if self.mavlink else False
-            self.log(f"🔍 TCP Thread Debug #{self.tcp_debug_counter}: mavlink={mavlink_exists}, connected={mavlink_connected}")
-        
-        # TCP Thread connection check - EARLY RETURN İF NO MAVLINK
-        if not self.mavlink:
-            if debug_this_call:
-                self.log("❌ TCP Thread: MAVLink object yok")
-            with self.data_lock:
-                self.tcp_data['connected'] = False
-                self.live_imu['connected'] = False
-            return
-        
-        # MAVLink connected check - DAHA TOLERANSLI VE DEBUG'LI
-        if not hasattr(self.mavlink, 'connected') or not self.mavlink.connected:
-            if debug_this_call:
-                has_connected_attr = hasattr(self.mavlink, 'connected')
-                connected_value = getattr(self.mavlink, 'connected', 'N/A')
-                self.log(f"⚠️ TCP Thread: mavlink.connected check failed - has_attr={has_connected_attr}, value={connected_value}")
-            
-            # Bağlantı yoksa ama master varsa yeniden kontrol et
-            if hasattr(self.mavlink, 'master') and self.mavlink.master:
-                try:
-                    # Heartbeat kontrol et - timeout olmadan
-                    msg = self.mavlink.master.recv_match(type='HEARTBEAT', blocking=False, timeout=0.1)
-                    if msg:
-                        # Heartbeat varsa bağlantı var demektir
-                        self.mavlink.connected = True
-                        if debug_this_call:
-                            self.log("✅ TCP Thread: Heartbeat bulundu - connected=True set edildi")
-                    else:
-                        if debug_this_call:
-                            self.log("⚠️ TCP Thread: Heartbeat bulunamadı")
-                except Exception as e:
-                    if debug_this_call:
-                        self.log(f"❌ TCP Thread: Heartbeat check hatası: {e}")
-        
-        # Hala bağlantı yoksa False set et
-        if not getattr(self.mavlink, 'connected', False):
-            with self.data_lock:
-                # Sadece durum değişirse log
-                was_connected = self.tcp_data.get('connected', False)
-                if was_connected:
-                    self.log("⚠️ TCP Thread: MAVLink bağlantısı KESİLDİ")
-                    # GPIO LED güncelle
-                    self.gpio_integration.set_connection_status_led(False, False)
-                self.tcp_data['connected'] = False
-                self.live_imu['connected'] = False
-            return
-        
-        # MAVLink bağlı - IMU verisi almaya çalış
-        try:
-            # IMU verilerini TCP'den direkt al - DETAILED DEBUG + ALTERNATIVE
-            raw_imu = self.mavlink.get_imu_data()
-            
-            # Eğer ana IMU yoksa alternatif dene - YENİ!
-            if not raw_imu and hasattr(self.mavlink, 'get_imu_data_alternative'):
-                raw_imu = self.mavlink.get_imu_data_alternative()
-                if raw_imu and debug_this_call:
-                    self.log("🔧 TCP Thread: ALTERNATIVE IMU source kullanıldı (ATTITUDE)")
-            
-            if debug_this_call:
-                if raw_imu:
-                    self.log(f"🔧 TCP Thread: get_imu_data() SUCCESS - len={len(raw_imu)}")
-                else:
-                    self.log("⚠️ TCP Thread: get_imu_data() FAILED - None return (her iki method da)")
-            
-            if raw_imu and len(raw_imu) >= 6:
-                with self.data_lock:
-                    # Raw veriyi sakla
-                    self.tcp_data['imu_raw'] = raw_imu
-                    
-                    # Connection status update - sadece durum değişikliğinde
-                    was_connected = self.tcp_data.get('connected', False)
-                    self.tcp_data['connected'] = True
-                    self.tcp_data['last_packet'] = time.time()
-                    
-                    if not was_connected:
-                        self.log("✅ TCP Thread: IMU data akışı BAŞLADI!")
-                        # GPIO LED güncelle
-                        self.gpio_integration.set_connection_status_led(True, self.armed)
-                    
-                    # Live IMU hesapla - YAW dahil
-                    self.calculate_live_orientation(raw_imu)
-                    
-                    # Bağlantı durumu güncelle
-                    self.live_imu['connected'] = True
-                    self.live_imu['last_update'] = time.time()
-                    
-                    # Data rate hesapla
-                    if hasattr(self, 'last_data_time'):
-                        dt = time.time() - self.last_data_time
-                        if dt > 0:
-                            current_rate = 1.0 / dt
-                            # Smooth rate calculation
-                            self.live_imu['update_rate'] = int(0.9 * self.live_imu['update_rate'] + 0.1 * current_rate)
-                    else:
-                        self.live_imu['update_rate'] = 1
-                    
-                    self.last_data_time = time.time()
-                    
-                    # Debug: Her 100 güncelleme de bir log (çok fazla log olmasın)
-                    if not hasattr(self, 'data_debug_counter'):
-                        self.data_debug_counter = 0
-                    self.data_debug_counter += 1
-                    
-                    if self.data_debug_counter % 250 == 0:  # 5 saniyede bir
-                        accel_x, accel_y, accel_z = raw_imu[0], raw_imu[1], raw_imu[2]
-                        gyro_x, gyro_y, gyro_z = raw_imu[3], raw_imu[4], raw_imu[5]
-                        self.log(f"🔧 TCP Data OK: Rate={self.live_imu['update_rate']}Hz, IMU=({accel_x:.2f},{accel_y:.2f},{accel_z:.2f})")
-                        
-            else:
-                # IMU verisi gelmiyorsa durum güncelle
-                with self.data_lock:
-                    last_packet_time = self.tcp_data.get('last_packet', 0)
-                    data_age = time.time() - last_packet_time
-                    
-                    if data_age > 2.0:  # 2 saniye timeout
-                        was_connected = self.tcp_data.get('connected', False)
-                        if was_connected:
-                            self.log(f"⚠️ TCP Thread: IMU data timeout ({data_age:.1f}s)")
-                            # GPIO LED güncelle
-                            self.gpio_integration.set_connection_status_led(False, False)
-                        
-                        self.tcp_data['connected'] = False
-                        self.live_imu['connected'] = False
-                        self.live_imu['update_rate'] = 0
-                        
-        except Exception as e:
-            with self.data_lock:
-                was_connected = self.tcp_data.get('connected', False)
-                if was_connected:
-                    self.log(f"❌ TCP Thread: IMU data exception - bağlantı kesilecek")
-                    # GPIO LED güncelle
-                    self.gpio_integration.set_connection_status_led(False, False)
-                
-                self.tcp_data['connected'] = False
-                self.live_imu['connected'] = False
-                self.live_imu['update_rate'] = 0
-            
-            # Error logging (her hata için değil, sadece yeni hatalar için)
-            if not hasattr(self, 'last_tcp_error') or time.time() - self.last_tcp_error > 5.0:
-                self.log(f"❌ TCP data exception: {e}")
-                self.last_tcp_error = time.time()
+        """TCP data update (backward compatibility için isim korundu)"""
+        # Bu fonksiyon artık serial data'yı işliyor
+        return self.serial_data_loop()
     
     def calculate_live_orientation(self, raw_imu):
-        """Live roll/pitch/yaw hesapla - BASİTLEŞTİRİLDİ"""
+        """Live roll/pitch/yaw hesapla"""
         try:
             # Raw IMU verilerini al (SI units)
             accel_x, accel_y, accel_z = raw_imu[0], raw_imu[1], raw_imu[2]
@@ -747,50 +596,46 @@ class AdvancedTerminalGUI:
                 roll_deg = math.degrees(roll_rad)
                 pitch_deg = math.degrees(pitch_rad)
             else:
-                roll_deg = self.live_imu['roll']
-                pitch_deg = self.live_imu['pitch']
+                roll_deg = getattr(self, 'last_roll', 0.0)
+                pitch_deg = getattr(self, 'last_pitch', 0.0)
             
-            # YAW integration - BASİTLEŞTİRİLDİ VE DÜZELTİLDİ
-            dt = 0.02  # 50Hz
+            # YAW integration
+            dt = 0.1  # 10Hz
             gyro_z_deg = math.degrees(gyro_z)  # rad/s to deg/s
             
             # İlk kez çalışıyorsa YAW'ı 0'dan başlat
-            if not hasattr(self, 'yaw_initialized'):
-                self.live_imu['yaw'] = 0.0
-                self.yaw_initialized = True
-                self.log(f"🎯 YAW sistemi başlatıldı: 0.0°")
+            if not hasattr(self, 'current_yaw'):
+                self.current_yaw = 0.0
             
-            # GYRO THRESHOLD DÜŞÜRÜLDÜ - Her gyro değeri işlenir
-            old_yaw = self.live_imu['yaw']
-            
-            # YAW her zaman güncellenir (threshold kaldırıldı)
+            # YAW güncelle
             yaw_change = gyro_z_deg * dt
-            yaw_deg = old_yaw + yaw_change
+            self.current_yaw += yaw_change
             
             # Yaw normalize (-180 to +180)
-            while yaw_deg > 180:
-                yaw_deg -= 360
-            while yaw_deg < -180:
-                yaw_deg += 360
+            while self.current_yaw > 180:
+                self.current_yaw -= 360
+            while self.current_yaw < -180:
+                self.current_yaw += 360
             
-            self.live_imu['yaw'] = yaw_deg
+            # Store values
+            self.last_roll = roll_deg
+            self.last_pitch = pitch_deg
             
-            # YAW Debug - sürekli görünür
-            if not hasattr(self, 'yaw_debug_counter'):
-                self.yaw_debug_counter = 0
-            self.yaw_debug_counter += 1
+            # Update live IMU structure for display compatibility
+            if not hasattr(self, 'live_imu'):
+                self.live_imu = {}
             
-            # Her 10 güncelleme de bir debug log
-            if self.yaw_debug_counter % 10 == 0:
-                self.log(f"🎯 YAW: {old_yaw:.1f}° → {yaw_deg:.1f}° (Δ{yaw_change:.2f}°, gyro_z={gyro_z_deg:.3f}°/s)")
-            
-            # Live IMU güncelle
-            self.live_imu['roll'] = roll_deg
-            self.live_imu['pitch'] = pitch_deg
+            self.live_imu.update({
+                'roll': roll_deg,
+                'pitch': pitch_deg,
+                'yaw': self.current_yaw,
+                'connected': True,
+                'last_update': time.time(),
+                'update_rate': 10
+            })
             
         except Exception as e:
-            self.log(f"❌ YAW hesaplama hatası: {e}")
-            pass
+            self.log(f"❌ Orientation hesaplama hatası: {e}")
     
     def init_curses(self, stdscr):
         """Curses arayüzünü başlat"""
@@ -817,79 +662,68 @@ class AdvancedTerminalGUI:
     
     def draw_header(self):
         """Başlık çiz"""
-        title = "🚀 TEKNOFEST ROV - Full GPIO/I2C Terminal [TCP:127.0.0.1:5777] 🚀"
+        title = f"🚀 TEKNOFEST ROV - Serial MAVLink Terminal [{self.serial_port}@{self.baud_rate}] 🚀"
         self.stdscr.addstr(0, max(0, (self.width - len(title)) // 2), title, curses.color_pair(4) | curses.A_BOLD)
         
         # Durum satırı - GPIO/I2C durumu eklendi
         status_line = 1
-        tcp_status = "✅ TCP BAĞLI" if self.tcp_data['connected'] else "❌ TCP BAĞLI DEĞİL"
-        arm_status = "🔴 ARMED" if self.armed else "🟢 DISARMED"
-        gpio_status = "🔧 GPIO/I2C" if (self.gpio_integration.gpio_ready or self.gpio_integration.depth_ready) else "❌ NO GPIO"
+        serial_status = "✅ Serial BAĞLI" if self.tcp_data.get('connected', False) else "❌ Serial BAĞLI DEĞİL"
+        armed_status = "🔴 ARMED" if (self.mavlink and self.mavlink.armed) else "🟢 DISARMED"
+        gpio_status = "🔧 GPIO/I2C" if (self.gpio_integration.gpio_initialized or self.gpio_integration.depth_sensor_available) else "❌ NO GPIO"
         menu_status = f"📋 {self.current_menu.upper()}"
         
-        self.stdscr.addstr(status_line, 2, f"TCP: {tcp_status}", curses.color_pair(1 if self.tcp_data['connected'] else 2))
-        self.stdscr.addstr(status_line, 25, f"Durum: {arm_status}", curses.color_pair(2 if self.armed else 1))
-        self.stdscr.addstr(status_line, 45, f"HW: {gpio_status}", curses.color_pair(1 if (self.gpio_integration.gpio_ready or self.gpio_integration.depth_ready) else 2))
-        self.stdscr.addstr(status_line, 65, f"Kontrol: {self.control_mode}", curses.color_pair(5))
+        self.stdscr.addstr(status_line, 2, f"Serial: {serial_status}", curses.color_pair(1 if self.tcp_data.get('connected', False) else 2))
+        self.stdscr.addstr(status_line, 25, f"Durum: {armed_status}", curses.color_pair(2 if (self.mavlink and self.mavlink.armed) else 1))
+        self.stdscr.addstr(status_line, 45, f"HW: {gpio_status}", curses.color_pair(1 if (self.gpio_integration.gpio_initialized or self.gpio_integration.depth_sensor_available) else 2))
+        self.stdscr.addstr(status_line, 65, f"Kontrol: RAW", curses.color_pair(5))
         self.stdscr.addstr(status_line, 85, f"Menü: {menu_status}", curses.color_pair(4))
         
-        # Çizgi
-        self.stdscr.addstr(2, 0, "─" * min(self.width, 120), curses.color_pair(4))
+        # Ayırıcı çizgi
+        self.stdscr.addstr(2, 0, "=" * self.width, curses.color_pair(6))
     
     def draw_live_imu_display(self):
-        """Live IMU görüntüleme - Mission Planner tarzı"""
-        start_row = 4
+        """Live IMU display - simplified"""
+        start_row = 3
+        self.stdscr.addstr(start_row, 4, "📊 LIVE IMU/ORIENTATION", curses.color_pair(4) | curses.A_BOLD)
         
-        with self.data_lock:
-            # Başlık
-            self.stdscr.addstr(start_row, 2, "📊 LIVE IMU DATA - MISSION PLANNER STYLE", curses.color_pair(4) | curses.A_BOLD)
-            
+        # Initialize live_imu if not exists
+        if not hasattr(self, 'live_imu'):
+            self.live_imu = {'connected': False, 'roll': 0, 'pitch': 0, 'yaw': 0, 'last_update': 0, 'update_rate': 0}
+        
+        # IMU verisi varsa göster
+        if self.live_imu.get('connected', False):
             # Bağlantı durumu
-            if self.live_imu['connected']:
-                conn_status = "✅ TCP LIVE"
-                conn_color = curses.color_pair(1)
-                data_age = time.time() - self.live_imu['last_update']
-                freshness = f"({data_age:.2f}s)" if data_age < 1 else f"({data_age:.1f}s OLD)"
-            else:
-                conn_status = "❌ NO DATA"
-                conn_color = curses.color_pair(2)
-                freshness = ""
+            conn_status = "✅ Serial LIVE"
+            conn_color = curses.color_pair(1)
+            data_age = time.time() - self.live_imu.get('last_update', 0)
             
-            self.stdscr.addstr(start_row, 45, f"{conn_status} {freshness}", conn_color)
+            if data_age > 2.0:
+                conn_status = "⚠️ DATA OLD"
+                conn_color = curses.color_pair(3)
             
-            # Update rate
-            rate_text = f"Rate: {self.live_imu['update_rate']}Hz"
-            self.stdscr.addstr(start_row, 70, rate_text, curses.color_pair(3))
+            self.stdscr.addstr(start_row + 1, 4, f"Durum: {conn_status} ({self.live_imu.get('update_rate', 0)}Hz)", conn_color)
             
-            # Live orientation values - büyük ve net
-            if self.live_imu['connected']:
-                # Roll - yeşil/kırmızı renk kodlu
-                roll_val = self.live_imu['roll']
-                roll_color = curses.color_pair(1) if abs(roll_val) < 30 else curses.color_pair(3) if abs(roll_val) < 60 else curses.color_pair(2)
-                self.stdscr.addstr(start_row + 2, 4, f"ROLL:  {roll_val:+7.1f}°", roll_color | curses.A_BOLD)
-                
-                # Pitch - yeşil/kırmızı renk kodlu
-                pitch_val = self.live_imu['pitch']
-                pitch_color = curses.color_pair(1) if abs(pitch_val) < 30 else curses.color_pair(3) if abs(pitch_val) < 60 else curses.color_pair(2)
-                self.stdscr.addstr(start_row + 3, 4, f"PITCH: {pitch_val:+7.1f}°", pitch_color | curses.A_BOLD)
-                
-                # Yaw - sarı/kırmızı renk kodlu (daha belirgin)
-                yaw_val = self.live_imu['yaw']
-                yaw_color = curses.color_pair(3) | curses.A_BOLD  # Sarı ve kalın
-                if abs(yaw_val) > 90:  # Büyük açılar kırmızı
-                    yaw_color = curses.color_pair(2) | curses.A_BOLD
-                self.stdscr.addstr(start_row + 4, 4, f"YAW:   {yaw_val:+7.1f}°", yaw_color)
-                
-                # Görsel çubuklar (0-30-60-90 derece)
-                self.draw_angle_bar(start_row + 2, 25, roll_val, "Roll")
-                self.draw_angle_bar(start_row + 3, 25, pitch_val, "Pitch")
-                self.draw_angle_bar(start_row + 4, 25, yaw_val, "Yaw")
-                
-            else:
-                self.stdscr.addstr(start_row + 2, 4, "ROLL:  ---- °", curses.color_pair(2))
-                self.stdscr.addstr(start_row + 3, 4, "PITCH: ---- °", curses.color_pair(2))
-                self.stdscr.addstr(start_row + 4, 4, "YAW:   ---- °", curses.color_pair(2))
-                self.stdscr.addstr(start_row + 6, 4, "❌ TCP bağlantısı yok - IMU verisi alınamıyor", curses.color_pair(2))
+            # Orientation değerleri - angle bar ile
+            roll_val = self.live_imu.get('roll', 0)
+            pitch_val = self.live_imu.get('pitch', 0)
+            yaw_val = self.live_imu.get('yaw', 0)
+            
+            self.stdscr.addstr(start_row + 2, 4, f"ROLL:  {roll_val:+6.1f} °", curses.color_pair(1 if abs(roll_val) < 10 else 3))
+            self.stdscr.addstr(start_row + 3, 4, f"PITCH: {pitch_val:+6.1f} °", curses.color_pair(1 if abs(pitch_val) < 10 else 3))
+            self.stdscr.addstr(start_row + 4, 4, f"YAW:   {yaw_val:+6.1f} °", curses.color_pair(1))
+            
+            # Angle bars
+            self.draw_angle_bar(start_row + 2, 25, roll_val, "ROLL")
+            self.draw_angle_bar(start_row + 3, 25, pitch_val, "PITCH")
+            self.draw_angle_bar(start_row + 4, 25, yaw_val, "YAW")
+            
+        else:
+            # Bağlantı yok
+            self.stdscr.addstr(start_row + 1, 4, "Durum: ❌ BAĞLANTI YOK", curses.color_pair(2))
+            self.stdscr.addstr(start_row + 2, 4, "ROLL:  ---- °", curses.color_pair(2))
+            self.stdscr.addstr(start_row + 3, 4, "PITCH: ---- °", curses.color_pair(2))
+            self.stdscr.addstr(start_row + 4, 4, "YAW:   ---- °", curses.color_pair(2))
+            self.stdscr.addstr(start_row + 6, 4, "❌ Serial bağlantısı yok - IMU verisi alınamıyor", curses.color_pair(2))
     
     def draw_depth_sensor_display(self):
         """D300 Derinlik sensörü görüntüleme - YENİ!"""
@@ -899,7 +733,7 @@ class AdvancedTerminalGUI:
             # Başlık
             self.stdscr.addstr(start_row, 55, "🌊 D300 DEPTH SENSOR (I2C)", curses.color_pair(4) | curses.A_BOLD)
             
-            if self.gpio_integration.depth_ready and self.depth_data['connected']:
+            if self.gpio_integration.depth_sensor_available and self.depth_data['connected']:
                 # Derinlik verisi
                 depth_val = self.depth_data['depth_m']
                 depth_color = curses.color_pair(1) if depth_val < 5 else curses.color_pair(3) if depth_val < 8 else curses.color_pair(2)
@@ -921,7 +755,7 @@ class AdvancedTerminalGUI:
                 self.stdscr.addstr(start_row + 1, 57, "DEPTH:   ----  m", curses.color_pair(2))
                 self.stdscr.addstr(start_row + 2, 57, "TEMP:    ----  °C", curses.color_pair(2))
                 self.stdscr.addstr(start_row + 3, 57, "PRESS:   ----  mb", curses.color_pair(2))
-                if self.gpio_integration.depth_ready:
+                if self.gpio_integration.depth_sensor_available:
                     self.stdscr.addstr(start_row + 4, 57, "I2C: ⚠️ NO DATA", curses.color_pair(3))
                 else:
                     self.stdscr.addstr(start_row + 4, 57, "I2C: ❌ DISABLED", curses.color_pair(2))
@@ -978,7 +812,7 @@ class AdvancedTerminalGUI:
         self.stdscr.addstr(start_row + 4, 4, f"Motor: {self.motor_value:+4.0f}% [J/K] [I/M boost]", motor_display_color | curses.A_BOLD)
         
         # GPIO durumu göster
-        if self.gpio_integration.gpio_ready:
+        if self.gpio_integration.gpio_initialized:
             self.stdscr.addstr(start_row + 5, 4, "GPIO:  ✅ Buzzer/LED/Button aktif", curses.color_pair(1))
         else:
             self.stdscr.addstr(start_row + 5, 4, "GPIO:  ❌ Devre dışı", curses.color_pair(2))
@@ -996,7 +830,7 @@ class AdvancedTerminalGUI:
             "W/S: Pitch ±",       "A/D: Roll ±",        "Q/E: Yaw ±",
             "J/K: Motor ±5%",     "I/M: Motor ±15%",    "N: Motor STOP",
             "R/F: RAW/PID Mode",  "X: Hızlı Yüzme",     "0: Mission Plan",
-            "T: Test Scripts",    "G: GPIO Test",       "Z: TCP Debug",
+            "T: Test Scripts",    "G: GPIO Test",       "Z: Serial Debug",
             "B: Buzzer Test",     "Space: ARM/DISARM",  "C: Config",
         ]
         
@@ -1015,11 +849,11 @@ class AdvancedTerminalGUI:
         self.stdscr.addstr(start_row, 2, "🔧 GPIO/I2C TEST MENÜSÜ:", curses.color_pair(4) | curses.A_BOLD)
         
         # GPIO durum bilgisi
-        gpio_status = "✅ AKTIF" if self.gpio_integration.gpio_ready else "❌ DEVRE DIŞI"
-        i2c_status = "✅ AKTIF" if self.gpio_integration.depth_ready else "❌ DEVRE DIŞI"
+        gpio_status = "✅ AKTIF" if self.gpio_integration.gpio_initialized else "❌ DEVRE DIŞI"
+        i2c_status = "✅ AKTIF" if self.gpio_integration.depth_sensor_available else "❌ DEVRE DIŞI"
         
-        self.stdscr.addstr(start_row + 1, 4, f"GPIO Durum: {gpio_status}", curses.color_pair(1 if self.gpio_integration.gpio_ready else 2))
-        self.stdscr.addstr(start_row + 2, 4, f"I2C D300:   {i2c_status}", curses.color_pair(1 if self.gpio_integration.depth_ready else 2))
+        self.stdscr.addstr(start_row + 1, 4, f"GPIO Durum: {gpio_status}", curses.color_pair(1 if self.gpio_integration.gpio_initialized else 2))
+        self.stdscr.addstr(start_row + 2, 4, f"I2C D300:   {i2c_status}", curses.color_pair(1 if self.gpio_integration.depth_sensor_available else 2))
         
         # GPIO test komutları
         self.stdscr.addstr(start_row + 4, 4, "GPIO TEST KOMUTLARI:", curses.color_pair(3))
@@ -1089,16 +923,16 @@ class AdvancedTerminalGUI:
         self.stdscr.addstr(start_row, 2, "🔧 TEST SCRIPT YÖNETİCİSİ:", curses.color_pair(4) | curses.A_BOLD)
         
         # Test scriptleri listesi
-        script_list = self.test_manager.get_script_list()
+        script_list = self.test_scripts.get_script_list()
         
         self.stdscr.addstr(start_row + 1, 4, "MEVCUT TEST SCRİPTLERİ:", curses.color_pair(3))
         
-        for i, (script_id, name, desc) in enumerate(script_list):
+        for i, (script_id, name) in enumerate(script_list):
             row = start_row + 2 + i
             if row < self.height - 5:  # Ekran sınırı kontrolü
-                status_text = "ÇALIŞIYOR..." if self.test_manager.running_script == script_id else ""
+                status_text = "ÇALIŞIYOR..." if self.test_scripts.running_script == script_id else ""
                 self.stdscr.addstr(row, 6, f"{script_id}: {name}", curses.color_pair(1 if not status_text else 3))
-                self.stdscr.addstr(row, 35, f"- {desc}", curses.color_pair(6))
+                self.stdscr.addstr(row, 35, f"- {script_list[script_id]}", curses.color_pair(6))
                 if status_text:
                     self.stdscr.addstr(row, 70, status_text, curses.color_pair(3) | curses.A_BOLD)
         
@@ -1226,9 +1060,9 @@ class AdvancedTerminalGUI:
             self.log("🎛️ Kontrol modu: PID")
             self.gpio_integration.beep_success()
         
-        # TCP CONNECTION DEBUG - YENİ! ⭐
+        # Serial CONNECTION DEBUG - YENİ! ⭐
         elif key == ord('z') or key == ord('Z'):
-            self.tcp_connection_debug()
+            self.serial_connection_debug()
         
         # Menü geçişleri
         elif key == ord('0'):
@@ -1263,13 +1097,13 @@ class AdvancedTerminalGUI:
         elif key == ord('p'):
             self.show_gps_data()
     
-    def tcp_connection_debug(self):
-        """TCP bağlantı debug - INSTANT TEST"""
-        self.log("🔍 TCP CONNECTION DEBUG BAŞLATILIYOR...")
+    def serial_connection_debug(self):
+        """Serial bağlantı debug - INSTANT TEST"""
+        self.log("🔍 Serial CONNECTION DEBUG BAŞLATILIYOR...")
         
         # MAVLink durumu
-        if self.mavlink:
-            self.log(f"📡 MAVLink Object: ✅ EXISTS")
+        if self.mavlink_available and self.mavlink and self.mavlink.connected:
+            self.log(f"📡 Serial MAVLink Object: ✅ EXISTS")
             self.log(f"📡 mavlink.connected: {getattr(self.mavlink, 'connected', 'N/A')}")
             self.log(f"📡 mavlink.master: {getattr(self.mavlink, 'master', 'N/A') is not None}")
             
@@ -1304,11 +1138,11 @@ class AdvancedTerminalGUI:
             else:
                 self.log("📡 Master: ❌ NOT EXISTS")
         else:
-            self.log("📡 MAVLink Object: ❌ NOT EXISTS")
+            self.log("📡 Serial MAVLink Object: ❌ NOT EXISTS")
         
         # Thread durumu
         with self.data_lock:
-            self.log(f"🔄 TCP Data Connected: {self.tcp_data['connected']}")
+            self.log(f"🔄 Serial Data Connected: {self.tcp_data['connected']}")
             self.log(f"🔄 Live IMU Connected: {self.live_imu['connected']}")
             self.log(f"🔄 IMU Update Rate: {self.live_imu['update_rate']}Hz")
             
@@ -1319,7 +1153,7 @@ class AdvancedTerminalGUI:
             else:
                 self.log("🔄 Hiç veri alınmamış")
         
-        # TCP port kontrolü - shell command
+        # Serial port kontrolü - shell command
         try:
             import subprocess
             result = subprocess.run(['ss', '-tlnp'], capture_output=True, text=True, timeout=3)
@@ -1332,7 +1166,7 @@ class AdvancedTerminalGUI:
         except Exception as e:
             self.log(f"🔌 Port check error: {e}")
         
-        self.log("🔍 TCP CONNECTION DEBUG TAMAMLANDI")
+        self.log("🔍 Serial CONNECTION DEBUG TAMAMLANDI")
         self.gpio_integration.beep_success()
     
     def handle_gpio_test(self, key):
@@ -1391,7 +1225,7 @@ class AdvancedTerminalGUI:
         
         # I2C testleri
         elif key == ord('d') or key == ord('D'):
-            if self.gpio_integration.depth_ready:
+            if self.gpio_integration.depth_sensor_available:
                 depth_data = self.gpio_integration.get_depth_data()
                 if depth_data:
                     self.log(f"🌊 D300 Test: {depth_data['depth_m']:.2f}m, {depth_data['temperature_c']:.1f}°C")
@@ -1460,14 +1294,14 @@ class AdvancedTerminalGUI:
         # Script çalıştırma
         if key in [ord('1'), ord('2'), ord('3'), ord('4'), ord('5'), ord('6'), ord('7'), ord('8'), ord('9')]:
             script_id = chr(key)
-            if self.test_manager.run_script(script_id, self.test_script_callback):
-                script_info = self.test_manager.available_scripts.get(script_id, {})
+            if self.test_scripts.run_script(script_id, self.test_script_callback):
+                script_info = self.test_scripts.scripts.get(script_id, {})
                 self.log(f"🔧 Test başlatıldı: {script_info.get('name', 'Unknown')}")
                 self.gpio_integration.beep_success()
         
         # Script durdurma
         elif key == ord('s') or key == ord('S'):
-            if self.test_manager.running_script:
+            if self.test_scripts.running_script:
                 self.log("⏹️ Çalışan script durduruluyor...")
                 self.gpio_integration.beep_warning()
                 # Script durdurma işlemi burada implement edilecek
@@ -1481,7 +1315,7 @@ class AdvancedTerminalGUI:
     def get_mission_value_input(self, command):
         """Görev değeri girişi"""
         cmd_info = self.mission_planner.mission_commands.get(command, {})
-        param_type = cmd_info.get('param', 'distance')
+        param_type = cmd_info.get('param_type', 'distance')
         
         if param_type == 'distance':
             prompt = "Mesafe (metre, 0.5-20): "
@@ -1502,8 +1336,8 @@ class AdvancedTerminalGUI:
         """Görev akışını çalıştır"""
         def mission_executor():
             try:
-                for mission in self.mission_planner.mission_queue:
-                    if not self.mission_planner.mission_running:
+                for mission in self.mission_planner.missions:
+                    if not self.mission_planner.mission_active:
                         break
                     
                     mission['status'] = 'executing'
@@ -1520,12 +1354,12 @@ class AdvancedTerminalGUI:
                     
                     time.sleep(0.5)  # Görevler arası bekleme
                 
-                self.mission_planner.mission_running = False
+                self.mission_planner.mission_active = False
                 self.log("✅ Görev akışı tamamlandı!")
                 
             except Exception as e:
                 self.log(f"❌ Görev akışı hatası: {e}")
-                self.mission_planner.mission_running = False
+                self.mission_planner.mission_active = False
         
         # Mission executor thread
         mission_thread = threading.Thread(target=mission_executor, daemon=True)
@@ -1534,7 +1368,7 @@ class AdvancedTerminalGUI:
     def execute_single_mission(self, mission):
         """Tek görev çalıştır"""
         try:
-            action = mission['action']
+            action = mission['command']
             value = mission['value']
             
             if not self.mavlink or not self.mavlink.connected or not self.armed:
@@ -1542,25 +1376,24 @@ class AdvancedTerminalGUI:
                 return False
             
             # Görev tipine göre işlem
-            if action == 'strafe_right':
-                return self.execute_strafe(1, value)
-            elif action == 'strafe_left':
-                return self.execute_strafe(-1, value)
-            elif action == 'forward':
+            if action == 'F':
                 return self.execute_forward(value)
-            elif action == 'backward':
-                return self.execute_forward(-value)
-            elif action == 'ascend':
-                return self.execute_vertical(1, value)
-            elif action == 'descend':
-                return self.execute_vertical(-1, value)
-            elif action == 'yaw_right':
-                return self.execute_yaw(1, value)
-            elif action == 'yaw_left':
-                return self.execute_yaw(-1, value)
-            elif action == 'stop':
-                time.sleep(value)
-                return True
+            elif action == 'B':
+                return self.execute_backward(value)
+            elif action == 'L':
+                return self.execute_left(value)
+            elif action == 'R':
+                return self.execute_right(value)
+            elif action == 'U':
+                return self.execute_up(value)
+            elif action == 'D':
+                return self.execute_down(value)
+            elif action == 'Y':
+                return self.execute_yaw(value)
+            elif action == 'W':
+                return self.execute_wait(value)
+            elif action == 'S':
+                return self.execute_surface()
             
             return False
             
@@ -1568,32 +1401,13 @@ class AdvancedTerminalGUI:
             self.log(f"❌ Görev çalıştırma hatası: {e}")
             return False
     
-    def execute_strafe(self, direction, distance):
-        """Yatay hareket (strafe)"""
-        # Basit implementasyon - gerçekte navigation engine kullanılacak
-        duration = distance * 2  # 2 saniye/metre
-        roll_value = direction * 25  # ±25° roll
-        
-        for i in range(int(duration * 10)):  # 10Hz
-            if not self.mission_planner.mission_running:
-                return False
-            
-            self.servo_values['roll'] = roll_value
-            self.send_servo_commands()
-            time.sleep(0.1)
-        
-        # Neutral'a getir
-        self.servo_values['roll'] = 0
-        self.send_servo_commands()
-        return True
-    
     def execute_forward(self, distance):
         """İleri/geri hareket"""
         duration = abs(distance) * 2  # 2 saniye/metre
         motor_value = 30 if distance > 0 else -30
         
         for i in range(int(duration * 10)):  # 10Hz
-            if not self.mission_planner.mission_running:
+            if not self.mission_planner.mission_active:
                 return False
             
             self.motor_value = motor_value
@@ -1605,31 +1419,17 @@ class AdvancedTerminalGUI:
         self.send_motor_command()
         return True
     
-    def execute_vertical(self, direction, distance):
-        """Dikey hareket"""
-        duration = distance * 3  # 3 saniye/metre
-        pitch_value = direction * 20  # ±20° pitch
-        
-        for i in range(int(duration * 10)):  # 10Hz
-            if not self.mission_planner.mission_running:
-                return False
-            
-            self.servo_values['pitch'] = pitch_value
-            self.send_servo_commands()
-            time.sleep(0.1)
-        
-        # Neutral'a getir
-        self.servo_values['pitch'] = 0
-        self.send_servo_commands()
-        return True
+    def execute_backward(self, distance):
+        """İleri/geri hareket"""
+        return self.execute_forward(-distance)
     
-    def execute_yaw(self, direction, angle):
-        """Yaw dönüşü"""
+    def execute_left(self, angle):
+        """Sol dönüş"""
         duration = abs(angle) / 45  # 45°/saniye
-        yaw_value = direction * 30  # ±30° yaw servo
+        yaw_value = -angle * 30  # ±30° yaw servo
         
         for i in range(int(duration * 10)):  # 10Hz
-            if not self.mission_planner.mission_running:
+            if not self.mission_planner.mission_active:
                 return False
             
             self.servo_values['yaw'] = yaw_value
@@ -1641,9 +1441,62 @@ class AdvancedTerminalGUI:
         self.send_servo_commands()
         return True
     
+    def execute_right(self, angle):
+        """Sağ dönüş"""
+        return self.execute_left(-angle)
+    
+    def execute_up(self, distance):
+        """Yukarı hareket"""
+        duration = distance * 3  # 3 saniye/metre
+        pitch_value = distance * 20  # ±20° pitch
+        
+        for i in range(int(duration * 10)):  # 10Hz
+            if not self.mission_planner.mission_active:
+                return False
+            
+            self.servo_values['pitch'] = pitch_value
+            self.send_servo_commands()
+            time.sleep(0.1)
+        
+        # Neutral'a getir
+        self.servo_values['pitch'] = 0
+        self.send_servo_commands()
+        return True
+    
+    def execute_down(self, distance):
+        """Aşağı hareket"""
+        return self.execute_up(-distance)
+    
+    def execute_yaw(self, angle):
+        """Yaw dönüşü"""
+        duration = abs(angle) / 45  # 45°/saniye
+        yaw_value = angle * 30  # ±30° yaw servo
+        
+        for i in range(int(duration * 10)):  # 10Hz
+            if not self.mission_planner.mission_active:
+                return False
+            
+            self.servo_values['yaw'] = yaw_value
+            self.send_servo_commands()
+            time.sleep(0.1)
+        
+        # Neutral'a getir
+        self.servo_values['yaw'] = 0
+        self.send_servo_commands()
+        return True
+    
+    def execute_wait(self, duration):
+        """Süre bekleme"""
+        time.sleep(duration)
+        return True
+    
+    def execute_surface(self):
+        """Yüzeye çıkma"""
+        return True
+    
     def test_script_callback(self, script_id, success, stdout, stderr):
         """Test script callback"""
-        script_info = self.test_manager.available_scripts.get(script_id, {})
+        script_info = self.test_scripts.scripts.get(script_id, {})
         script_name = script_info.get('name', 'Unknown')
         
         if success:
@@ -1759,7 +1612,7 @@ class AdvancedTerminalGUI:
         if not self.mavlink or not self.mavlink.connected:
             # Sadece YAW aktifken uyarı göster (spam önleme)
             if yaw_priority:
-                self.log("⚠️ TCP MAVLink disconnected - YAW command ignored!")
+                self.log("⚠️ Serial MAVLink disconnected - YAW command ignored!")
             return
             
         if not self.armed:
@@ -1815,7 +1668,7 @@ class AdvancedTerminalGUI:
     def toggle_arm(self):
         """ARM/DISARM toggle - GPIO entegrasyonu ile"""
         if not self.mavlink or not self.mavlink.connected:
-            self.log("❌ TCP MAVLink bağlantısı yok!")
+            self.log("❌ Serial MAVLink bağlantısı yok!")
             self.gpio_integration.beep_error()
             return
         
@@ -2090,12 +1943,12 @@ class AdvancedTerminalGUI:
         self.log("🔄 Sistem kapatılıyor...")
         
         # Thread'leri durdur
-        self.data_thread_running = False
-        if self.data_thread and self.data_thread.is_alive():
-            self.data_thread.join(timeout=2)
+        self.tcp_running = False
+        if self.tcp_thread and self.tcp_thread.is_alive():
+            self.tcp_thread.join(timeout=2)
         
         # Görevleri durdur
-        self.mission_planner.mission_running = False
+        self.mission_planner.mission_active = False
         
         # Servolar neutral'a
         if self.mavlink and self.mavlink.connected:

@@ -1,673 +1,742 @@
 #!/usr/bin/env python3
 """
-TEKNOFEST 2025 - Su Altı Roket Aracı
-Mission Manager - Görev Yönetim Sistemi
+TEKNOFEST 2025 Su Altı Roket Aracı - Mission Manager
+Pixhawk PX4 PIX 2.4.8 Serial MAVLink Mission Control System
+Environment Variable Support: MAV_ADDRESS, MAV_BAUD
 
-Bu script, her iki görevi (Görev 1 ve Görev 2) yönetir, görev planlaması yapar,
-execution kontrolü sağlar ve performans analizi yapar.
-
-Features:
-- Otomatik görev sıralama ve planlama
+AUTONOMOUS MISSION EXECUTION SYSTEM
+- Navigation waypoint missions  
+- Rocket launch sequences
+- Emergency protocols
 - Real-time mission monitoring
-- Emergency abort procedures
-- Comprehensive mission reporting
-- Configuration management
-- Safety system integration
 
-Hardware: Raspberry Pi 4B + Pixhawk PX4 PIX 2.4.8 + 4x DS3230MG Servo + DEGZ Motor + ESC
-Protocol: MAVLink via tcp:127.0.0.1:5777
+Protocol: MAVLink via Serial (Port/Baud from environment)
+Hardware: X-Configuration ROV + Rocket Payload
 """
 
-import sys
 import os
+import sys
 import time
 import json
-import argparse
+import math
 import threading
-from datetime import datetime, timedelta
+from datetime import datetime
 from pymavlink import mavutil
 
-# Import mission modules
-sys.path.append(os.path.dirname(__file__))
-from mission_1_navigation import Mission1Navigator
-from mission_2_rocket_launch import Mission2RocketLaunch
-
-# Mission Manager Configuration
-MANAGER_CONFIG = {
-    'mission_timeout_minutes': 10,      # Maximum mission duration
-    'inter_mission_delay': 120,         # Delay between missions (seconds)
-    'safety_check_interval': 5,         # Safety check frequency (seconds)
-    'telemetry_log_interval': 1,        # Telemetry logging frequency (seconds)
-    'max_retry_attempts': 3,            # Maximum retry attempts per mission
-    'emergency_surface_depth': 0.5      # Emergency surface threshold (m)
-}
-
-# Competition Scoring
-COMPETITION_SCORING = {
-    'mission_1': {
-        'max_points': 300,
-        'components': {
-            'fastest_cruise': 150,
-            'power_cut_at_start': 90,
-            'waterproofing': 60
-        }
-    },
-    'mission_2': {
-        'max_points': 400,
-        'components': {
-            'reach_launch_zone': 100,
-            'safe_surface_angle': 100,
-            'rocket_separation': 150,
-            'waterproofing': 50
-        }
-    }
-}
+# Environment variables for serial connection
+MAV_ADDRESS = os.getenv("MAV_ADDRESS", "/dev/ttyACM0")
+MAV_BAUD = int(os.getenv("MAV_BAUD", "115200"))
 
 class MissionManager:
-    """Ana Mission Manager Sınıfı"""
+    """Mission execution and monitoring system"""
     
     def __init__(self):
-        # Connection status
-        self.mavlink_connected = False
+        """Initialize mission manager"""
+        print(f"🚀 TEKNOFEST Mission Manager - Serial MAVLink")
+        print(f"📡 Serial Configuration:")
+        print(f"   Port: {MAV_ADDRESS}")
+        print(f"   Baud: {MAV_BAUD}")
+        
+        # Serial MAVLink connection
         self.master = None
+        self.connected = False
+        self.armed = False
         
-        # Mission instances
-        self.mission_1 = None
-        self.mission_2 = None
-        
-        # Manager state
-        self.manager_active = False
+        # Mission state
         self.current_mission = None
-        self.mission_queue = []
-        self.emergency_abort = False
+        self.mission_active = False
+        self.mission_thread = None
         
-        # Mission data
-        self.mission_results = {
-            'mission_1': {'completed': False, 'score': 0, 'data': None},
-            'mission_2': {'completed': False, 'score': 0, 'data': None}
+        # Navigation data
+        self.current_position = {'lat': 0, 'lon': 0, 'alt': 0}
+        self.current_attitude = {'roll': 0, 'pitch': 0, 'yaw': 0}
+        self.current_depth = 0.0
+        
+        # Mission types
+        self.mission_types = {
+            'waypoint_navigation': self.execute_waypoint_mission,
+            'rocket_launch': self.execute_rocket_launch,
+            'emergency_surface': self.execute_emergency_surface,
+            'pattern_search': self.execute_pattern_search
         }
         
-        # Telemetry and logging
-        self.telemetry_thread = None
-        self.safety_thread = None
-        self.telemetry_data = []
-        self.telemetry_logging = False
+        # Safety limits
+        self.max_depth = 10.0  # meters
+        self.max_speed = 2.0   # m/s
+        self.max_distance = 100.0  # meters from start
         
-        # Competition configuration
-        self.competition_config = {
-            'start_position': {'lat': None, 'lon': None},
-            'launch_zone': {'lat': None, 'lon': None},
-            'competition_day': False,
-            'video_recording': False
-        }
+        print("✅ Mission Manager initialized")
+    
+    def connect_mavlink(self):
+        """Establish serial MAVLink connection"""
+        try:
+            print(f"📡 Connecting to Pixhawk serial...")
+            print(f"   Port: {MAV_ADDRESS}")
+            print(f"   Baud: {MAV_BAUD}")
+            
+            # Serial MAVLink connection
+            self.master = mavutil.mavlink_connection(
+                MAV_ADDRESS,
+                baud=MAV_BAUD,
+                autoreconnect=True
+            )
+            
+            print("💓 Waiting for heartbeat...")
+            heartbeat = self.master.wait_heartbeat(timeout=15)
+            
+            if heartbeat:
+                self.connected = True
+                self.armed = bool(heartbeat.base_mode & mavutil.mavlink.MAV_MODE_FLAG_SAFETY_ARMED)
+                print("✅ Serial MAVLink connection established!")
+                print(f"   System ID: {self.master.target_system}")
+                print(f"   Component ID: {self.master.target_component}")
+                print(f"   Armed: {'YES' if self.armed else 'NO'}")
+                
+                # Start monitoring thread
+                self.start_monitoring()
+                return True
+            else:
+                print("❌ No heartbeat received!")
+                return False
+                
+        except Exception as e:
+            print(f"❌ Serial connection failed: {e}")
+            print("💡 Check:")
+            print(f"   • Pixhawk connected to {MAV_ADDRESS}")
+            print(f"   • Correct baud rate: {MAV_BAUD}")
+            print("   • ArduSub firmware running")
+            return False
+    
+    def start_monitoring(self):
+        """Start telemetry monitoring thread"""
+        def monitor_thread():
+            while self.connected:
+                try:
+                    # Get position data
+                    pos_msg = self.master.recv_match(type='GLOBAL_POSITION_INT', blocking=False)
+                    if pos_msg:
+                        self.current_position = {
+                            'lat': pos_msg.lat / 1e7,
+                            'lon': pos_msg.lon / 1e7,
+                            'alt': pos_msg.alt / 1000.0
+                        }
+                    
+                    # Get attitude data
+                    att_msg = self.master.recv_match(type='ATTITUDE', blocking=False)
+                    if att_msg:
+                        self.current_attitude = {
+                            'roll': math.degrees(att_msg.roll),
+                            'pitch': math.degrees(att_msg.pitch),
+                            'yaw': math.degrees(att_msg.yaw)
+                        }
+                    
+                    # Get depth data (from pressure sensor)
+                    depth_msg = self.master.recv_match(type='SCALED_PRESSURE', blocking=False)
+                    if depth_msg:
+                        # Convert pressure to depth (rough approximation)
+                        depth_m = max(0.0, (depth_msg.press_abs - 1013.25) / 100.0)
+                        self.current_depth = depth_m
+                    
+                    time.sleep(0.1)  # 10Hz monitoring
+                    
+                except Exception as e:
+                    print(f"⚠️ Monitoring error: {e}")
+                    time.sleep(1.0)
         
-    def initialize_mavlink(self):
-        """MAVLink bağlantısını başlat"""
-        try:
-            print("🔌 Mission Manager - MAVLink başlatılıyor...")
-            self.master = mavutil.mavlink_connection('tcp:127.0.0.1:5777')
-            print("💓 Heartbeat bekleniyor...")
-            self.master.wait_heartbeat(timeout=10)
-            self.mavlink_connected = True
-            print("✅ MAVLink bağlantısı başarılı!")
-            return True
-        except Exception as e:
-            print(f"❌ MAVLink bağlantı hatası: {e}")
-            return False
+        monitor_thread = threading.Thread(target=monitor_thread, daemon=True)
+        monitor_thread.start()
+        print("🔄 Telemetry monitoring started")
     
-    def load_mission_config(self, config_file):
-        """Mission konfigürasyon dosyasını yükle"""
-        try:
-            with open(config_file, 'r', encoding='utf-8') as f:
-                config = json.load(f)
-            
-            self.competition_config.update(config)
-            
-            print("✅ Mission konfigürasyonu yüklendi:")
-            print(f"   Başlangıç: {self.competition_config['start_position']}")
-            print(f"   Atış bölgesi: {self.competition_config['launch_zone']}")
-            print(f"   Yarışma günü: {self.competition_config['competition_day']}")
-            
-            return True
-        except Exception as e:
-            print(f"❌ Konfigürasyon yükleme hatası: {e}")
-            return False
-    
-    def save_mission_config(self, config_file):
-        """Mission konfigürasyonunu kaydet"""
-        try:
-            with open(config_file, 'w', encoding='utf-8') as f:
-                json.dump(self.competition_config, f, ensure_ascii=False, indent=2)
-            print(f"✅ Konfigürasyon kaydedildi: {config_file}")
-            return True
-        except Exception as e:
-            print(f"❌ Konfigürasyon kayıt hatası: {e}")
-            return False
-    
-    def pre_mission_checks(self):
-        """Görev öncesi güvenlik kontrolleri"""
-        print("🔍 Görev öncesi güvenlik kontrolleri...")
+    def perform_system_check(self):
+        """Perform pre-mission system check"""
+        print("\n🔍 Performing system check...")
         
         checks = {
-            'mavlink_connection': False,
-            'gps_signal': False,
-            'pressure_sensor': False,
-            'attitude_sensor': False,
-            'servo_response': False,
-            'motor_response': False,
-            'emergency_systems': False
+            'serial_connection': False,
+            'armed_status': False,
+            'gps_fix': False,
+            'depth_sensor': False,
+            'battery_level': False
         }
         
+        if self.connected:
+            checks['serial_connection'] = True
+            print("   ✅ Serial MAVLink connection: OK")
+        else:
+            print("   ❌ Serial MAVLink connection: FAILED")
+            return checks
+        
+        if self.armed:
+            checks['armed_status'] = True
+            print("   ✅ Armed status: ARMED")
+        else:
+            print("   ⚠️ Armed status: DISARMED")
+        
+        # Check GPS
         try:
-            # MAVLink bağlantı kontrolü
-            if self.mavlink_connected:
-                checks['mavlink_connection'] = True
-                print("   ✅ MAVLink bağlantısı OK")
-            
-            # GPS sinyal kontrolü
-            gps_msg = self.master.recv_match(type='GPS_RAW_INT', blocking=True, timeout=5)
-            if gps_msg and gps_msg.satellites_visible >= 4:
-                checks['gps_signal'] = True
-                print(f"   ✅ GPS sinyali OK ({gps_msg.satellites_visible} uydu)")
+            gps_msg = self.master.recv_match(type='GPS_RAW_INT', blocking=True, timeout=3)
+            if gps_msg and gps_msg.fix_type >= 3:
+                checks['gps_fix'] = True
+                print(f"   ✅ GPS fix: {gps_msg.fix_type} ({gps_msg.satellites_visible} sats)")
             else:
-                print(f"   ⚠️ GPS sinyali zayıf ({gps_msg.satellites_visible if gps_msg else 0} uydu)")
-            
-            # Basınç sensörü kontrolü
-            pressure_msg = self.master.recv_match(type='SCALED_PRESSURE', blocking=True, timeout=5)
-            if pressure_msg:
-                checks['pressure_sensor'] = True
-                print("   ✅ Basınç sensörü OK")
-            
-            # Attitude sensörü kontrolü
-            attitude_msg = self.master.recv_match(type='ATTITUDE', blocking=True, timeout=5)
-            if attitude_msg:
-                checks['attitude_sensor'] = True
-                print("   ✅ Attitude sensörü OK")
-            
-            # Servo yanıt kontrolü (quick test)
-            self.master.mav.command_long_send(
-                self.master.target_system, self.master.target_component,
-                mavutil.mavlink.MAV_CMD_DO_SET_SERVO, 0, 1, 1500, 0, 0, 0, 0, 0
-            )
-            time.sleep(0.5)
-            checks['servo_response'] = True
-            print("   ✅ Servo yanıtı OK")
-            
-            # Motor yanıt kontrolü (quick test)
-            self.master.mav.command_long_send(
-                self.master.target_system, self.master.target_component,
-                mavutil.mavlink.MAV_CMD_DO_SET_SERVO, 0, 8, 1500, 0, 0, 0, 0, 0
-            )
-            time.sleep(0.5)
-            checks['motor_response'] = True
-            print("   ✅ Motor yanıtı OK")
-            
-            checks['emergency_systems'] = True
-            print("   ✅ Acil durum sistemleri OK")
-            
-        except Exception as e:
-            print(f"   ❌ Kontrol hatası: {e}")
+                print("   ❌ GPS fix: NO FIX")
+        except:
+            print("   ❌ GPS fix: TIMEOUT")
         
-        # Genel durum değerlendirmesi
-        passed_checks = sum(checks.values())
-        total_checks = len(checks)
+        # Check depth sensor
+        try:
+            depth_msg = self.master.recv_match(type='SCALED_PRESSURE', blocking=True, timeout=3)
+            if depth_msg:
+                checks['depth_sensor'] = True
+                print(f"   ✅ Depth sensor: {self.current_depth:.1f}m")
+            else:
+                print("   ❌ Depth sensor: NO DATA")
+        except:
+            print("   ❌ Depth sensor: TIMEOUT")
         
-        print(f"\n📊 Güvenlik kontrolleri: {passed_checks}/{total_checks} başarılı")
+        # Check battery
+        try:
+            sys_msg = self.master.recv_match(type='SYS_STATUS', blocking=True, timeout=3)
+            if sys_msg:
+                voltage = sys_msg.voltage_battery / 1000.0
+                if voltage > 20.0:  # 6S LiPo minimum
+                    checks['battery_level'] = True
+                    print(f"   ✅ Battery: {voltage:.1f}V")
+                else:
+                    print(f"   ⚠️ Battery: {voltage:.1f}V (LOW)")
+            else:
+                print("   ❌ Battery: NO DATA")
+        except:
+            print("   ❌ Battery: TIMEOUT")
         
-        if passed_checks >= 5:  # Minimum 5/7 geçmeli
-            print("✅ Görev güvenlik kriterleri karşılandı")
+        # System check summary
+        passed = sum(checks.values())
+        total = len(checks)
+        print(f"\n📊 System Check: {passed}/{total} checks passed")
+        
+        if passed == total:
+            print("🎉 ALL SYSTEMS GO! Mission ready to execute.")
+            return True
+        elif passed >= total - 1:
+            print("⚠️ MINOR ISSUES. Mission can proceed with caution.")
             return True
         else:
-            print("❌ Güvenlik kriterleri yetersiz!")
+            print("❌ MAJOR ISSUES. Mission should not proceed.")
             return False
     
-    def start_telemetry_logging(self):
-        """Telemetri kayıt thread'ini başlat"""
-        if self.telemetry_logging:
-            return
-            
-        self.telemetry_logging = True
-        self.telemetry_thread = threading.Thread(target=self._telemetry_worker)
-        self.telemetry_thread.daemon = True
-        self.telemetry_thread.start()
-        print("📡 Telemetri kaydı başlatıldı")
-    
-    def stop_telemetry_logging(self):
-        """Telemetri kaydını durdur"""
-        self.telemetry_logging = False
-        if self.telemetry_thread:
-            self.telemetry_thread.join(timeout=2)
-        print("📡 Telemetri kaydı durduruldu")
-    
-    def _telemetry_worker(self):
-        """Telemetri kayıt worker thread"""
-        while self.telemetry_logging and self.mavlink_connected:
-            try:
-                telemetry_point = {
-                    'timestamp': time.time(),
-                    'datetime': datetime.now().isoformat()
-                }
-                
-                # GPS data
-                gps_msg = self.master.recv_match(type='GPS_RAW_INT', blocking=False)
-                if gps_msg:
-                    telemetry_point['gps'] = {
-                        'lat': gps_msg.lat / 1e7,
-                        'lon': gps_msg.lon / 1e7,
-                        'alt': gps_msg.alt / 1000.0,
-                        'satellites': gps_msg.satellites_visible
-                    }
-                
-                # Attitude data
-                attitude_msg = self.master.recv_match(type='ATTITUDE', blocking=False)
-                if attitude_msg:
-                    telemetry_point['attitude'] = {
-                        'roll': attitude_msg.roll,
-                        'pitch': attitude_msg.pitch,
-                        'yaw': attitude_msg.yaw
-                    }
-                
-                # Pressure data
-                pressure_msg = self.master.recv_match(type='SCALED_PRESSURE', blocking=False)
-                if pressure_msg:
-                    telemetry_point['pressure'] = {
-                        'abs_pressure': pressure_msg.press_abs,
-                        'diff_pressure': pressure_msg.press_diff,
-                        'temperature': pressure_msg.temperature
-                    }
-                
-                # VFR data
-                vfr_msg = self.master.recv_match(type='VFR_HUD', blocking=False)
-                if vfr_msg:
-                    telemetry_point['vfr'] = {
-                        'airspeed': vfr_msg.airspeed,
-                        'groundspeed': vfr_msg.groundspeed,
-                        'alt': vfr_msg.alt,
-                        'climb': vfr_msg.climb,
-                        'heading': vfr_msg.heading,
-                        'throttle': vfr_msg.throttle
-                    }
-                
-                self.telemetry_data.append(telemetry_point)
-                
-                # Keep only last 1000 points to manage memory
-                if len(self.telemetry_data) > 1000:
-                    self.telemetry_data = self.telemetry_data[-500:]
-                
-            except Exception as e:
-                print(f"⚠️ Telemetri hatası: {e}")
-            
-            time.sleep(MANAGER_CONFIG['telemetry_log_interval'])
-    
-    def start_safety_monitoring(self):
-        """Güvenlik monitörü thread'ini başlat"""
-        if self.safety_thread and self.safety_thread.is_alive():
-            return
-            
-        self.safety_thread = threading.Thread(target=self._safety_worker)
-        self.safety_thread.daemon = True
-        self.safety_thread.start()
-        print("🛡️ Güvenlik monitörü başlatıldı")
-    
-    def _safety_worker(self):
-        """Güvenlik monitörü worker thread"""
-        while self.manager_active and self.mavlink_connected:
-            try:
-                # Depth safety check
-                pressure_msg = self.master.recv_match(type='SCALED_PRESSURE', blocking=False)
-                if pressure_msg:
-                    surface_pressure = 1013.25  # Standard atmospheric pressure
-                    current_depth = (pressure_msg.press_abs - surface_pressure) * 0.10197
-                    
-                    # Emergency surface if too deep (>5m safety limit)
-                    if current_depth > 5.0:
-                        print("🚨 ACİL! Çok derinlik tespit edildi - Acil yüzeye çıkış")
-                        self.emergency_abort = True
-                
-                # Communication timeout check
-                if time.time() - self.master.last_heartbeat > 30:  # 30 seconds timeout
-                    print("🚨 ACİL! MAVLink heartbeat kaybı")
-                    self.emergency_abort = True
-                
-                # Check for emergency abort
-                if self.emergency_abort:
-                    self.abort_all_missions()
-                    break
-                    
-            except Exception as e:
-                print(f"⚠️ Güvenlik monitörü hatası: {e}")
-            
-            time.sleep(MANAGER_CONFIG['safety_check_interval'])
-    
-    def abort_all_missions(self):
-        """Tüm görevleri acil durdur"""
-        print("🚨 TÜM GÖREVLERİN ACİL DURDURULMASI!")
+    def execute_waypoint_mission(self, waypoints):
+        """Execute waypoint navigation mission"""
+        print(f"\n🗺️ Executing waypoint mission ({len(waypoints)} points)")
         
-        self.emergency_abort = True
-        self.manager_active = False
+        for i, waypoint in enumerate(waypoints):
+            if not self.mission_active:
+                break
+            
+            print(f"   → Waypoint {i+1}/{len(waypoints)}: "
+                  f"({waypoint['lat']:.6f}, {waypoint['lon']:.6f}, {waypoint['depth']:.1f}m)")
+            
+            # Navigate to waypoint
+            success = self.navigate_to_waypoint(waypoint)
+            
+            if success:
+                print(f"   ✅ Waypoint {i+1} reached")
+                # Hold position for specified time
+                hold_time = waypoint.get('hold_time', 5.0)
+                print(f"   ⏳ Holding position for {hold_time}s...")
+                time.sleep(hold_time)
+            else:
+                print(f"   ❌ Waypoint {i+1} failed")
+                return False
         
-        # Stop current mission
-        if self.current_mission:
-            self.current_mission.emergency_stop_procedure()
+        print("✅ Waypoint mission completed successfully!")
+        return True
+    
+    def navigate_to_waypoint(self, waypoint):
+        """Navigate to a specific waypoint"""
+        target_lat = waypoint['lat']
+        target_lon = waypoint['lon']
+        target_depth = waypoint['depth']
         
-        # Send emergency commands
+        # Calculate distance and bearing
+        distance = self.calculate_distance(
+            self.current_position['lat'], self.current_position['lon'],
+            target_lat, target_lon
+        )
+        
+        bearing = self.calculate_bearing(
+            self.current_position['lat'], self.current_position['lon'],
+            target_lat, target_lon
+        )
+        
+        print(f"      Distance: {distance:.1f}m, Bearing: {bearing:.1f}°")
+        
+        # Navigation timeout
+        timeout = max(30.0, distance / self.max_speed * 2)  # 2x expected time
+        start_time = time.time()
+        
+        while time.time() - start_time < timeout and self.mission_active:
+            # Check if we've reached the waypoint
+            current_distance = self.calculate_distance(
+                self.current_position['lat'], self.current_position['lon'],
+                target_lat, target_lon
+            )
+            
+            depth_error = abs(self.current_depth - target_depth)
+            
+            # Waypoint reached criteria
+            if current_distance < 2.0 and depth_error < 0.5:  # 2m horizontal, 0.5m depth
+                print(f"      ✅ Waypoint reached! (Distance: {current_distance:.1f}m)")
+                return True
+            
+            # Send navigation commands
+            self.send_navigation_commands(target_lat, target_lon, target_depth)
+            
+            time.sleep(1.0)  # 1Hz navigation updates
+        
+        print(f"      ❌ Waypoint timeout ({timeout:.0f}s)")
+        return False
+    
+    def send_navigation_commands(self, target_lat, target_lon, target_depth):
+        """Send navigation commands to autopilot"""
         try:
-            # Stop motor
+            # Send position target
+            self.master.mav.set_position_target_global_int_send(
+                0,  # time_boot_ms
+                self.master.target_system,
+                self.master.target_component,
+                mavutil.mavlink.MAV_FRAME_GLOBAL_INT,
+                0b110111111000,  # type_mask (position only)
+                int(target_lat * 1e7),  # lat
+                int(target_lon * 1e7),  # lon
+                -target_depth,  # alt (negative for depth)
+                0, 0, 0,  # velocity
+                0, 0, 0,  # acceleration
+                0, 0  # yaw, yaw_rate
+            )
+            
+        except Exception as e:
+            print(f"      ❌ Navigation command error: {e}")
+    
+    def calculate_distance(self, lat1, lon1, lat2, lon2):
+        """Calculate distance between two GPS points (Haversine formula)"""
+        R = 6371000  # Earth radius in meters
+        
+        lat1_rad = math.radians(lat1)
+        lat2_rad = math.radians(lat2)
+        delta_lat = math.radians(lat2 - lat1)
+        delta_lon = math.radians(lon2 - lon1)
+        
+        a = (math.sin(delta_lat/2)**2 + 
+             math.cos(lat1_rad) * math.cos(lat2_rad) * math.sin(delta_lon/2)**2)
+        c = 2 * math.atan2(math.sqrt(a), math.sqrt(1-a))
+        
+        return R * c
+    
+    def calculate_bearing(self, lat1, lon1, lat2, lon2):
+        """Calculate bearing between two GPS points"""
+        lat1_rad = math.radians(lat1)
+        lat2_rad = math.radians(lat2)
+        delta_lon = math.radians(lon2 - lon1)
+        
+        y = math.sin(delta_lon) * math.cos(lat2_rad)
+        x = (math.cos(lat1_rad) * math.sin(lat2_rad) - 
+             math.sin(lat1_rad) * math.cos(lat2_rad) * math.cos(delta_lon))
+        
+        bearing = math.degrees(math.atan2(y, x))
+        return (bearing + 360) % 360  # Normalize to 0-360°
+    
+    def execute_rocket_launch(self, launch_params):
+        """Execute rocket launch sequence"""
+        print(f"\n🚀 Executing rocket launch sequence")
+        print(f"   Target depth: {launch_params['depth']}m")
+        print(f"   Launch angle: {launch_params['angle']}°")
+        
+        # Pre-launch checks
+        if not self.perform_pre_launch_checks():
+            return False
+        
+        # Navigate to launch position
+        if 'position' in launch_params:
+            success = self.navigate_to_waypoint(launch_params['position'])
+            if not success:
+                print("❌ Failed to reach launch position")
+                return False
+        
+        # Stabilize attitude
+        print("   🎯 Stabilizing launch attitude...")
+        if not self.stabilize_attitude(launch_params['angle']):
+            return False
+        
+        # Final countdown
+        for i in range(5, 0, -1):
+            print(f"   🔢 Launch countdown: {i}")
+            time.sleep(1.0)
+        
+        # LAUNCH!
+        print("   🚀 ROCKET LAUNCH!")
+        success = self.trigger_rocket_launch()
+        
+        if success:
+            print("✅ Rocket launch sequence completed!")
+            return True
+        else:
+            print("❌ Rocket launch failed!")
+            return False
+    
+    def perform_pre_launch_checks(self):
+        """Perform pre-launch safety checks"""
+        print("   🔍 Pre-launch safety checks...")
+        
+        # Check depth limits
+        if self.current_depth > self.max_depth:
+            print(f"   ❌ Depth too deep: {self.current_depth:.1f}m > {self.max_depth}m")
+            return False
+        
+        # Check system status
+        if not self.armed:
+            print("   ❌ System not armed")
+            return False
+        
+        print("   ✅ Pre-launch checks passed")
+        return True
+    
+    def stabilize_attitude(self, target_angle):
+        """Stabilize vehicle attitude for launch"""
+        print(f"   🎯 Stabilizing to {target_angle}° pitch...")
+        
+        timeout = 30.0  # 30 second timeout
+        start_time = time.time()
+        
+        while time.time() - start_time < timeout:
+            # Check attitude error
+            pitch_error = abs(self.current_attitude['pitch'] - target_angle)
+            roll_error = abs(self.current_attitude['roll'])
+            
+            if pitch_error < 2.0 and roll_error < 2.0:  # 2° tolerance
+                print(f"   ✅ Attitude stabilized (P:{self.current_attitude['pitch']:.1f}°)")
+                return True
+            
+            # Send attitude commands
+            self.send_attitude_commands(0, target_angle, self.current_attitude['yaw'])
+            
+            time.sleep(0.1)  # 10Hz attitude control
+        
+        print("   ❌ Attitude stabilization timeout")
+        return False
+    
+    def send_attitude_commands(self, roll, pitch, yaw):
+        """Send attitude commands"""
+        try:
+            # Convert to radians
+            roll_rad = math.radians(roll)
+            pitch_rad = math.radians(pitch)
+            yaw_rad = math.radians(yaw)
+            
+            # Send attitude target
+            self.master.mav.set_attitude_target_send(
+                0,  # time_boot_ms
+                self.master.target_system,
+                self.master.target_component,
+                0b00000111,  # type_mask (attitude only)
+                [math.cos(roll_rad/2)*math.cos(pitch_rad/2)*math.cos(yaw_rad/2) + 
+                 math.sin(roll_rad/2)*math.sin(pitch_rad/2)*math.sin(yaw_rad/2),
+                 math.sin(roll_rad/2)*math.cos(pitch_rad/2)*math.cos(yaw_rad/2) - 
+                 math.cos(roll_rad/2)*math.sin(pitch_rad/2)*math.sin(yaw_rad/2),
+                 math.cos(roll_rad/2)*math.sin(pitch_rad/2)*math.cos(yaw_rad/2) + 
+                 math.sin(roll_rad/2)*math.cos(pitch_rad/2)*math.sin(yaw_rad/2),
+                 math.cos(roll_rad/2)*math.cos(pitch_rad/2)*math.sin(yaw_rad/2) - 
+                 math.sin(roll_rad/2)*math.sin(pitch_rad/2)*math.cos(yaw_rad/2)],  # quaternion
+                0, 0, 0,  # body roll rate, pitch rate, yaw rate
+                0  # thrust
+            )
+            
+        except Exception as e:
+            print(f"   ❌ Attitude command error: {e}")
+    
+    def trigger_rocket_launch(self):
+        """Trigger rocket launch mechanism"""
+        try:
+            # Send servo command to release rocket (example: AUX7)
             self.master.mav.command_long_send(
-                self.master.target_system, self.master.target_component,
-                mavutil.mavlink.MAV_CMD_DO_SET_SERVO, 0, 8, 1500, 0, 0, 0, 0, 0
+                self.master.target_system,
+                self.master.target_component,
+                mavutil.mavlink.MAV_CMD_DO_SET_SERVO,
+                0,  # confirmation
+                15,  # servo number (AUX7)
+                2000,  # PWM value (release position)
+                0, 0, 0, 0, 0  # unused parameters
             )
             
-            # Neutral all servos
-            for channel in range(1, 10):
-                self.master.mav.command_long_send(
-                    self.master.target_system, self.master.target_component,
-                    mavutil.mavlink.MAV_CMD_DO_SET_SERVO, 0, channel, 1500, 0, 0, 0, 0, 0
-                )
-                time.sleep(0.1)
-                
+            print("   ✅ Rocket release command sent")
+            time.sleep(2.0)  # Hold release for 2 seconds
+            
+            # Return servo to lock position
+            self.master.mav.command_long_send(
+                self.master.target_system,
+                self.master.target_component,
+                mavutil.mavlink.MAV_CMD_DO_SET_SERVO,
+                0,  # confirmation
+                15,  # servo number (AUX7)
+                1000,  # PWM value (lock position)
+                0, 0, 0, 0, 0  # unused parameters
+            )
+            
+            return True
+            
         except Exception as e:
-            print(f"❌ Acil durdurma komut hatası: {e}")
-        
-        print("✅ Acil durdurma prosedürü tamamlandı")
+            print(f"   ❌ Rocket launch error: {e}")
+            return False
     
-    def execute_mission_1(self, start_lat, start_lon):
-        """Mission 1'i çalıştır"""
-        print("\n" + "="*60)
-        print("🎯 GÖREV 1: Seyir Yapma & Başlangıç Noktasına Geri Dönüş")
-        print("="*60)
+    def execute_emergency_surface(self, params=None):
+        """Execute emergency surface protocol"""
+        print("\n🚨 EMERGENCY SURFACE PROTOCOL ACTIVATED!")
         
         try:
-            # Mission 1 instance oluştur
-            self.mission_1 = Mission1Navigator(start_lat=start_lat, start_lon=start_lon)
-            self.mission_1.master = self.master
-            self.mission_1.connected = True
-            self.current_mission = self.mission_1
+            # Stop all horizontal movement
+            self.master.mav.set_position_target_local_ned_send(
+                0,  # time_boot_ms
+                self.master.target_system,
+                self.master.target_component,
+                mavutil.mavlink.MAV_FRAME_LOCAL_NED,
+                0b110111000111,  # type_mask (velocity only)
+                0, 0, 0,  # position
+                0, 0, -1.0,  # velocity (1 m/s upward)
+                0, 0, 0,  # acceleration
+                0, 0  # yaw, yaw_rate
+            )
             
-            # Mission'ı çalıştır
-            success = self.mission_1.run_mission_1()
+            print("   🔼 Emergency ascent command sent")
             
-            if success:
-                # Scoring hesapla
-                report = self.mission_1.generate_mission_report()
-                score, _ = self.mission_1.calculate_mission_score()
-                
-                self.mission_results['mission_1'] = {
-                    'completed': True,
-                    'score': score,
-                    'data': report
-                }
-                
-                print(f"✅ Görev 1 tamamlandı! Puan: {score}/300")
+            # Monitor ascent
+            start_depth = self.current_depth
+            timeout = 60.0  # 1 minute timeout
+            start_time = time.time()
+            
+            while time.time() - start_time < timeout and self.current_depth > 0.5:
+                ascent_rate = (start_depth - self.current_depth) / (time.time() - start_time)
+                print(f"   📈 Ascending: {self.current_depth:.1f}m (Rate: {ascent_rate:.2f} m/s)")
+                time.sleep(2.0)
+            
+            if self.current_depth <= 0.5:
+                print("✅ Emergency surface completed!")
                 return True
             else:
-                print("❌ Görev 1 başarısız!")
+                print("❌ Emergency surface timeout!")
                 return False
                 
         except Exception as e:
-            print(f"❌ Görev 1 çalıştırma hatası: {e}")
+            print(f"❌ Emergency surface error: {e}")
             return False
-        finally:
-            self.current_mission = None
     
-    def execute_mission_2(self, launch_zone_lat, launch_zone_lon):
-        """Mission 2'yi çalıştır"""
-        print("\n" + "="*60)
-        print("🚀 GÖREV 2: Roket Ateşleme")
-        print("="*60)
+    def execute_pattern_search(self, search_params):
+        """Execute pattern search mission"""
+        print(f"\n🔍 Executing pattern search")
+        print(f"   Pattern: {search_params['pattern']}")
+        print(f"   Area: {search_params['width']}m x {search_params['height']}m")
         
-        try:
-            # Mission 2 instance oluştur
-            self.mission_2 = Mission2RocketLaunch(
-                launch_zone_lat=launch_zone_lat,
-                launch_zone_lon=launch_zone_lon
-            )
-            self.mission_2.master = self.master
-            self.mission_2.connected = True
-            self.current_mission = self.mission_2
-            
-            # Mission'ı çalıştır
-            success = self.mission_2.run_mission_2()
-            
-            if success:
-                # Scoring hesapla
-                report = self.mission_2.generate_mission_report()
-                score, _ = self.mission_2.calculate_mission_score()
-                
-                self.mission_results['mission_2'] = {
-                    'completed': True,
-                    'score': score,
-                    'data': report
-                }
-                
-                print(f"✅ Görev 2 tamamlandı! Puan: {score}/400")
-                return True
-            else:
-                print("❌ Görev 2 başarısız!")
-                return False
-                
-        except Exception as e:
-            print(f"❌ Görev 2 çalıştırma hatası: {e}")
-            return False
-        finally:
-            self.current_mission = None
+        # Generate search pattern waypoints
+        waypoints = self.generate_search_pattern(search_params)
+        
+        # Execute waypoint mission
+        return self.execute_waypoint_mission(waypoints)
     
-    def execute_mission_sequence(self, missions=['mission_1', 'mission_2']):
-        """Görev sırasını çalıştır"""
-        print("\n🎮 TEKNOFEST 2025 - Mission Sequence Başlatılıyor!")
-        print("="*60)
+    def generate_search_pattern(self, params):
+        """Generate search pattern waypoints"""
+        pattern = params['pattern']
+        width = params['width']
+        height = params['height']
+        spacing = params.get('spacing', 10.0)  # 10m default spacing
         
-        self.manager_active = True
+        waypoints = []
+        center_lat = self.current_position['lat']
+        center_lon = self.current_position['lon']
+        depth = params.get('depth', 2.0)
         
-        # Güvenlik ve telemetri başlat
-        self.start_safety_monitoring()
-        self.start_telemetry_logging()
-        
-        try:
-            for mission_name in missions:
-                if self.emergency_abort:
-                    print("🚨 Acil durdurma nedeniyle görev sırası durduruldu!")
-                    break
+        if pattern == 'lawnmower':
+            # Lawnmower pattern
+            num_lines = int(width / spacing)
+            for i in range(num_lines):
+                # Calculate offset
+                y_offset = (i - num_lines/2) * spacing
                 
-                if mission_name == 'mission_1':
-                    if not self.competition_config['start_position']['lat']:
-                        print("❌ Görev 1 için başlangıç koordinatları eksik!")
-                        continue
-                        
-                    success = self.execute_mission_1(
-                        self.competition_config['start_position']['lat'],
-                        self.competition_config['start_position']['lon']
-                    )
+                if i % 2 == 0:  # Even lines: left to right
+                    x_start, x_end = -height/2, height/2
+                else:  # Odd lines: right to left
+                    x_start, x_end = height/2, -height/2
+                
+                # Add waypoints for this line
+                num_points = max(2, int(height / spacing))
+                for j in range(num_points):
+                    x_offset = x_start + (x_end - x_start) * j / (num_points - 1)
                     
-                elif mission_name == 'mission_2':
-                    if not self.competition_config['launch_zone']['lat']:
-                        print("❌ Görev 2 için atış bölgesi koordinatları eksik!")
-                        continue
-                        
-                    success = self.execute_mission_2(
-                        self.competition_config['launch_zone']['lat'],
-                        self.competition_config['launch_zone']['lon']
-                    )
+                    # Convert offsets to lat/lon
+                    lat_offset = x_offset / 111320.0  # Rough conversion
+                    lon_offset = y_offset / (111320.0 * math.cos(math.radians(center_lat)))
+                    
+                    waypoints.append({
+                        'lat': center_lat + lat_offset,
+                        'lon': center_lon + lon_offset,
+                        'depth': depth,
+                        'hold_time': 2.0
+                    })
+        
+        elif pattern == 'spiral':
+            # Spiral pattern
+            radius = min(width, height) / 2
+            num_points = int(2 * math.pi * radius / spacing)
+            
+            for i in range(num_points):
+                angle = 2 * math.pi * i / num_points
+                r = radius * i / num_points
                 
-                else:
-                    print(f"❌ Bilinmeyen görev: {mission_name}")
-                    continue
+                x_offset = r * math.cos(angle)
+                y_offset = r * math.sin(angle)
+                
+                # Convert offsets to lat/lon
+                lat_offset = x_offset / 111320.0
+                lon_offset = y_offset / (111320.0 * math.cos(math.radians(center_lat)))
+                
+                waypoints.append({
+                    'lat': center_lat + lat_offset,
+                    'lon': center_lon + lon_offset,
+                    'depth': depth,
+                    'hold_time': 1.0
+                })
+        
+        print(f"   Generated {len(waypoints)} waypoints for {pattern} pattern")
+        return waypoints
+    
+    def start_mission(self, mission_type, mission_params):
+        """Start mission execution"""
+        if self.mission_active:
+            print("❌ Mission already active!")
+            return False
+        
+        if mission_type not in self.mission_types:
+            print(f"❌ Unknown mission type: {mission_type}")
+            return False
+        
+        if not self.connected:
+            print("❌ Not connected to vehicle!")
+            return False
+        
+        # Perform system check
+        if not self.perform_system_check():
+            print("❌ System check failed - mission aborted")
+            return False
+        
+        # Start mission
+        self.current_mission = mission_type
+        self.mission_active = True
+        
+        def mission_worker():
+            try:
+                print(f"\n🚀 Starting mission: {mission_type}")
+                mission_func = self.mission_types[mission_type]
+                success = mission_func(mission_params)
                 
                 if success:
-                    print(f"✅ {mission_name} başarılı!")
+                    print(f"✅ Mission '{mission_type}' completed successfully!")
                 else:
-                    print(f"❌ {mission_name} başarısız!")
+                    print(f"❌ Mission '{mission_type}' failed!")
                     
-                    if self.competition_config['competition_day']:
-                        # Yarışma günü - sonraki göreve geç
-                        print("⚠️ Yarışma günü - sonraki göreve geçiliyor...")
-                    else:
-                        # Test günü - tekrar dene veya dur
-                        response = input("Tekrar denemek istiyor musunuz? (e/h): ")
-                        if response.lower() != 'e':
-                            break
-                
-                # Görevler arası bekleme
-                if mission_name != missions[-1]:  # Son görev değilse
-                    print(f"⏳ Sonraki görev için {MANAGER_CONFIG['inter_mission_delay']} saniye bekleniyor...")
-                    time.sleep(MANAGER_CONFIG['inter_mission_delay'])
-            
-            # Final rapor
-            self.generate_final_report()
-            
-        except KeyboardInterrupt:
-            print("\n⚠️ Görev sırası kullanıcı tarafından durduruldu")
-            self.abort_all_missions()
-        except Exception as e:
-            print(f"❌ Görev sırası hatası: {e}")
-            self.abort_all_missions()
-        finally:
-            self.manager_active = False
-            self.stop_telemetry_logging()
+            except Exception as e:
+                print(f"❌ Mission error: {e}")
+            finally:
+                self.mission_active = False
+                self.current_mission = None
+        
+        self.mission_thread = threading.Thread(target=mission_worker, daemon=True)
+        self.mission_thread.start()
+        
+        return True
     
-    def generate_final_report(self):
-        """Final yarışma raporu oluştur"""
-        print("\n" + "="*60)
-        print("📊 FINAL YARIŞMA RAPORU")
-        print("="*60)
-        
-        total_score = 0
-        max_possible = 700  # 300 + 400
-        
-        for mission_name, result in self.mission_results.items():
-            if result['completed']:
-                total_score += result['score']
-                print(f"✅ {mission_name.upper()}: {result['score']} puan")
-            else:
-                print(f"❌ {mission_name.upper()}: 0 puan (tamamlanmadı)")
-        
-        percentage = (total_score / max_possible) * 100
-        
-        print(f"\n🏆 TOPLAM PUAN: {total_score}/{max_possible} (%{percentage:.1f})")
-        
-        if percentage >= 80:
-            print("🥇 Mükemmel performans!")
-        elif percentage >= 60:
-            print("🥈 İyi performans!")
-        elif percentage >= 40:
-            print("🥉 Orta performans")
+    def stop_mission(self):
+        """Stop current mission"""
+        if self.mission_active:
+            print("🛑 Stopping mission...")
+            self.mission_active = False
+            
+            # Wait for mission thread to finish
+            if self.mission_thread and self.mission_thread.is_alive():
+                self.mission_thread.join(timeout=5.0)
+            
+            print("✅ Mission stopped")
+            return True
         else:
-            print("📊 Geliştirilmesi gereken alanlar var")
-        
-        # Detaylı raporu kaydet
-        final_report = {
-            'competition_date': datetime.now().isoformat(),
-            'total_score': total_score,
-            'max_possible_score': max_possible,
-            'score_percentage': percentage,
-            'mission_results': self.mission_results,
-            'telemetry_summary': {
-                'total_data_points': len(self.telemetry_data),
-                'mission_duration': None
-            },
-            'vehicle_config': self.competition_config
+            print("⚠️ No active mission to stop")
+            return False
+    
+    def get_mission_status(self):
+        """Get current mission status"""
+        return {
+            'connected': self.connected,
+            'armed': self.armed,
+            'mission_active': self.mission_active,
+            'current_mission': self.current_mission,
+            'position': self.current_position,
+            'attitude': self.current_attitude,
+            'depth': self.current_depth,
+            'timestamp': datetime.now().isoformat()
         }
+    
+    def disconnect(self):
+        """Disconnect from vehicle"""
+        self.stop_mission()
         
-        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-        filename = f"final_competition_report_{timestamp}.json"
+        if self.master:
+            try:
+                self.master.close()
+                print("🔌 Serial connection closed")
+            except:
+                pass
         
-        try:
-            with open(filename, 'w', encoding='utf-8') as f:
-                json.dump(final_report, f, ensure_ascii=False, indent=2)
-            print(f"📄 Final rapor kaydedildi: {filename}")
-        except Exception as e:
-            print(f"❌ Rapor kayıt hatası: {e}")
-        
-        # Telemetri verilerini kaydet
-        telemetry_filename = f"telemetry_data_{timestamp}.json"
-        try:
-            with open(telemetry_filename, 'w', encoding='utf-8') as f:
-                json.dump(self.telemetry_data, f, ensure_ascii=False, indent=2)
-            print(f"📡 Telemetri verisi kaydedildi: {telemetry_filename}")
-        except Exception as e:
-            print(f"❌ Telemetri kayıt hatası: {e}")
+        self.connected = False
 
 def main():
-    parser = argparse.ArgumentParser(description='TEKNOFEST 2025 - Mission Manager')
-    parser.add_argument('--config', type=str, default='mission_config.json',
-                       help='Mission konfigürasyon dosyası')
-    parser.add_argument('--missions', nargs='+', default=['mission_1', 'mission_2'],
-                       choices=['mission_1', 'mission_2'],
-                       help='Çalıştırılacak görevler')
-    parser.add_argument('--competition-mode', action='store_true',
-                       help='Yarışma modu (otomatik devam)')
-    parser.add_argument('--pre-checks-only', action='store_true',
-                       help='Sadece görev öncesi kontrolleri yap')
-    parser.add_argument('--start-lat', type=float,
-                       help='Başlangıç latitude koordinatı')
-    parser.add_argument('--start-lon', type=float,
-                       help='Başlangıç longitude koordinatı')
-    parser.add_argument('--launch-lat', type=float,
-                       help='Atış bölgesi latitude koordinatı')
-    parser.add_argument('--launch-lon', type=float,
-                       help='Atış bölgesi longitude koordinatı')
+    """Test mission manager"""
+    print("🚀 TEKNOFEST Mission Manager - Test Mode")
+    print("=" * 50)
     
-    args = parser.parse_args()
-    
-    # Mission Manager başlat
     manager = MissionManager()
     
-    # Konfigürasyon yükle
-    if os.path.exists(args.config):
-        manager.load_mission_config(args.config)
-    
-    # Command line koordinatları varsa güncelle
-    if args.start_lat and args.start_lon:
-        manager.competition_config['start_position'] = {
-            'lat': args.start_lat, 'lon': args.start_lon
-        }
-    
-    if args.launch_lat and args.launch_lon:
-        manager.competition_config['launch_zone'] = {
-            'lat': args.launch_lat, 'lon': args.launch_lon
-        }
-    
-    if args.competition_mode:
-        manager.competition_config['competition_day'] = True
-    
-    # Konfigürasyonu kaydet
-    manager.save_mission_config(args.config)
-    
-    print("🎮 TEKNOFEST 2025 - Mission Manager v1.0")
-    print("="*60)
-    
-    # MAVLink başlat
-    if not manager.initialize_mavlink():
-        print("❌ MAVLink başlatılamadı!")
-        return 1
-    
     try:
-        # Görev öncesi kontroller
-        if not manager.pre_mission_checks():
-            print("❌ Güvenlik kontrolleri başarısız!")
-            if not args.competition_mode:
-                response = input("Yine de devam etmek istiyor musunuz? (e/h): ")
-                if response.lower() != 'e':
-                    return 1
-            else:
-                return 1
-        
-        if args.pre_checks_only:
-            print("✅ Görev öncesi kontroller tamamlandı - sadece kontrol modu")
-            return 0
-        
-        # Mission sequence başlat
-        manager.execute_mission_sequence(args.missions)
-        
-        return 0
-        
+        # Connect to vehicle
+        if manager.connect_mavlink():
+            print("\n📋 Mission Manager ready!")
+            print("Available missions:")
+            print("  • waypoint_navigation")
+            print("  • rocket_launch")
+            print("  • emergency_surface")
+            print("  • pattern_search")
+            
+            # Example waypoint mission
+            waypoints = [
+                {'lat': 41.0123, 'lon': 29.0456, 'depth': 2.0, 'hold_time': 5.0},
+                {'lat': 41.0124, 'lon': 29.0457, 'depth': 3.0, 'hold_time': 5.0},
+                {'lat': 41.0125, 'lon': 29.0458, 'depth': 2.0, 'hold_time': 5.0}
+            ]
+            
+            # Start test mission
+            print(f"\n🎯 Starting test waypoint mission...")
+            success = manager.start_mission('waypoint_navigation', waypoints)
+            
+            if success:
+                # Monitor mission
+                while manager.mission_active:
+                    status = manager.get_mission_status()
+                    print(f"📍 Position: ({status['position']['lat']:.6f}, {status['position']['lon']:.6f})")
+                    print(f"📏 Depth: {status['depth']:.1f}m")
+                    time.sleep(5.0)
+            
+        else:
+            print("❌ Failed to connect to vehicle")
+    
     except KeyboardInterrupt:
-        print("\n⚠️ Program kullanıcı tarafından durduruldu")
-        manager.abort_all_missions()
-        return 1
+        print("\n⚠️ Mission manager interrupted")
+    
     finally:
-        if manager.master:
-            manager.master.close()
+        manager.disconnect()
 
 if __name__ == "__main__":
-    sys.exit(main()) 
+    main() 

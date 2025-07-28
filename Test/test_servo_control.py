@@ -1,337 +1,335 @@
 #!/usr/bin/env python3
 """
-TEKNOFEST Su Altı Roket Aracı - Servo Kontrol Testi
-4x DS3230MG (30kg) servo motor fin kontrolü
+TEKNOFEST Su Altı ROV - X-Fin Servo Control Test
+Pixhawk PX4 PIX 2.4.8 Serial MAVLink Servo Test
+Environment Variable Support: MAV_ADDRESS, MAV_BAUD
 """
 
+import os
+import sys
 import time
 import threading
 from pymavlink import mavutil
-import math
 
-# MAVLink bağlantı adresi - DYNAMIC CONFIGURATION SYSTEM
-try:
-    from connection_config import get_test_constants
-    CONFIG = get_test_constants()
-    MAV_ADDRESS = CONFIG['MAV_ADDRESS']
-    print(f"📡 Using dynamic connection: {MAV_ADDRESS}")
-except ImportError:
-    # Fallback to static config
-    MAV_ADDRESS = 'tcp:127.0.0.1:5777'
-    print(f"⚠️ Using fallback connection: {MAV_ADDRESS}")
+# Environment variables for serial connection
+MAV_ADDRESS = os.getenv("MAV_ADDRESS", "/dev/ttyACM0")
+MAV_BAUD = int(os.getenv("MAV_BAUD", "115200"))
 
-# Servo kanal tanımları - X Konfigürasyonu (Pixhawk AUX output)
+print(f"🔧 Serial Configuration:")
+print(f"   Port: {MAV_ADDRESS}")
+print(f"   Baud: {MAV_BAUD}")
+
+# X-Fin Servo Mapping (AUX → MAVLink Channel)
 SERVO_CHANNELS = {
-    'fin_front_left': 1,   # Ön sol fin (AUX 1)
-    'fin_front_right': 2,  # Ön sağ fin (AUX 2)  
-    'fin_rear_left': 3,    # Arka sol fin (AUX 3)
-    'fin_rear_right': 4    # Arka sağ fin (AUX 4)
+    'fin_front_left': 9,   # AUX1 → Channel 9
+    'fin_front_right': 11, # AUX3 → Channel 11
+    'fin_rear_left': 12,   # AUX4 → Channel 12
+    'fin_rear_right': 13   # AUX5 → Channel 13
 }
 
-# PWM değer aralıkları (DS3230MG için)
-PWM_MIN = 1000    # Minimum PWM (µs)
-PWM_MID = 1500    # Orta PWM (µs) 
-PWM_MAX = 2000    # Maksimum PWM (µs)
-PWM_DEADBAND = 50 # Dead band (µs)
+# PWM Values
+PWM_MIN = 1000
+PWM_MID = 1500  
+PWM_MAX = 2000
 
-class ServoController:
+class ServoControlTester:
+    """Serial MAVLink servo control test sınıfı"""
+    
     def __init__(self):
+        """Test sınıfını başlat"""
         self.master = None
         self.connected = False
-        self.servo_positions = {ch: PWM_MID for ch in SERVO_CHANNELS.values()}
-        self.servo_targets = {ch: PWM_MID for ch in SERVO_CHANNELS.values()}
-        self.servo_speeds = {ch: 50 for ch in SERVO_CHANNELS.values()}  # PWM/saniye
+        self.armed = False
         
-        # Test parametreleri
-        self.test_running = False
-        self.control_thread = None
-        
-    def connect_pixhawk(self):
-        """Pixhawk bağlantısı"""
-        try:
-            print(f"🔌 Pixhawk'a bağlanılıyor: {MAV_ADDRESS}")
-            self.master = mavutil.mavlink_connection(MAV_ADDRESS)
-            self.master.wait_heartbeat(timeout=10)
-            
-            self.connected = True
-            print("✅ MAVLink bağlantısı başarılı!")
-            
-            # Servo kontrol modunu aktif et
-            self.enable_servo_mode()
-            
-            return True
-            
-        except Exception as e:
-            print(f"❌ Bağlantı hatası: {e}")
-            return False
+        print(f"🔧 Servo Control Tester for serial: {MAV_ADDRESS}@{MAV_BAUD}")
+        print(f"🎮 X-Fin Configuration: {SERVO_CHANNELS}")
     
-    def enable_servo_mode(self):
-        """Servo kontrol modunu aktif et"""
+    def connect(self):
+        """Serial MAVLink bağlantısı kur"""
         try:
-            # Manual mode geç (servo kontrolü için)
-            self.master.mav.set_mode_send(
-                self.master.target_system,
-                mavutil.mavlink.MAV_MODE_FLAG_CUSTOM_MODE_ENABLED,
-                0  # Manual mode
+            print(f"📡 Connecting to Pixhawk serial...")
+            print(f"   Port: {MAV_ADDRESS}")
+            print(f"   Baud: {MAV_BAUD}")
+            
+            # Serial MAVLink connection
+            self.master = mavutil.mavlink_connection(
+                MAV_ADDRESS,
+                baud=MAV_BAUD,
+                autoreconnect=True
             )
             
-            print("🎮 Manuel servo kontrol modu aktif")
+            print("💓 Waiting for heartbeat...")
+            heartbeat = self.master.wait_heartbeat(timeout=15)
             
+            if heartbeat:
+                self.connected = True
+                self.armed = bool(heartbeat.base_mode & mavutil.mavlink.MAV_MODE_FLAG_SAFETY_ARMED)
+                print("✅ Serial MAVLink connection established!")
+                print(f"   System ID: {self.master.target_system}")
+                print(f"   Component ID: {self.master.target_component}")
+                print(f"   Armed Status: {'ARMED' if self.armed else 'DISARMED'}")
+                return True
+            else:
+                print("❌ No heartbeat received!")
+                return False
+                
         except Exception as e:
-            print(f"⚠️ Servo mod ayarı hatası: {e}")
-    
-    def set_servo_position(self, channel, pwm_value):
-        """Tekil servo pozisyon ayarı"""
-        if not self.connected:
-            print("❌ MAVLink bağlantısı yok!")
+            print(f"❌ Serial connection failed: {e}")
+            print("💡 Check:")
+            print(f"   • Pixhawk connected to {MAV_ADDRESS}")
+            print(f"   • Correct baud rate: {MAV_BAUD}")
+            print("   • ArduSub firmware running")
             return False
-            
-        # PWM değer kontrolü
+    
+    def set_servo_pwm(self, channel, pwm_value):
+        """Servo PWM değeri ayarla"""
+        if not self.connected:
+            return False
+        
+        # PWM limitlerini kontrol et
         pwm_value = max(PWM_MIN, min(PWM_MAX, pwm_value))
         
         try:
-            # MAVLink servo komut gönder
             self.master.mav.command_long_send(
                 self.master.target_system,
                 self.master.target_component,
                 mavutil.mavlink.MAV_CMD_DO_SET_SERVO,
-                0,
-                channel,      # Servo channel
-                pwm_value,    # PWM value
-                0, 0, 0, 0, 0
+                0,  # confirmation
+                channel,  # servo number
+                pwm_value,  # PWM value
+                0, 0, 0, 0, 0  # unused parameters
             )
-            
-            self.servo_positions[channel] = pwm_value
             return True
             
         except Exception as e:
-            print(f"❌ Servo {channel} kontrol hatası: {e}")
+            print(f"❌ Servo PWM command failed: {e}")
             return False
     
-    def set_all_servos(self, pwm_values):
-        """Tüm servoları aynı anda ayarla"""
-        if len(pwm_values) != 4:
-            print("❌ 4 PWM değeri gerekli!")
-            return False
-            
-        success_count = 0
-        for i, (name, channel) in enumerate(SERVO_CHANNELS.items()):
-            if self.set_servo_position(channel, pwm_values[i]):
-                success_count += 1
-                
-        return success_count == 4
-    
-    def servo_calibration_test(self):
-        """Servo kalibrasyon testi"""
-        print("\n🔧 SERVO KALİBRASYON TESTİ")
-        print("-" * 40)
+    def test_individual_servos(self):
+        """Bireysel servo testi"""
+        print("\n🎮 Testing individual servos...")
         
-        # Her servoyu ayrı ayrı test et
-        for name, channel in SERVO_CHANNELS.items():
-            print(f"\n🔹 {name.upper()} (Kanal {channel}) testi:")
-            
-            # Orta pozisyon
-            print("  📍 Orta pozisyon (1500µs)")
-            self.set_servo_position(channel, PWM_MID)
-            time.sleep(2)
-            
-            # Minimum pozisyon
-            print("  📍 Minimum pozisyon (1000µs)")
-            self.set_servo_position(channel, PWM_MIN)
-            time.sleep(2)
-            
-            # Maksimum pozisyon  
-            print("  📍 Maksimum pozisyon (2000µs)")
-            self.set_servo_position(channel, PWM_MAX)
-            time.sleep(2)
-            
-            # Orta pozisyona dön
-            print("  📍 Orta pozisyona dönüş")
-            self.set_servo_position(channel, PWM_MID)
-            time.sleep(1)
-            
-        print("✅ Servo kalibrasyon testi tamamlandı")
-    
-    def servo_sweep_test(self):
-        """Servo sweep (tarama) testi"""
-        print("\n🌊 SERVO SWEEP TESTİ")
-        print("-" * 40)
-        
-        sweep_duration = 10  # 10 saniye
-        sweep_frequency = 0.5  # 0.5 Hz
-        start_time = time.time()
-        
-        print(f"⏱️ {sweep_duration}s boyunca {sweep_frequency}Hz frekansta sweep...")
-        
-        while time.time() - start_time < sweep_duration:
-            elapsed = time.time() - start_time
-            
-            # Sinüs dalgası ile PWM hesapla
-            angle = 2 * math.pi * sweep_frequency * elapsed
-            pwm_offset = int(250 * math.sin(angle))  # ±250µs sapma
-            pwm_value = PWM_MID + pwm_offset
-            
-            # Tüm servolara aynı değeri gönder
-            for channel in SERVO_CHANNELS.values():
-                self.set_servo_position(channel, pwm_value)
-            
-            print(f"  📊 PWM: {pwm_value}µs (Açı: {math.degrees(angle):.1f}°)")
-            time.sleep(0.1)
-        
-        # Orta pozisyona dön
-        for channel in SERVO_CHANNELS.values():
-            self.set_servo_position(channel, PWM_MID)
-            
-        print("✅ Servo sweep testi tamamlandı")
-    
-    def fin_control_test(self):
-        """Fin kontrol simülasyonu"""
-        print("\n🚀 FİN KONTROL SİMÜLASYONU")
-        print("-" * 40)
-        
-        # Simüle edilmiş kontrol komutları
-        control_sequences = [
-            ("🔼 YUKARİ YUNUSLAMA", {'fin_1': PWM_MIN, 'fin_3': PWM_MAX}),
-            ("🔽 AŞAĞI YUNUSLAMA", {'fin_1': PWM_MAX, 'fin_3': PWM_MIN}), 
-            ("↪️  SAĞ DÖNÜŞ", {'fin_2': PWM_MIN, 'fin_4': PWM_MAX}),
-            ("↩️  SOL DÖNÜŞ", {'fin_2': PWM_MAX, 'fin_4': PWM_MIN}),
-            ("🌀 SAĞ ROLL", {'fin_1': PWM_MAX, 'fin_2': PWM_MIN, 'fin_3': PWM_MIN, 'fin_4': PWM_MAX}),
-            ("🌀 SOL ROLL", {'fin_1': PWM_MIN, 'fin_2': PWM_MAX, 'fin_3': PWM_MAX, 'fin_4': PWM_MIN}),
-            ("➡️ DÜZ SEYIR", {'fin_1': PWM_MID, 'fin_2': PWM_MID, 'fin_3': PWM_MID, 'fin_4': PWM_MID})
+        test_sequence = [
+            ('Neutral', PWM_MID),
+            ('Min Position', PWM_MIN),
+            ('Max Position', PWM_MAX),
+            ('Neutral', PWM_MID)
         ]
         
-        for description, fin_positions in control_sequences:
-            print(f"\n📍 {description}")
+        for servo_name, channel in SERVO_CHANNELS.items():
+            print(f"\n🔧 Testing {servo_name} (Channel {channel}):")
             
-            # Finleri pozisyonla
-            for fin_name, pwm_value in fin_positions.items():
-                channel = SERVO_CHANNELS[fin_name]
-                self.set_servo_position(channel, pwm_value)
-                print(f"  {fin_name}: {pwm_value}µs")
-            
-            # 3 saniye bekle
-            time.sleep(3)
+            for position_name, pwm_value in test_sequence:
+                print(f"   → {position_name}: {pwm_value}µs")
+                
+                if self.set_servo_pwm(channel, pwm_value):
+                    print(f"   ✅ Command sent successfully")
+                else:
+                    print(f"   ❌ Command failed")
+                
+                time.sleep(2.0)  # 2 saniye bekle
         
-        print("✅ Fin kontrol simülasyonu tamamlandı")
+        print("✅ Individual servo test completed")
     
-    def servo_response_test(self):
-        """Servo tepki süresi testi"""
-        print("\n⏱️ SERVO TEPKİ SÜRESİ TESTİ")
-        print("-" * 40)
+    def test_synchronized_servos(self):
+        """Senkron servo testi"""
+        print("\n🎮 Testing synchronized servo movement...")
         
-        test_channel = SERVO_CHANNELS['fin_1']  # Test için 1. servoyu kullan
+        test_patterns = [
+            ("All Neutral", {ch: PWM_MID for ch in SERVO_CHANNELS.values()}),
+            ("All Min", {ch: PWM_MIN for ch in SERVO_CHANNELS.values()}),
+            ("All Max", {ch: PWM_MAX for ch in SERVO_CHANNELS.values()}),
+            ("X-Pattern 1", {9: PWM_MIN, 11: PWM_MAX, 12: PWM_MIN, 13: PWM_MAX}),
+            ("X-Pattern 2", {9: PWM_MAX, 11: PWM_MIN, 12: PWM_MAX, 13: PWM_MIN}),
+            ("Front-Rear 1", {9: PWM_MIN, 11: PWM_MIN, 12: PWM_MAX, 13: PWM_MAX}),
+            ("Front-Rear 2", {9: PWM_MAX, 11: PWM_MAX, 12: PWM_MIN, 13: PWM_MIN}),
+            ("All Neutral", {ch: PWM_MID for ch in SERVO_CHANNELS.values()})
+        ]
         
-        # Hız testi (min->max geçiş)
-        positions = [PWM_MIN, PWM_MAX, PWM_MID]
+        for pattern_name, servo_values in test_patterns:
+            print(f"\n🎯 Pattern: {pattern_name}")
+            
+            # Tüm servo'ları aynı anda ayarla
+            success_count = 0
+            for channel, pwm_value in servo_values.items():
+                if self.set_servo_pwm(channel, pwm_value):
+                    success_count += 1
+                    print(f"   Channel {channel}: {pwm_value}µs ✅")
+                else:
+                    print(f"   Channel {channel}: {pwm_value}µs ❌")
+            
+            print(f"   Result: {success_count}/{len(servo_values)} commands successful")
+            time.sleep(3.0)  # 3 saniye bekle
         
-        for i, target_pwm in enumerate(positions):
-            print(f"\n🎯 Test {i+1}: {target_pwm}µs pozisyonuna geçiş")
-            
-            start_time = time.time()
-            self.set_servo_position(test_channel, target_pwm)
-            
-            # Servo hareket süresini simüle et (gerçek uygulamada encoder gerekir)
-            expected_time = abs(target_pwm - self.servo_positions[test_channel]) / 1000  # Tahmini süre
-            time.sleep(expected_time + 0.5)  # +0.5s güvenlik
-            
-            elapsed = time.time() - start_time
-            print(f"  ⏰ Hareket süresi: {elapsed:.2f}s")
-            
-        print("✅ Servo tepki testi tamamlandı")
+        print("✅ Synchronized servo test completed")
     
-    def emergency_stop_test(self):
-        """Acil durdurma testi"""
-        print("\n🚨 ACİL DURDURMA TESTİ")
-        print("-" * 40)
+    def test_smooth_movement(self):
+        """Yumuşak hareket testi"""
+        print("\n🎮 Testing smooth servo movement...")
         
-        # Servolar hareket halindeyken durdur
-        print("🌊 Servolar sweep moduna alınıyor...")
+        # Tüm servo'ları yumuşak bir şekilde hareket ettir
+        steps = 20
+        duration = 10  # 10 saniye
         
-        for i in range(20):  # 2 saniye sweep
-            angle = 2 * math.pi * 0.5 * i * 0.1
-            pwm_value = PWM_MID + int(200 * math.sin(angle))
+        print(f"   • Steps: {steps}")
+        print(f"   • Duration: {duration}s")
+        print(f"   • Update rate: {steps/duration:.1f} Hz")
+        
+        for step in range(steps + 1):
+            # PWM değerini hesapla (MIN'den MAX'e)
+            progress = step / steps
+            pwm_value = int(PWM_MIN + (PWM_MAX - PWM_MIN) * progress)
             
+            print(f"   Step {step+1}/{steps+1}: {pwm_value}µs ({progress*100:.0f}%)")
+            
+            # Tüm servo'ları aynı değere ayarla
+            success_count = 0
             for channel in SERVO_CHANNELS.values():
-                self.set_servo_position(channel, pwm_value)
-            time.sleep(0.1)
+                if self.set_servo_pwm(channel, pwm_value):
+                    success_count += 1
+            
+            print(f"     → {success_count}/{len(SERVO_CHANNELS)} servos updated")
+            time.sleep(duration / steps)
         
-        print("🛑 ACİL DURDURMA - Tüm servolar orta pozisyona!")
-        
-        # Tüm servolar orta pozisyon
+        # Neutral'a geri dön
+        print("   → Returning to neutral...")
         for channel in SERVO_CHANNELS.values():
-            self.set_servo_position(channel, PWM_MID)
-            
-        print("✅ Acil durdurma testi başarılı")
-    
-    def run_full_test_suite(self):
-        """Tam test paketi"""
-        print("🧪 SERVO KONTROL TAM TEST PAKETİ")
-        print("=" * 50)
+            self.set_servo_pwm(channel, PWM_MID)
         
-        if not self.connect_pixhawk():
-            print("❌ Pixhawk bağlantısı başarısız!")
+        print("✅ Smooth movement test completed")
+    
+    def test_x_wing_control_matrix(self):
+        """X-Wing kontrol matrisi testi"""
+        print("\n🎮 Testing X-Wing control matrix...")
+        
+        # X-Wing control movements
+        movements = [
+            ("Roll Left", {9: PWM_MIN, 11: PWM_MAX, 12: PWM_MIN, 13: PWM_MAX}),
+            ("Roll Right", {9: PWM_MAX, 11: PWM_MIN, 12: PWM_MAX, 13: PWM_MIN}),
+            ("Pitch Up", {9: PWM_MIN, 11: PWM_MIN, 12: PWM_MAX, 13: PWM_MAX}),
+            ("Pitch Down", {9: PWM_MAX, 11: PWM_MAX, 12: PWM_MIN, 13: PWM_MIN}),
+            ("Yaw Left", {9: PWM_MIN, 11: PWM_MAX, 12: PWM_MAX, 13: PWM_MIN}),
+            ("Yaw Right", {9: PWM_MAX, 11: PWM_MIN, 12: PWM_MIN, 13: PWM_MAX}),
+            ("Neutral", {ch: PWM_MID for ch in SERVO_CHANNELS.values()})
+        ]
+        
+        for movement_name, servo_values in movements:
+            print(f"\n🎯 X-Wing Movement: {movement_name}")
+            
+            # Servo değerlerini göster
+            fin_names = ['Front Left', 'Front Right', 'Rear Left', 'Rear Right']
+            channels = [9, 11, 12, 13]
+            
+            for fin_name, channel in zip(fin_names, channels):
+                pwm_value = servo_values[channel]
+                direction = "MIN" if pwm_value == PWM_MIN else "MAX" if pwm_value == PWM_MAX else "MID"
+                print(f"   {fin_name} (Ch{channel}): {pwm_value}µs ({direction})")
+            
+            # Servo komutlarını gönder
+            success_count = 0
+            for channel, pwm_value in servo_values.items():
+                if self.set_servo_pwm(channel, pwm_value):
+                    success_count += 1
+            
+            print(f"   Result: {success_count}/{len(servo_values)} commands successful")
+            time.sleep(3.0)  # 3 saniye bekle
+        
+        print("✅ X-Wing control matrix test completed")
+    
+    def run_full_test(self):
+        """Tam servo test paketi"""
+        print("🚀 TEKNOFEST ROV - Full X-Fin Servo Test")
+        print("=" * 60)
+        
+        # Bağlantı testi
+        if not self.connect():
+            print("❌ Connection test failed!")
             return False
         
-        try:
-            # 1. Kalibrasyon testi
-            self.servo_calibration_test()
-            
-            input("\n⏸️ Devam etmek için ENTER'a basın...")
-            
-            # 2. Sweep testi
-            self.servo_sweep_test()
-            
-            input("\n⏸️ Devam etmek için ENTER'a basın...")
-            
-            # 3. Fin kontrol testi
-            self.fin_control_test()
-            
-            input("\n⏸️ Devam etmek için ENTER'a basın...")
-            
-            # 4. Tepki süresi testi
-            self.servo_response_test()
-            
-            input("\n⏸️ Devam etmek için ENTER'a basın...")
-            
-            # 5. Acil durdurma testi
-            self.emergency_stop_test()
-            
-            print("\n🎉 TÜM SERVO TESTLERİ BAŞARILI!")
-            return True
-            
-        except KeyboardInterrupt:
-            print("\n⚠️ Test kullanıcı tarafından durduruldu")
-            return False
-        except Exception as e:
-            print(f"\n❌ Test hatası: {e}")
-            return False
-        finally:
-            self.cleanup()
+        # ARM durumu kontrolü
+        if not self.armed:
+            print("⚠️ System is DISARMED. Servo commands may not work.")
+            print("💡 Consider arming the system for full servo functionality.")
+        
+        # Test suite
+        tests = [
+            ("Individual Servo Test", self.test_individual_servos),
+            ("Synchronized Servo Test", self.test_synchronized_servos),
+            ("Smooth Movement Test", self.test_smooth_movement),
+            ("X-Wing Control Matrix Test", self.test_x_wing_control_matrix)
+        ]
+        
+        results = []
+        for test_name, test_func in tests:
+            try:
+                print(f"\n{'='*20} {test_name} {'='*20}")
+                test_func()
+                results.append((test_name, True))
+                print(f"✅ {test_name}: COMPLETED")
+            except Exception as e:
+                print(f"❌ {test_name}: ERROR - {e}")
+                results.append((test_name, False))
+        
+        # Test özeti
+        print(f"\n📋 SERVO TEST SUMMARY")
+        print("=" * 40)
+        completed = sum(1 for _, result in results if result)
+        total = len(results)
+        
+        for test_name, result in results:
+            status = "✅ COMPLETED" if result else "❌ FAILED"
+            print(f"   {test_name}: {status}")
+        
+        print(f"\n🎯 Overall Result: {completed}/{total} tests completed")
+        
+        if completed == total:
+            print("🎉 ALL SERVO TESTS COMPLETED! X-Fin control system is ready!")
+        elif completed > total // 2:
+            print("⚠️ PARTIAL SUCCESS. Some tests failed but basic servo control works.")
+        else:
+            print("❌ MAJOR ISSUES. Servo control system needs troubleshooting.")
+        
+        return completed == total
     
-    def cleanup(self):
-        """Temizlik"""
-        # Tüm servolar orta pozisyon
+    def disconnect(self):
+        """Bağlantıyı kapat"""
+        # Önce tüm servo'ları neutral'a getir
         if self.connected:
+            print("🔄 Setting all servos to neutral position...")
             for channel in SERVO_CHANNELS.values():
-                self.set_servo_position(channel, PWM_MID)
+                self.set_servo_pwm(channel, PWM_MID)
+            time.sleep(1.0)
         
         if self.master:
-            self.master.close()
-            print("🔌 MAVLink bağlantısı kapatıldı")
+            try:
+                self.master.close()
+                print("🔌 Serial connection closed")
+            except:
+                pass
+        self.connected = False
 
 def main():
-    """Ana fonksiyon"""
-    controller = ServoController()
+    """Ana test fonksiyonu"""
+    tester = ServoControlTester()
     
     try:
-        success = controller.run_full_test_suite()
-        return 0 if success else 1
+        # Full test suite çalıştır
+        success = tester.run_full_test()
+        
+        # Cleanup
+        tester.disconnect()
+        
+        # Exit code
+        sys.exit(0 if success else 1)
+        
     except KeyboardInterrupt:
-        print("\n⚠️ Program sonlandırıldı")
-        return 1
-    finally:
-        controller.cleanup()
+        print("\n⚠️ Test interrupted by user")
+        tester.disconnect()
+        sys.exit(1)
+    except Exception as e:
+        print(f"\n❌ Test suite error: {e}")
+        tester.disconnect()
+        sys.exit(1)
 
 if __name__ == "__main__":
-    import sys
-    sys.exit(main()) 
+    main() 

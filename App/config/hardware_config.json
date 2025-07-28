@@ -1,26 +1,38 @@
 {
   "pixhawk": {
-    "servos": {
-      "front_left": 1,
-      "front_right": 3,
-      "rear_left": 4,
-      "rear_right": 5
+    "hardware": {
+      "model": "PX4 PIX 2.4.8",
+      "main_outputs": 8,
+      "aux_outputs": 6,
+      "pwm_rate_hz": 333
     },
-    "motor": 6,
-    "real_hardware_channels": {
-      "aux1_front_left": 9,
-      "aux3_front_right": 11,
-      "aux4_rear_left": 12,
-      "aux5_rear_right": 13,
-      "aux6_motor": 14
+    "servo_channels": {
+      "fin_front_left": 1,
+      "fin_front_right": 3,
+      "fin_rear_left": 4,
+      "fin_rear_right": 5,
+      "main_motor": 6
     },
     "pwm_limits": {
-      "servo_min": 1100,
-      "servo_max": 1900,
-      "servo_neutral": 1500,
-      "motor_min": 1000,
-      "motor_max": 2000,
-      "motor_stop": 1500
+      "min": 1000,
+      "neutral": 1500,
+      "max": 2000
+    }
+  },
+  "sensors": {
+    "d300_depth": {
+      "enabled": true,
+      "interface": "i2c",
+      "address": "0x76",
+      "update_rate_hz": 10
+    },
+    "imu": {
+      "enabled": true,
+      "source": "mavlink"
+    },
+    "gps": {
+      "enabled": true,
+      "source": "mavlink"
     }
   },
   "raspberry_pi": {
@@ -34,19 +46,17 @@
       "system_status_led": 10
     },
     "i2c": {
-      "depth_sensor_address": "0x76",
-      "bus_number": 1
+      "bus_number": 1,
+      "depth_sensor_address": "0x76"
     }
   },
   "mavlink": {
-    "connection_string": "tcp:127.0.0.1:5777",
-    "heartbeat_timeout": 30,
-    "command_timeout": 5
+    "connection_string": "/dev/ttyACM0",
+    "baudrate": 115200,
+    "timeout": 5
   },
-  "system_limits": {
-    "max_depth_meters": 10,
-    "max_distance_meters": 100,
-    "emergency_surface_depth": 5,
-    "low_battery_voltage": 19.8
+  "network": {
+    "web_gui_port": 5000,
+    "log_level": "INFO"
   }
 } 

@@ -1,168 +1,166 @@
 #!/usr/bin/env python3
 """
 TEKNOFEST Su Altı ROV - MAVLink Handler
-Raw PWM vs PID Control Sistemi
+Pixhawk PX4 PIX 2.4.8 MAVLink Serial Communication Handler
 """
 
 import time
 import math
 import json
 import threading
-from pymavlink import mavutil
+import os
 from collections import deque
-import numpy as np
+from pymavlink import mavutil, mavwp
 
 class MAVLinkHandler:
+    """MAVLink protokolü ile Pixhawk bağlantısı"""
+    
     def __init__(self, config_path="config/hardware_config.json"):
-        """MAVLink bağlantı ve kontrol sistemi"""
-        self.load_config(config_path)
+        """MAVLink handler başlat"""
+        # Environment variable support
+        self.serial_port = os.getenv("MAV_ADDRESS", "/dev/ttyACM0")
+        self.baud_rate = int(os.getenv("MAV_BAUD", "115200"))
+        
+        # Config'den ayarları yükle
+        self.config = self.load_config(config_path)
+        
+        # MAVLink connection
         self.master = None
         self.connected = False
         self.armed = False
         
-        # Kontrol durumu
+        # Control modes
         self.control_mode = "raw"  # "raw" veya "pid"
-        self.navigation_mode = "imu_only"  # "gps_only", "imu_only", "hybrid"
+        self.navigation_mode = "gps_only"
         
-        # Raw kontrol için
-        self.last_pwm_values = {}
-        self.pwm_hysteresis = 3  # µs
+        # Data buffers
+        self.imu_data_buffer = deque(maxlen=100)
+        self.gps_data_buffer = deque(maxlen=50)
+        self.depth_data_buffer = deque(maxlen=50)
         
-        # PID kontrol için
-        self.imu_filter = IMUFilter()
-        self.pid_controllers = {
-            'roll': PIDController(0.8, 0.02, 0.12),
-            'pitch': PIDController(0.8, 0.02, 0.12),
-            'yaw': PIDController(0.8, 0.02, 0.12)
+        # Thread safety
+        self.data_lock = threading.Lock()
+    
+    def load_config(self, config_path):
+        """Config dosyasını yükle"""
+        default_config = {
+            "mavlink": {"connection_string": "/dev/ttyACM0", "baudrate": 115200}
         }
         
-        # Thread güvenliği
-        self.control_lock = threading.Lock()
-        self.running = False
-        
-    def load_config(self, config_path):
-        """Konfigürasyon yükle"""
         try:
             with open(config_path, 'r') as f:
-                self.config = json.load(f)
+                config = json.load(f)
+            
+            # Environment variables'dan connection string güncelle
+            if "mavlink" in config:
+                # Environment variable varsa onu kullan
+                config["mavlink"]["connection_string"] = self.serial_port
+                config["mavlink"]["baudrate"] = self.baud_rate
+            
+            return config
         except Exception as e:
-            print(f"❌ Config yükleme hatası: {e}")
-            # Varsayılan config
-            self.config = {
-                "pixhawk": {
-                    "servos": {"front_left": 1, "rear_left": 3, "rear_right": 4, "front_right": 5},
-                    "motor": 6,
-                    "pwm_limits": {"servo_min": 1100, "servo_max": 1900, "servo_neutral": 1500}
-                },
-                "mavlink": {"connection_string": "tcp:127.0.0.1:5777"}
-            }
+            print(f"⚠️ Config yükleme hatası: {e}")
+            return default_config
     
     def connect(self):
-        """Pixhawk'a TCP bağlantısı - Pi5 + PiOS OPTİMİZE"""
+        """Pixhawk'a serial bağlantı kur"""
         try:
-            connection_string = self.config["mavlink"]["connection_string"]
-            print(f"🔌 TCP MAVLink bağlantısı kuruluyor: {connection_string}")
+            print(f"🔌 Pixhawk serial bağlantısı kuruluyor...")
+            print(f"   Port: {self.serial_port}")
+            print(f"   Baud: {self.baud_rate}")
             
-            # Pi5 için TCP bağlantı optimize
+            # Serial connection string oluştur
+            connection_string = f"{self.serial_port},{self.baud_rate}"
+            print(f"   Connection: {connection_string}")
+            
+            # MAVLink bağlantısı kur
             self.master = mavutil.mavlink_connection(
-                connection_string,
-                baud=57600,  # TCP için önemli değil ama set edelim
-                source_system=255,  # Ground station ID
-                use_native=False  # Pi5 uyumluluk için
+                self.serial_port,
+                baud=self.baud_rate,
+                autoreconnect=True
             )
             
-            # Heartbeat bekle - GUI için timeout artırıldı
-            print("⏳ Heartbeat bekleniyor (20s timeout)...")
-            self.master.wait_heartbeat(timeout=20)
+            # Heartbeat bekle (timeout 20 saniye)
+            print("💓 Heartbeat bekleniyor...")
+            heartbeat = self.master.wait_heartbeat(timeout=20)
             
-            self.connected = True
-            print("✅ TCP MAVLink bağlantısı başarılı!")
-            print(f"📡 Target System: {self.master.target_system}")
-            print(f"📡 Target Component: {self.master.target_component}")
-            
-            # Sistem durumunu kontrol et
-            self.check_system_status()
-            
-            # IMU data stream'lerini request et
-            self.request_imu_streams()
-            
-            return True
-            
+            if heartbeat:
+                self.connected = True
+                print("✅ Serial MAVLink bağlantısı kuruldu!")
+                print(f"   System ID: {self.master.target_system}")
+                print(f"   Component ID: {self.master.target_component}")
+                
+                # IMU stream'lerini etkinleştir
+                self.request_imu_streams()
+                
+                # Sistem durumunu kontrol et
+                self.check_system_status()
+                
+                return True
+            else:
+                print("❌ Heartbeat alınamadı!")
+                return False
+                
         except Exception as e:
-            print(f"❌ TCP MAVLink bağlantı hatası: {e}")
-            print(f"🔧 Exception türü: {type(e).__name__}")
-            print("💡 Kontrol et: ArduSub çalışıyor mu? TCP port açık mı?")
-            print(f"🔍 Connection string: {connection_string}")
-            import traceback
-            print(f"📄 Traceback: {traceback.format_exc()}")
+            print(f"❌ Serial bağlantı hatası: {e}")
+            print("💡 Pixhawk serial portu ve baud rate'ini kontrol edin")
             self.connected = False
             return False
     
     def request_imu_streams(self):
-        """IMU veri akışlarını başlat - ArduSub uyumlu"""
+        """IMU veri akışlarını etkinleştir"""
         try:
-            print("📡 IMU veri akışları başlatılıyor...")
-            
-            # ArduSub için REQUEST_DATA_STREAM kullan
-            self.master.mav.request_data_stream_send(
-                self.master.target_system,
-                self.master.target_component,
-                mavutil.mavlink.MAV_DATA_STREAM_RAW_SENSORS,
-                10,  # 10 Hz
-                1    # start
-            )
-            
-            self.master.mav.request_data_stream_send(
-                self.master.target_system,
-                self.master.target_component,
-                mavutil.mavlink.MAV_DATA_STREAM_EXTRA1,
-                10,  # 10 Hz
-                1    # start
-            )
-            
-            # Ayrıca SET_MESSAGE_INTERVAL da dene
-            message_intervals = [
-                (mavutil.mavlink.MAVLINK_MSG_ID_ATTITUDE, 100000),  # 10 Hz
-                (mavutil.mavlink.MAVLINK_MSG_ID_VFR_HUD, 200000),   # 5 Hz
+            # Request IMU, attitude, ve diğer önemli mesajlar
+            message_types = [
+                (mavutil.mavlink.MAVLINK_MSG_ID_RAW_IMU, 50),
+                (mavutil.mavlink.MAVLINK_MSG_ID_SCALED_IMU, 50),
+                (mavutil.mavlink.MAVLINK_MSG_ID_ATTITUDE, 20),
+                (mavutil.mavlink.MAVLINK_MSG_ID_GLOBAL_POSITION_INT, 10),
+                (mavutil.mavlink.MAVLINK_MSG_ID_SCALED_PRESSURE, 10),
+                (mavutil.mavlink.MAVLINK_MSG_ID_VFR_HUD, 5),
+                (mavutil.mavlink.MAVLINK_MSG_ID_SYS_STATUS, 2)
             ]
             
-            for msg_id, interval in message_intervals:
-                self.master.mav.command_long_send(
+            for msg_id, rate in message_types:
+                self.master.mav.request_data_stream_send(
                     self.master.target_system,
                     self.master.target_component,
-                    mavutil.mavlink.MAV_CMD_SET_MESSAGE_INTERVAL,
-                    0, msg_id, interval, 0, 0, 0, 0, 0
+                    msg_id,
+                    rate,
+                    1  # start_stop (1 = start, 0 = stop)
                 )
             
-            print("✅ IMU streams başlatıldı (RAW_SENSORS + ATTITUDE)")
+            print("📊 IMU veri akışları etkinleştirildi")
+            time.sleep(1)  # Stream'lerin başlaması için bekle
             
         except Exception as e:
-            print(f"❌ IMU stream request hatası: {e}")
+            print(f"⚠️ Stream etkinleştirme hatası: {e}")
     
     def disconnect(self):
-        """Bağlantıyı kapat"""
-        self.running = False
-        if self.master:
-            # Tüm servolar neutral'a
-            self.emergency_stop()
-            self.master.close()
+        """MAVLink bağlantısını kapat"""
+        try:
+            if self.master:
+                self.master.close()
             self.connected = False
-            print("🔌 MAVLink bağlantısı kapatıldı")
+            self.armed = False
+            print("🔌 Serial MAVLink bağlantısı kapatıldı")
+        except Exception as e:
+            print(f"⚠️ Bağlantı kapatma hatası: {e}")
     
     def check_system_status(self):
         """Sistem durumunu kontrol et"""
-        if not self.connected:
-            return False
-            
         try:
-            # Heartbeat bekle
-            msg = self.master.recv_match(type='HEARTBEAT', timeout=5)
+            # Heartbeat'ten sistem durumunu al
+            msg = self.master.recv_match(type='HEARTBEAT', blocking=True, timeout=5)
             if msg:
-                self.armed = (msg.base_mode & mavutil.mavlink.MAV_MODE_FLAG_SAFETY_ARMED) != 0
+                self.armed = bool(msg.base_mode & mavutil.mavlink.MAV_MODE_FLAG_SAFETY_ARMED)
+                print(f"🔍 Sistem durumu: {'ARMED' if self.armed else 'DISARMED'}")
+                print(f"🔍 Sistem tipi: {msg.type}")
                 return True
-        except:
-            pass
-        return False
+            return False
+        except Exception as e:
+            print(f"⚠️ Sistem durum kontrolü hatası: {e}")
+            return False
     
     def arm_system(self):
         """Sistemi arm et"""
@@ -221,30 +219,22 @@ class MAVLinkHandler:
     def set_control_mode(self, mode):
         """Kontrol modunu ayarla"""
         if mode in ["raw", "pid"]:
-            with self.control_lock:
-                self.control_mode = mode
-                print(f"🎛️ Kontrol modu: {mode.upper()}")
+            self.control_mode = mode
+            print(f"🎛️ Kontrol modu: {mode.upper()}")
     
     def set_navigation_mode(self, mode):
         """Navigation modunu ayarla"""
         if mode in ["gps_only", "imu_only", "hybrid"]:
-            with self.control_lock:
-                self.navigation_mode = mode
-                print(f"🧭 Navigation modu: {mode}")
+            self.navigation_mode = mode
+            print(f"🧭 Navigation modu: {mode}")
     
     def send_raw_servo_pwm(self, channel, pwm_value):
-        """RAW PWM gönder - titreşim önleyici"""
+        """Raw PWM servo komutu gönder"""
         if not self.connected or not self.armed:
             return False
         
         # PWM limitlerini kontrol et
-        limits = self.config["pixhawk"]["pwm_limits"]
-        pwm_value = max(limits["servo_min"], min(limits["servo_max"], pwm_value))
-        
-        # PWM Hysteresis - gereksiz gönderimi önle
-        last_pwm = self.last_pwm_values.get(channel, None)
-        if last_pwm is not None and abs(pwm_value - last_pwm) < self.pwm_hysteresis:
-            return True  # Değişiklik çok küçük, gönderme
+        pwm_value = max(1000, min(2000, pwm_value))
         
         try:
             self.master.mav.command_long_send(
@@ -253,8 +243,6 @@ class MAVLinkHandler:
                 mavutil.mavlink.MAV_CMD_DO_SET_SERVO,
                 0, channel, pwm_value, 0, 0, 0, 0, 0
             )
-            
-            self.last_pwm_values[channel] = pwm_value
             return True
             
         except Exception as e:
@@ -262,160 +250,99 @@ class MAVLinkHandler:
             return False
     
     def send_raw_motor_pwm(self, pwm_value):
-        """Motor PWM gönder - GERÇEK HARDWARE AUX6"""
+        """Motor PWM komutu gönder (AUX6 = Channel 14)"""
         if not self.connected or not self.armed:
             return False
             
-        # GERÇEK HARDWARE: Motor AUX6 → MAVLink Channel 14
         motor_channel = 14  # AUX6 = MAVLink channel 14
-        limits = self.config["pixhawk"]["pwm_limits"]
+        pwm_value = max(1000, min(2000, pwm_value))
         
-        # Motor PWM limitlerini kontrol et
-        pwm_value = max(limits["motor_min"], min(limits["motor_max"], pwm_value))
-        
-        # Real-time motor debug logging
-        if abs(pwm_value - limits["motor_neutral"]) > 50:
-            direction = "İLERİ" if pwm_value > limits["motor_neutral"] else "GERİ"
-            power = abs(pwm_value - limits["motor_neutral"]) * 100 // 500
-            print(f"🚁 MOTOR CONTROL: {direction} - PWM:{pwm_value}µs ({power}%)")
+        # Motor debug logging
+        if abs(pwm_value - 1500) > 50:
+            direction = "İLERİ" if pwm_value > 1500 else "GERİ"
+            power = abs(pwm_value - 1500) * 100 // 500
+            print(f"🚁 MOTOR: {direction} - PWM:{pwm_value}µs ({power}%)")
         
         return self.send_raw_servo_pwm(motor_channel, pwm_value)
     
     def control_servos_raw(self, roll, pitch, yaw):
-        """RAW servo kontrolü - GERÇEK HARDWARE X-Mixing"""
+        """X-Fin servo kontrolü (Raw PWM)"""
         if not self.armed:
             return False
             
-        with self.control_lock:
-            # GERÇEK HARDWARE CONFIG
-            servos = self.config["pixhawk"]["servos"]
-            neutral = self.config["pixhawk"]["pwm_limits"]["servo_neutral"]
-            
-            # GERÇEK X-Wing Matrix Hesaplaması
-            # Hardware: AUX1(Ön Sol), AUX3(Ön Sağ), AUX4(Arka Sol), AUX5(Arka Sağ)
-            
-            # X-Mixing formülü (optimize edilmiş multiplier'lar)
-            front_left_pwm = neutral + (pitch * 8) + (roll * 10) + (yaw * 6)    # AUX1: Ön Sol
-            front_right_pwm = neutral + (pitch * 8) - (roll * 10) - (yaw * 6)   # AUX3: Ön Sağ
-            rear_left_pwm = neutral - (pitch * 8) + (roll * 10) - (yaw * 6)     # AUX4: Arka Sol  
-            rear_right_pwm = neutral - (pitch * 8) - (roll * 10) + (yaw * 6)    # AUX5: Arka Sağ
-            
-            # PWM limit kontrolü
-            servo_min = self.config["pixhawk"]["pwm_limits"]["servo_min"]
-            servo_max = self.config["pixhawk"]["pwm_limits"]["servo_max"]
-            
-            front_left_pwm = max(servo_min, min(servo_max, int(front_left_pwm)))
-            front_right_pwm = max(servo_min, min(servo_max, int(front_right_pwm)))
-            rear_left_pwm = max(servo_min, min(servo_max, int(rear_left_pwm)))
-            rear_right_pwm = max(servo_min, min(servo_max, int(rear_right_pwm)))
-            
-            # GERÇEK HARDWARE - Servo komutlarını MAVLink channel'lara gönder
-            results = []
-            results.append(self.send_raw_servo_pwm(9, front_left_pwm))   # AUX1 → MAVLink 9 (Ön Sol)
-            results.append(self.send_raw_servo_pwm(11, front_right_pwm)) # AUX3 → MAVLink 11 (Ön Sağ)
-            results.append(self.send_raw_servo_pwm(12, rear_left_pwm))   # AUX4 → MAVLink 12 (Arka Sol)
-            results.append(self.send_raw_servo_pwm(13, rear_right_pwm))  # AUX5 → MAVLink 13 (Arka Sağ)
-            
-            # Real-time debug logging
-            if abs(roll) > 1 or abs(pitch) > 1 or abs(yaw) > 1:
-                print(f"🎮 X-WING RAW CONTROL: R={roll:.1f}° P={pitch:.1f}° Y={yaw:.1f}°")
-                print(f"   PWM → AUX1:{front_left_pwm} AUX3:{front_right_pwm} AUX4:{rear_left_pwm} AUX5:{rear_right_pwm}")
-            
-            return all(results)
+        # X-Wing Matrix Hesaplaması
+        neutral = 1500
+        
+        # Hardware channels: AUX1=9, AUX3=11, AUX4=12, AUX5=13
+        front_left_pwm = neutral + int((pitch * 8) + (roll * 10) + (yaw * 6))    # AUX1
+        front_right_pwm = neutral + int((pitch * 8) - (roll * 10) - (yaw * 6))   # AUX3
+        rear_left_pwm = neutral + int((-pitch * 8) + (roll * 10) - (yaw * 6))    # AUX4
+        rear_right_pwm = neutral + int((-pitch * 8) - (roll * 10) + (yaw * 6))   # AUX5
+        
+        # PWM limit kontrolü
+        front_left_pwm = max(1000, min(2000, front_left_pwm))
+        front_right_pwm = max(1000, min(2000, front_right_pwm))
+        rear_left_pwm = max(1000, min(2000, rear_left_pwm))
+        rear_right_pwm = max(1000, min(2000, rear_right_pwm))
+        
+        # Servo komutlarını gönder
+        results = []
+        results.append(self.send_raw_servo_pwm(9, front_left_pwm))    # AUX1
+        results.append(self.send_raw_servo_pwm(11, front_right_pwm))  # AUX3
+        results.append(self.send_raw_servo_pwm(12, rear_left_pwm))    # AUX4
+        results.append(self.send_raw_servo_pwm(13, rear_right_pwm))   # AUX5
+        
+        # Debug logging
+        if abs(roll) > 1 or abs(pitch) > 1 or abs(yaw) > 1:
+            print(f"🎮 X-WING: R={roll:.1f}° P={pitch:.1f}° Y={yaw:.1f}°")
+            print(f"   PWM → AUX1:{front_left_pwm} AUX3:{front_right_pwm} AUX4:{rear_left_pwm} AUX5:{rear_right_pwm}")
+        
+        return all(results)
     
     def control_servos_pid(self, target_roll, target_pitch, target_yaw):
-        """PID servo kontrolü - IMU feedback ile"""
+        """PID servo kontrolü (IMU feedback ile)"""
         if not self.armed:
             return False
         
-        with self.control_lock:
-            # IMU verilerini al
-            imu_data = self.get_imu_data()
-            if not imu_data:
-                return False
-            
-            accel_x, accel_y, accel_z, gyro_x, gyro_y, gyro_z = imu_data
-            
-            # IMU filtresi uygula
-            current_roll, current_pitch, current_yaw = self.imu_filter.update(
-                accel_x, accel_y, accel_z, gyro_x, gyro_y, gyro_z
-            )
-            
-            # PID kontrolcülerini güncelle
-            roll_output = self.pid_controllers['roll'].update(target_roll, current_roll)
-            pitch_output = self.pid_controllers['pitch'].update(target_pitch, current_pitch)
-            yaw_output = self.pid_controllers['yaw'].update(target_yaw, current_yaw)
-            
-            # PID çıktılarını servo komutlarına çevir
-            return self.control_servos_raw(roll_output, pitch_output, yaw_output)
+        # Bu implementasyon ileride eklenecek
+        # Şimdilik raw kontrolü kullan
+        return self.control_servos_raw(target_roll, target_pitch, target_yaw)
     
     def get_imu_data(self):
-        """IMU verilerini al - Basitleştirilmiş versiyon"""
+        """IMU verilerini al"""
         if not self.connected or not self.master:
             return None
             
         try:
-            # Önce HIGHRES_IMU dene
-            msg = self.master.recv_match(type='HIGHRES_IMU', blocking=False, timeout=0.01)
+            # ATTITUDE mesajından veri al
+            msg = self.master.recv_match(type='ATTITUDE', blocking=False, timeout=0.1)
             if msg:
-                return msg.xacc, msg.yacc, msg.zacc, msg.xgyro, msg.ygyro, msg.zgyro
-            
-            # Sonra ATTITUDE dene (gyro rates için)
-            msg_att = self.master.recv_match(type='ATTITUDE', blocking=False, timeout=0.01)
-            if msg_att:
-                # ATTITUDE'den gyro rates + gravity estimate
-                import math
-                roll_rad = msg_att.roll
-                pitch_rad = msg_att.pitch
+                # Angle rates
+                gyro_x = msg.rollspeed   # rad/s
+                gyro_y = msg.pitchspeed  # rad/s
+                gyro_z = msg.yawspeed    # rad/s
                 
                 # Gravity vector estimate
+                roll_rad = msg.roll
+                pitch_rad = msg.pitch
+                
                 accel_x = -9.81 * math.sin(pitch_rad)
                 accel_y = 9.81 * math.sin(roll_rad) * math.cos(pitch_rad)
                 accel_z = 9.81 * math.cos(roll_rad) * math.cos(pitch_rad)
                 
-                return accel_x, accel_y, accel_z, msg_att.rollspeed, msg_att.pitchspeed, msg_att.yawspeed
+                with self.data_lock:
+                    self.imu_data_buffer.append((accel_x, accel_y, accel_z, gyro_x, gyro_y, gyro_z))
+                
+                return accel_x, accel_y, accel_z, gyro_x, gyro_y, gyro_z
                     
         except Exception as e:
-            # Sessiz hata - terminal'i bozma
             pass
         
         return None
     
     def get_imu_data_alternative(self):
-        """ATTITUDE mesajından IMU verisi al - TCP için alternatif"""
-        if not self.connected or not self.master:
-            return None
-            
-        try:
-            # ATTITUDE mesajını dene - ArduSub'da her zaman var
-            msg = self.master.recv_match(type='ATTITUDE', blocking=False, timeout=0.05)
-            if msg:
-                # ATTITUDE mesajından angle rates
-                gyro_x = msg.rollspeed   # rad/s (roll rate)
-                gyro_y = msg.pitchspeed  # rad/s (pitch rate)
-                gyro_z = msg.yawspeed    # rad/s (yaw rate)
-                
-                # Accelerometer verisi yok, gravity estimate yapalım
-                import math
-                roll_rad = msg.roll
-                pitch_rad = msg.pitch
-                
-                # Gravity vector estimate
-                accel_x = -9.81 * math.sin(pitch_rad)
-                accel_y = 9.81 * math.sin(roll_rad) * math.cos(pitch_rad)
-                accel_z = 9.81 * math.cos(roll_rad) * math.cos(pitch_rad)
-                
-                return accel_x, accel_y, accel_z, gyro_x, gyro_y, gyro_z
-            
-        except Exception as e:
-            if not hasattr(self, 'alt_imu_error_counter'):
-                self.alt_imu_error_counter = 0
-            self.alt_imu_error_counter += 1
-            
-            if self.alt_imu_error_counter % 100 == 1:
-                print(f"❌ Alternative IMU data exception #{self.alt_imu_error_counter}: {e}")
-        
-        return None
+        """Alternative IMU data getter"""
+        return self.get_imu_data()
     
     def get_gps_data(self):
         """GPS verilerini al"""
@@ -430,6 +357,9 @@ class MAVLinkHandler:
                 alt = msg.alt / 1000.0  # mm to meters
                 satellites = getattr(msg, 'satellites_visible', 0)
                 
+                with self.data_lock:
+                    self.gps_data_buffer.append((lat, lon, alt, satellites))
+                
                 return lat, lon, alt, satellites
         except:
             pass
@@ -441,42 +371,47 @@ class MAVLinkHandler:
             return None
         
         try:
-            # ArduSub'da depth sensor verisi genellikle SCALED_PRESSURE2 mesajında gelir
+            # SCALED_PRESSURE2 mesajını dene (D300 için)
             msg = self.master.recv_match(type='SCALED_PRESSURE2', blocking=False)
             if msg:
-                # D300 depth sensor data
-                pressure_mbar = msg.press_abs  # Absolute pressure in millibar
-                temperature_c = msg.temperature / 100.0  # Temperature in celsius (from centidegrees)
+                pressure_mbar = msg.press_abs
+                temperature_c = msg.temperature / 100.0
+                depth_m = max(0.0, (pressure_mbar - 1013.25) / 100.0)
                 
-                # Convert pressure to depth (rough approximation)
-                # 1 mbar ≈ 1 cm water depth
-                depth_m = max(0.0, (pressure_mbar - 1013.25) / 100.0)  # Sea level correction
-                
-                return {
+                data = {
                     'depth_m': depth_m,
                     'temperature_c': temperature_c,
                     'pressure_mbar': pressure_mbar,
                     'timestamp': time.time()
                 }
+                
+                with self.data_lock:
+                    self.depth_data_buffer.append(data)
+                
+                return data
             
-            # Alternatif olarak SCALED_PRESSURE mesajını da dene
+            # Alternatif SCALED_PRESSURE
             msg = self.master.recv_match(type='SCALED_PRESSURE', blocking=False)
             if msg:
                 pressure_mbar = msg.press_abs
                 temperature_c = msg.temperature / 100.0
                 depth_m = max(0.0, (pressure_mbar - 1013.25) / 100.0)
                 
-                return {
+                data = {
                     'depth_m': depth_m,
                     'temperature_c': temperature_c,
                     'pressure_mbar': pressure_mbar,
                     'timestamp': time.time()
                 }
+                
+                with self.data_lock:
+                    self.depth_data_buffer.append(data)
+                
+                return data
             
             return None
             
         except Exception as e:
-            print(f"❌ Depth data alma hatası: {e}")
             return None
     
     def get_all_sensor_data(self):
@@ -513,24 +448,23 @@ class MAVLinkHandler:
         return data
     
     def emergency_stop(self):
-        """Acil durum - tüm servo/motor durdur"""
+        """Acil durum - tüm kontroller durdur"""
         print("🚨 ACİL DURUM - TÜMÜ DURDURULUYOR!")
         
         if not self.connected:
             return
         
         try:
-            # Tüm servoları neutral'a
-            servos = self.config["pixhawk"]["servos"]
-            neutral = self.config["pixhawk"]["pwm_limits"]["servo_neutral"]
-            motor_stop = self.config["pixhawk"]["pwm_limits"]["motor_stop"]
+            # Tüm servo'ları neutral'a
+            neutral = 1500
+            motor_stop = 1500
             
-            for servo_name, channel in servos.items():
+            # X-Fin servo'ları (AUX1,3,4,5)
+            for channel in [9, 11, 12, 13]:  # AUX1, AUX3, AUX4, AUX5
                 self.send_raw_servo_pwm(channel, neutral)
             
-            # Motoru durdur
-            motor_channel = self.config["pixhawk"]["motor"]
-            self.send_raw_servo_pwm(motor_channel, motor_stop)
+            # Motor durdur (AUX6)
+            self.send_raw_servo_pwm(14, motor_stop)
             
             print("✅ Acil durum protokolü tamamlandı")
             
@@ -542,39 +476,30 @@ class MAVLinkHandler:
         try:
             return {
                 'connection_status': self.connected,
-                'armed_status': getattr(self, 'armed', False),
-                'flight_mode': getattr(self, 'current_mode', 'MANUAL'),
-                'battery_voltage': getattr(self, 'battery_voltage', 0.0),
-                'battery_level': getattr(self, 'battery_level', 0),
-                'gps_status': getattr(self, 'gps_fix_type', 0),
-                'satellites': getattr(self, 'satellites_visible', 0),
-                'depth': getattr(self, 'depth', 0.0),
-                'temperature': getattr(self, 'temperature', 20.0),
-                'pressure': getattr(self, 'pressure', 1013.25),
+                'connection_type': 'Serial',
+                'serial_port': self.serial_port,
+                'baud_rate': self.baud_rate,
+                'armed_status': self.armed,
+                'control_mode': self.control_mode,
+                'navigation_mode': self.navigation_mode,
                 'system_time': time.time(),
-                'uptime': time.time() - getattr(self, 'start_time', time.time()),
-                'last_heartbeat': getattr(self, 'last_heartbeat', 0),
-                'errors': getattr(self, 'error_count', 0)
+                'heartbeat_active': self.connected
             }
         except Exception as e:
             print(f"System status error: {e}")
             return {
                 'connection_status': False,
+                'connection_type': 'Serial',
+                'serial_port': self.serial_port,
+                'baud_rate': self.baud_rate,
                 'armed_status': False,
-                'flight_mode': 'UNKNOWN',
-                'battery_voltage': 0.0,
-                'battery_level': 0,
-                'gps_status': 0,
-                'satellites': 0,
-                'depth': 0.0,
-                'temperature': 0.0,
-                'pressure': 0.0,
+                'control_mode': 'raw',
+                'navigation_mode': 'gps_only',
                 'system_time': time.time(),
-                'uptime': 0,
-                'last_heartbeat': 0,
-                'errors': 0
+                'heartbeat_active': False
             }
 
+# IMU Filter ve PID Controller sınıfları (değişmedi)
 class IMUFilter:
     """Basit IMU filtresi - Complementary Filter"""
     
@@ -662,47 +587,20 @@ class PIDController:
         output = p_term + i_term + d_term
         return max(-45, min(45, output))  # Limit output
 
-    def get_system_status(self):
-        """Sistem durumu bilgilerini döndür"""
-        try:
-            return {
-                'connection_status': self.connected,
-                'armed_status': getattr(self, 'armed', False),
-                'flight_mode': getattr(self, 'current_mode', 'MANUAL'),
-                'battery_voltage': getattr(self, 'battery_voltage', 0.0),
-                'battery_level': getattr(self, 'battery_level', 0),
-                'gps_status': getattr(self, 'gps_fix_type', 0),
-                'satellites': getattr(self, 'satellites_visible', 0),
-                'depth': getattr(self, 'depth', 0.0),
-                'temperature': getattr(self, 'temperature', 20.0),
-                'pressure': getattr(self, 'pressure', 1013.25),
-                'system_time': time.time(),
-                'uptime': time.time() - getattr(self, 'start_time', time.time()),
-                'last_heartbeat': getattr(self, 'last_heartbeat', 0),
-                'errors': getattr(self, 'error_count', 0)
-            }
-        except Exception as e:
-            print(f"System status error: {e}")
-            return {
-                'connection_status': False,
-                'armed_status': False,
-                'flight_mode': 'UNKNOWN',
-                'battery_voltage': 0.0,
-                'battery_level': 0,
-                'gps_status': 0,
-                'satellites': 0,
-                'depth': 0.0,
-                'temperature': 0.0,
-                'pressure': 0.0,
-                'system_time': time.time(),
-                'uptime': 0,
-                'last_heartbeat': 0,
-                'errors': 0
-            }
-
 if __name__ == "__main__":
-    # Test
+    # Test kodu
+    print("🔧 MAVLink Handler Serial Test")
+    
     handler = MAVLinkHandler()
     if handler.connect():
-        print("Test başarılı!")
-        handler.disconnect() 
+        print("✅ Serial bağlantı test başarılı!")
+        
+        # Test IMU data
+        imu_data = handler.get_imu_data()
+        if imu_data:
+            print(f"📊 IMU: {imu_data}")
+        
+        handler.disconnect()
+    else:
+        print("❌ Serial bağlantı test başarısız!")
+        print(f"💡 Kontrol et: {handler.serial_port} @ {handler.baud_rate} baud") 

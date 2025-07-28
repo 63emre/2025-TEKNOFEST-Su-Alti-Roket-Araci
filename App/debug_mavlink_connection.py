@@ -1,24 +1,33 @@
 #!/usr/bin/env python3
 """
-MAVLink Bağlantı ve Veri Debug Script
-TCP 127.0.0.1:5777 üzerinden test
+TEKNOFEST Su Altı ROV - Serial MAVLink Connection Debug
+Pixhawk PX4 PIX 2.4.8 Serial Communication Debug
+Environment Variable Support: MAV_ADDRESS, MAV_BAUD
 """
 
+import os
 import time
 import math
 from mavlink_handler import MAVLinkHandler
 
+# Environment variables for serial connection
+MAV_ADDRESS = os.getenv("MAV_ADDRESS", "/dev/ttyACM0")
+MAV_BAUD = int(os.getenv("MAV_BAUD", "115200"))
+
 def test_mavlink_connection():
-    """MAVLink bağlantısını test et"""
-    print("🔧 MAVLink Debug Test Başlatılıyor...")
+    """Serial MAVLink bağlantısını test et"""
+    print("🔧 Serial MAVLink Debug Test Başlatılıyor...")
+    print(f"📡 Serial Configuration:")
+    print(f"   Port: {MAV_ADDRESS}")
+    print(f"   Baud: {MAV_BAUD}")
     
     # MAVLink handler oluştur
     handler = MAVLinkHandler()
     
     # Bağlantıyı test et
-    print("📡 TCP 127.0.0.1:5777 bağlantısı test ediliyor...")
+    print(f"📡 Serial {MAV_ADDRESS}@{MAV_BAUD} bağlantısı test ediliyor...")
     if handler.connect():
-        print("✅ MAVLink bağlantısı başarılı!")
+        print("✅ Serial MAVLink bağlantısı başarılı!")
         
         # Sistem durumunu kontrol et
         print("\n🔍 Sistem durumu kontrol ediliyor...")
@@ -47,8 +56,8 @@ def test_mavlink_connection():
         
         if imu_count == 0:
             print("❌ IMU verisi alınamadı!")
-            print("💡 Pixhawk'da RAW_IMU mesajları aktif mi kontrol edin")
-            print("💡 QGroundControl'de MAVLink Inspector'dan RAW_IMU mesajlarını kontrol edin")
+            print("💡 Pixhawk'da RAW_IMU/ATTITUDE mesajları aktif mi kontrol edin")
+            print("💡 ArduSub firmware çalışıyor mu kontrol edin")
         else:
             print("✅ IMU verileri alınıyor!")
         
@@ -96,24 +105,25 @@ def test_mavlink_connection():
         print("✅ Test tamamlandı!")
         
     else:
-        print("❌ MAVLink bağlantısı başarısız!")
-        print("💡 TCP 127.0.0.1:5777 port'unda MAVLink proxy çalışıyor mu?")
-        print("💡 ArduSub ve MAVLink proxy durumunu kontrol edin")
+        print("❌ Serial MAVLink bağlantısı başarısız!")
+        print(f"💡 {MAV_ADDRESS} portu'nda Pixhawk bağlı mı?")
+        print(f"💡 Baud rate {MAV_BAUD} doğru mu?")
+        print("💡 ArduSub firmware çalışıyor mu?")
 
 def test_raw_mavlink():
     """Ham MAVLink mesajlarını test et"""
-    print("\n🔧 Ham MAVLink Mesaj Testi...")
+    print("\n🔧 Ham Serial MAVLink Mesaj Testi...")
     
     try:
         from pymavlink import mavutil
         
-        # Direkt bağlantı
-        connection = mavutil.mavlink_connection('tcp:127.0.0.1:5777')
-        print("📡 Ham MAVLink bağlantısı kuruluyor...")
+        # Direkt serial bağlantı
+        print(f"📡 Ham serial MAVLink bağlantısı kuruluyor: {MAV_ADDRESS}@{MAV_BAUD}")
+        connection = mavutil.mavlink_connection(MAV_ADDRESS, baud=MAV_BAUD)
         
         # Heartbeat bekle
         print("💓 Heartbeat bekleniyor...")
-        heartbeat = connection.wait_heartbeat(timeout=10)
+        heartbeat = connection.wait_heartbeat(timeout=15)
         
         if heartbeat:
             print("✅ Heartbeat alındı!")
@@ -139,24 +149,31 @@ def test_raw_mavlink():
             for msg_type, count in sorted(message_types.items()):
                 print(f"   {msg_type}: {count} mesaj")
             
-            if 'RAW_IMU' in message_types:
-                print("✅ RAW_IMU mesajları alınıyor!")
+            if 'RAW_IMU' in message_types or 'ATTITUDE' in message_types:
+                print("✅ IMU mesajları alınıyor!")
             else:
-                print("❌ RAW_IMU mesajları alınamıyor!")
+                print("❌ IMU mesajları alınamıyor!")
                 print("💡 Pixhawk parameterlerinde IMU mesajlarını aktif edin")
             
         else:
             print("❌ Heartbeat alınamadı!")
+            print(f"💡 {MAV_ADDRESS} portu kontrol edin")
+            print(f"💡 Baud rate {MAV_BAUD} kontrol edin")
             
         connection.close()
         
     except Exception as e:
-        print(f"❌ Ham MAVLink test hatası: {e}")
+        print(f"❌ Ham serial MAVLink test hatası: {e}")
+        print("💡 Serial port erişim izinleri kontrol edin")
+        print("💡 Pixhawk USB kablosu kontrol edin")
 
 if __name__ == "__main__":
     print("=" * 60)
-    print("🚀 TEKNOFEST ROV - MAVLink Debug Test")
+    print("🚀 TEKNOFEST ROV - Serial MAVLink Debug Test")
     print("=" * 60)
+    print(f"🔧 Environment Variables:")
+    print(f"   MAV_ADDRESS = {MAV_ADDRESS}")
+    print(f"   MAV_BAUD = {MAV_BAUD}")
     
     # Ana test
     test_mavlink_connection()
@@ -166,5 +183,8 @@ if __name__ == "__main__":
     
     print("\n" + "=" * 60)
     print("🔧 Debug test tamamlandı!")
-    print("💡 Sorunlar devam ediyorsa QGroundControl ile bağlantıyı kontrol edin")
+    print("💡 Sorunlar devam ediyorsa:")
+    print("   • Serial port izinlerini kontrol edin")
+    print("   • Pixhawk USB bağlantısını kontrol edin")
+    print("   • ArduSub firmware'ini kontrol edin")
     print("=" * 60) 
