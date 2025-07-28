@@ -1,17 +1,32 @@
 #!/usr/bin/env python3
 """
-TEKNOFEST Su Altı ROV - GPIO Controller
-Raspberry Pi GPIO kontrolü (LED, Buzzer, Button)
+TEKNOFEST Su Altı ROV - GPIO Kontrol Modülü
+Raspberry Pi 5 Uyumlu Sürüm
 """
 
 import time
 import threading
+from typing import Optional, Callable
+
+# Pi5 uyumlu GPIO kütüphaneleri
 try:
-    import RPi.GPIO as GPIO
-    GPIO_AVAILABLE = True
+    import lgpio
+    GPIO_LIBRARY = "lgpio"
+    print("✅ lgpio kütüphanesi yüklendi (Pi5 uyumlu)")
 except ImportError:
-    print("⚠️ RPi.GPIO bulunamadı! Test modunda çalışıyor...")
-    GPIO_AVAILABLE = False
+    try:
+        import gpiozero
+        from gpiozero import LED, Button, Buzzer, PWMOutputDevice
+        GPIO_LIBRARY = "gpiozero"
+        print("✅ gpiozero kütüphanesi yüklendi (Pi5 uyumlu)")
+    except ImportError:
+        try:
+            import RPi.GPIO as GPIO
+            GPIO_LIBRARY = "RPi.GPIO"
+            print("⚠️ RPi.GPIO yüklendi (Pi5'te sorunlu olabilir)")
+        except ImportError:
+            GPIO_LIBRARY = "simulation"
+            print("⚠️ GPIO kütüphanesi bulunamadı - simülasyon modunda")
 
 class GPIOController:
     """Raspberry Pi GPIO kontrol sınıfı"""
@@ -42,38 +57,87 @@ class GPIOController:
         
     def initialize(self):
         """GPIO sistemini başlat"""
-        if not GPIO_AVAILABLE:
+        if GPIO_LIBRARY == "simulation":
             print("⚠️ GPIO simülasyon modunda çalışıyor")
             self.initialized = True
             return True
         
         try:
             with self.gpio_lock:
-                GPIO.setmode(GPIO.BCM)
-                GPIO.setwarnings(False)
+                if GPIO_LIBRARY == "lgpio":
+                    # lgpio için pin modu ayarla
+                    lgpio.gpio_open()
+                    lgpio.gpio_set_mode(self.buzzer_pin, lgpio.OUTPUT)
+                    lgpio.gpio_set_mode(self.led_red, lgpio.OUTPUT)
+                    lgpio.gpio_set_mode(self.led_green, lgpio.OUTPUT)
+                    lgpio.gpio_set_mode(self.led_blue, lgpio.OUTPUT)
+                    lgpio.gpio_set_mode(self.warning_led, lgpio.OUTPUT)
+                    lgpio.gpio_set_mode(self.status_led, lgpio.OUTPUT)
+                    lgpio.gpio_write(self.buzzer_pin, lgpio.LOW)
+                    lgpio.gpio_write(self.led_red, lgpio.LOW)
+                    lgpio.gpio_write(self.led_green, lgpio.LOW)
+                    lgpio.gpio_write(self.led_blue, lgpio.LOW)
+                    lgpio.gpio_write(self.warning_led, lgpio.LOW)
+                    lgpio.gpio_write(self.status_led, lgpio.LOW)
+                    
+                    # PWM objelerini oluştur
+                    self.pwm_objects['buzzer'] = PWMOutputDevice(self.buzzer_pin, frequency=1000)
+                    self.pwm_objects['led_red'] = PWMOutputDevice(self.led_red, frequency=100)
+                    self.pwm_objects['led_green'] = PWMOutputDevice(self.led_green, frequency=100)
+                    self.pwm_objects['led_blue'] = PWMOutputDevice(self.led_blue, frequency=100)
+                    
+                    # PWM'leri başlat (0% duty cycle)
+                    for pwm in self.pwm_objects.values():
+                        pwm.value = 0
                 
-                # Output pinleri ayarla
-                output_pins = [
-                    self.buzzer_pin, self.led_red, self.led_green, 
-                    self.led_blue, self.warning_led, self.status_led
-                ]
+                elif GPIO_LIBRARY == "gpiozero":
+                    # gpiozero için pin modu ayarla
+                    self.buzzer_pin = Button(self.buzzer_pin, pull_up=True)
+                    self.button_pin = Button(self.button_pin, pull_up=True)
+                    self.led_red = LED(self.led_red)
+                    self.led_green = LED(self.led_green)
+                    self.led_blue = LED(self.led_blue)
+                    self.warning_led = LED(self.warning_led)
+                    self.status_led = LED(self.status_led)
+                    
+                    # PWM objelerini oluştur
+                    self.pwm_objects['buzzer'] = PWMOutputDevice(self.buzzer_pin, frequency=1000)
+                    self.pwm_objects['led_red'] = PWMOutputDevice(self.led_red, frequency=100)
+                    self.pwm_objects['led_green'] = PWMOutputDevice(self.led_green, frequency=100)
+                    self.pwm_objects['led_blue'] = PWMOutputDevice(self.led_blue, frequency=100)
+                    
+                    # PWM'leri başlat (0% duty cycle)
+                    for pwm in self.pwm_objects.values():
+                        pwm.value = 0
                 
-                for pin in output_pins:
-                    GPIO.setup(pin, GPIO.OUT)
-                    GPIO.output(pin, GPIO.LOW)
-                
-                # Button input ayarla
-                GPIO.setup(self.button_pin, GPIO.IN, pull_up_down=GPIO.PUD_UP)
-                
-                # PWM objelerini oluştur
-                self.pwm_objects['buzzer'] = GPIO.PWM(self.buzzer_pin, 1000)  # 1kHz
-                self.pwm_objects['led_red'] = GPIO.PWM(self.led_red, 100)     # 100Hz
-                self.pwm_objects['led_green'] = GPIO.PWM(self.led_green, 100)
-                self.pwm_objects['led_blue'] = GPIO.PWM(self.led_blue, 100)
-                
-                # PWM'leri başlat (0% duty cycle)
-                for pwm in self.pwm_objects.values():
-                    pwm.start(0)
+                elif GPIO_LIBRARY == "RPi.GPIO":
+                    # RPi.GPIO için pin modu ayarla
+                    import RPi.GPIO as GPIO
+                    GPIO.setmode(GPIO.BCM)
+                    GPIO.setwarnings(False)
+                    
+                    # Output pinleri ayarla
+                    output_pins = [
+                        self.buzzer_pin, self.led_red, self.led_green, 
+                        self.led_blue, self.warning_led, self.status_led
+                    ]
+                    
+                    for pin in output_pins:
+                        GPIO.setup(pin, GPIO.OUT)
+                        GPIO.output(pin, GPIO.LOW)
+                    
+                    # Button input ayarla
+                    GPIO.setup(self.button_pin, GPIO.IN, pull_up_down=GPIO.PUD_UP)
+                    
+                    # PWM objelerini oluştur
+                    self.pwm_objects['buzzer'] = GPIO.PWM(self.buzzer_pin, 1000)  # 1kHz
+                    self.pwm_objects['led_red'] = GPIO.PWM(self.led_red, 100)     # 100Hz
+                    self.pwm_objects['led_green'] = GPIO.PWM(self.led_green, 100)
+                    self.pwm_objects['led_blue'] = GPIO.PWM(self.led_blue, 100)
+                    
+                    # PWM'leri başlat (0% duty cycle)
+                    for pwm in self.pwm_objects.values():
+                        pwm.start(0)
                 
                 self.initialized = True
                 print("✅ GPIO sistemi başlatıldı")
@@ -85,17 +149,32 @@ class GPIOController:
     
     def cleanup(self):
         """GPIO temizliği"""
-        if not GPIO_AVAILABLE or not self.initialized:
+        if GPIO_LIBRARY == "simulation":
             return
         
         try:
             with self.gpio_lock:
-                # PWM'leri durdur
-                for pwm in self.pwm_objects.values():
-                    pwm.stop()
+                if GPIO_LIBRARY == "lgpio":
+                    lgpio.gpio_close(self.buzzer_pin)
+                    lgpio.gpio_close(self.led_red)
+                    lgpio.gpio_close(self.led_green)
+                    lgpio.gpio_close(self.led_blue)
+                    lgpio.gpio_close(self.warning_led)
+                    lgpio.gpio_close(self.status_led)
+                    lgpio.gpio_close() # Ana GPIO kapat
                 
-                # GPIO temizle
-                GPIO.cleanup()
+                elif GPIO_LIBRARY == "gpiozero":
+                    self.buzzer_pin.close()
+                    self.button_pin.close()
+                    self.led_red.close()
+                    self.led_green.close()
+                    self.led_blue.close()
+                    self.warning_led.close()
+                    self.status_led.close()
+                
+                elif GPIO_LIBRARY == "RPi.GPIO":
+                    import RPi.GPIO as GPIO
+                    GPIO.cleanup()
                 
                 self.initialized = False
                 print("🔄 GPIO temizlendi")
@@ -122,7 +201,7 @@ class GPIOController:
         try:
             pin = led_map[led_name]
             
-            if not GPIO_AVAILABLE:
+            if GPIO_LIBRARY == "simulation":
                 print(f"🔨 [SIM] LED {led_name}: {'ON' if state else 'OFF'} ({brightness}%)")
                 return True
             
@@ -130,12 +209,12 @@ class GPIOController:
                 if led_name in ['red', 'green', 'blue']:
                     # PWM kontrollü LED'ler
                     if state:
-                        self.pwm_objects[f'led_{led_name}'].ChangeDutyCycle(brightness)
+                        self.pwm_objects[f'led_{led_name}'].value = brightness / 100.0
                     else:
-                        self.pwm_objects[f'led_{led_name}'].ChangeDutyCycle(0)
+                        self.pwm_objects[f'led_{led_name}'].value = 0
                 else:
                     # Normal dijital LED'ler
-                    GPIO.output(pin, GPIO.HIGH if state else GPIO.LOW)
+                    pin.value = GPIO.HIGH if state else GPIO.LOW
             
             return True
             
@@ -155,22 +234,22 @@ class GPIOController:
             return False
         
         try:
-            if not GPIO_AVAILABLE:
+            if GPIO_LIBRARY == "simulation":
                 print(f"🔊 [SIM] Buzzer: {frequency}Hz, {duration}s, {volume}%")
                 return True
             
             with self.gpio_lock:
                 # Frekansı ayarla
-                self.pwm_objects['buzzer'].ChangeFrequency(frequency)
+                self.pwm_objects['buzzer'].frequency = frequency
                 # Ses aç
-                self.pwm_objects['buzzer'].ChangeDutyCycle(volume)
+                self.pwm_objects['buzzer'].value = volume / 100.0
                 
             # Süre kadar bekle
             time.sleep(duration)
             
             with self.gpio_lock:
                 # Sesi kapat
-                self.pwm_objects['buzzer'].ChangeDutyCycle(0)
+                self.pwm_objects['buzzer'].value = 0
             
             return True
             
@@ -184,13 +263,13 @@ class GPIOController:
             return False
         
         try:
-            if not GPIO_AVAILABLE:
+            if GPIO_LIBRARY == "simulation":
                 print(f"🔊 [SIM] Buzzer START: {frequency}Hz, {volume}%")
                 return True
             
             with self.gpio_lock:
-                self.pwm_objects['buzzer'].ChangeFrequency(frequency)
-                self.pwm_objects['buzzer'].ChangeDutyCycle(volume)
+                self.pwm_objects['buzzer'].frequency = frequency
+                self.pwm_objects['buzzer'].value = volume / 100.0
             
             return True
             
@@ -204,12 +283,12 @@ class GPIOController:
             return False
         
         try:
-            if not GPIO_AVAILABLE:
+            if GPIO_LIBRARY == "simulation":
                 print("🔇 [SIM] Buzzer STOP")
                 return True
             
             with self.gpio_lock:
-                self.pwm_objects['buzzer'].ChangeDutyCycle(0)
+                self.pwm_objects['buzzer'].value = 0
             
             return True
             
@@ -223,12 +302,12 @@ class GPIOController:
             return False
         
         try:
-            if not GPIO_AVAILABLE:
+            if GPIO_LIBRARY == "simulation":
                 return False  # Simülasyonda buton yok
             
             with self.gpio_lock:
                 # Pull-up olduğu için LOW = basılı
-                return not GPIO.input(self.button_pin)
+                return not self.button_pin.is_pressed
             
         except Exception as e:
             print(f"❌ Buton okuma hatası: {e}")
@@ -236,19 +315,26 @@ class GPIOController:
     
     def setup_button_callback(self, callback_function):
         """Buton basma callback ayarla"""
-        if not GPIO_AVAILABLE or not self.initialized:
+        if not self.initialized:
             return False
         
         try:
             self.button_callback = callback_function
             
             # Edge detection ayarla
-            GPIO.add_event_detect(
-                self.button_pin, 
-                GPIO.FALLING,  # Pull-up'ta basılma = FALLING
-                callback=self._button_interrupt,
-                bouncetime=200  # 200ms debounce
-            )
+            if GPIO_LIBRARY == "gpiozero":
+                self.button_pin.when_pressed = self._button_interrupt
+                self.button_pin.when_released = self._button_interrupt # gpiozero'da released değil, pressed olur
+            elif GPIO_LIBRARY == "lgpio":
+                lgpio.gpio_event_detect(self.button_pin, lgpio.FALLING, self._button_interrupt)
+                lgpio.gpio_event_detect(self.button_pin, lgpio.RISING, self._button_interrupt) # gpiozero'da released değil, pressed olur
+            elif GPIO_LIBRARY == "RPi.GPIO":
+                GPIO.add_event_detect(
+                    self.button_pin, 
+                    GPIO.FALLING,  # Pull-up'ta basılma = FALLING
+                    callback=self._button_interrupt,
+                    bouncetime=200  # 200ms debounce
+                )
             
             print("✅ Buton callback ayarlandı")
             return True
@@ -305,7 +391,7 @@ class GPIOController:
         """GPIO durumunu döndür"""
         return {
             'initialized': self.initialized,
-            'gpio_available': GPIO_AVAILABLE,
+            'gpio_library': GPIO_LIBRARY,
             'pins': {
                 'buzzer': self.buzzer_pin,
                 'button': self.button_pin,
