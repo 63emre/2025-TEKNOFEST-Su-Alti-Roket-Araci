@@ -1556,5 +1556,99 @@ def main():
     # Event loop
     sys.exit(app.exec_())
 
+def headless_test():
+    """Headless test modu - GUI olmadan sensör testleri"""
+    print("🚀 TEKNOFEST ROV - Headless Test Modu Başlatılıyor...")
+    print("📋 Pi5 Hardware Test - GUI Yok")
+    print("🔗 X-Wing Konfigürasyonu: AUX1,3,4,5 + Motor AUX6")
+    
+    try:
+        # Config yükle
+        with open("config/hardware_config.json", 'r') as f:
+            config = json.load(f)
+        print("✅ Konfigürasyon yüklendi")
+        
+        # MAVLink test
+        print("\n🔌 MAVLink Bağlantısı Test Ediliyor...")
+        mavlink_handler = MAVLinkHandler()
+        if mavlink_handler.connect():
+            print("✅ MAVLink bağlantısı başarılı!")
+            
+            # IMU test
+            time.sleep(2)
+            imu_data = mavlink_handler.get_imu_data()
+            if imu_data:
+                print(f"✅ IMU Verisi: Roll={imu_data[0]:.2f}°, Pitch={imu_data[1]:.2f}°, Yaw={imu_data[2]:.2f}°")
+            
+            mavlink_handler.disconnect()
+        else:
+            print("❌ MAVLink bağlantısı başarısız")
+        
+        # GPIO Test
+        print("\n🔌 GPIO Sistemi Test Ediliyor...")
+        gpio_controller = GPIOController(config)
+        if gpio_controller.initialize():
+            print("✅ GPIO sistemi başarılı!")
+            
+            # LED test
+            gpio_controller.set_led('red', True)
+            time.sleep(0.5)
+            gpio_controller.set_led('red', False)
+            gpio_controller.set_led('green', True)
+            time.sleep(0.5)
+            gpio_controller.set_led('green', False)
+            print("✅ LED testi tamamlandı")
+            
+            # Buzzer test
+            gpio_controller.buzzer_beep(1000, 0.2, 50)
+            print("✅ Buzzer testi tamamlandı")
+            
+            gpio_controller.cleanup()
+        else:
+            print("⚠️ GPIO simülasyon modunda")
+        
+        # D300 Test
+        print("\n🌊 D300 Derinlik Sensörü Test Ediliyor...")
+        d300_address = int(config.get("raspberry_pi", {}).get("i2c", {}).get("depth_sensor_address", "0x76"), 16)
+        depth_sensor = D300DepthSensor(address=d300_address)
+        
+        if depth_sensor.connect():
+            print(f"✅ D300 sensörü bağlandı (0x{d300_address:02x})")
+            
+            # Test okuma
+            depth_sensor.start_monitoring()
+            time.sleep(2)
+            
+            print(f"📊 Derinlik: {depth_sensor.depth_m:.2f} m")
+            print(f"🌡️ Sıcaklık: {depth_sensor.temperature_c:.1f}°C")
+            print(f"📈 Basınç: {depth_sensor.pressure_mbar:.1f} mbar")
+            
+            depth_sensor.disconnect()
+        else:
+            print("⚠️ D300 sensörü simülasyon modunda")
+        
+        # Test özeti
+        print("\n" + "="*50)
+        print("🏁 HEADLESS TEST TAMAMLANDI!")
+        print("📋 Hardware Mapping:")
+        print("   • Ön Sol Fin: AUX1    • Ön Sağ Fin: AUX3")
+        print("   • Arka Sol Fin: AUX4  • Arka Sağ Fin: AUX5")
+        print("   • Ana Motor: AUX6")
+        print(f"   • D300 Sensör: I2C 0x{d300_address:02x}")
+        print("="*50)
+        
+        return True
+        
+    except Exception as e:
+        print(f"❌ Headless test hatası: {e}")
+        return False
+
 if __name__ == "__main__":
-    main() 
+    # Komut satırı argümanları kontrol et
+    if len(sys.argv) > 1 and sys.argv[1] == "--headless":
+        # Headless modu
+        success = headless_test()
+        sys.exit(0 if success else 1)
+    else:
+        # Normal GUI modu
+        main() 
