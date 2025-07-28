@@ -229,10 +229,10 @@ class SimpleTerminalGUI:
             return
         
         try:
-            # Basit IMU data alma
+            # IMU data alma
             imu_raw = self.mavlink.get_imu_data()
             if imu_raw and len(imu_raw) >= 6:
-                # Basit attitude hesaplama (gerçek hesaplama karmaşık)
+                # IMU verisi var
                 ax, ay, az = imu_raw[0], imu_raw[1], imu_raw[2]
                 
                 # Roll ve pitch hesaplama
@@ -244,14 +244,24 @@ class SimpleTerminalGUI:
                     self.imu_data['roll'] = roll
                     self.imu_data['pitch'] = pitch
                     self.imu_data['connected'] = True
+                    
+                    # İlk başarılı IMU verisi alındığında log
+                    if not hasattr(self, 'imu_success_logged'):
+                        self.log(f"✅ IMU verisi alındı: Roll={roll:.1f}° Pitch={pitch:.1f}°")
+                        self.imu_success_logged = True
                 else:
                     self.imu_data['connected'] = False
             else:
                 self.imu_data['connected'] = False
+                # Sadece ilk başta hata logla
+                if not hasattr(self, 'imu_no_data_logged'):
+                    self.log("⚠️ IMU verisi alınamıyor")
+                    self.imu_no_data_logged = True
                 
         except Exception as e:
             self.imu_data['connected'] = False
-            if not hasattr(self, 'last_imu_error') or time.time() - self.last_imu_error > 5:
+            # Hata logunu sınırla
+            if not hasattr(self, 'last_imu_error') or time.time() - self.last_imu_error > 10:
                 self.log(f"⚠️ IMU güncelleme hatası: {e}")
                 self.last_imu_error = time.time()
     
@@ -272,20 +282,26 @@ class SimpleTerminalGUI:
                 self.draw_controls()
                 self.draw_logs()
                 
-                # Debug bilgisi
+                # Debug bilgisi (daha az sıklıkta)
                 frame_count += 1
-                if frame_count % 50 == 0:  # Her 5 saniyede bir
+                if frame_count % 100 == 0:  # Her 10 saniyede bir
                     self.log(f"🔄 Frame #{frame_count} - GUI çalışıyor")
                 
                 # Ekranı yenile
                 self.stdscr.refresh()
                 
-                # Klavye girişi
-                self.handle_keyboard()
+                # Klavye girişi (non-blocking)
+                try:
+                    self.handle_keyboard()
+                except:
+                    pass  # Klavye hatası terminal'i bozmasın
                 
-                # IMU verilerini güncelle (1 saniyede bir)
-                if time.time() - last_imu_update > 1.0:
-                    self.update_imu_data()
+                # IMU verilerini güncelle (2 saniyede bir - daha az sıklıkta)
+                if time.time() - last_imu_update > 2.0:
+                    try:
+                        self.update_imu_data()
+                    except:
+                        pass  # IMU hatası terminal'i bozmasın
                     last_imu_update = time.time()
                 
                 # CPU efficiency
@@ -294,9 +310,16 @@ class SimpleTerminalGUI:
             except KeyboardInterrupt:
                 self.log("⚠️ Ctrl+C ile durduruldu")
                 self.running = False
+                break
             except Exception as e:
                 self.log(f"❌ Ana döngü hatası: {e}")
-                time.sleep(0.5)  # Hata durumunda biraz bekle
+                time.sleep(1.0)  # Hata durumunda daha uzun bekle
+                # Terminal'i yeniden başlatmayı dene
+                try:
+                    self.stdscr.clear()
+                    self.stdscr.refresh()
+                except:
+                    pass
         
         self.log("🔄 Ana döngü durdu")
     
@@ -321,18 +344,21 @@ class SimpleTerminalGUI:
             print("🚀 Simple Terminal GUI başlatılıyor...")
             print("💡 MAVLink bağlantısı için C tuşuna basın")
             print("💡 Çıkış için X tuşuna basın")
-            time.sleep(2)  # Mesajı okuma zamanı
+            time.sleep(1)  # Mesajı okuma zamanı
             
             # Curses başlat
             curses.wrapper(curses_main)
             
+        except KeyboardInterrupt:
+            print("\n⚠️ Ctrl+C ile durduruldu")
         except Exception as e:
             print(f"❌ Terminal GUI hatası: {e}")
             import traceback
             traceback.print_exc()
         finally:
+            self.running = False
             self.cleanup()
-            print("✅ Simple Terminal GUI kapatıldı")
+            print("👋 Simple Terminal GUI kapatıldı")
 
 def main():
     """Ana fonksiyon"""

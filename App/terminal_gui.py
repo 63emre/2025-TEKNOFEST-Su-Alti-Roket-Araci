@@ -11,11 +11,9 @@ import os
 # Pi5 + PiOS curses desteği - BASİTLEŞTİRİLDİ
 try:
     import curses
-    print("✅ Terminal UI hazır (Pi5 + PiOS)")
+    # Terminal UI hazır - print yok
 except ImportError as e:
-    print(f"❌ Terminal UI hatası: {e}")
-    print("💡 Pi'de normalde curses yüklü olmalı")
-    print("🔧 Çözüm: sudo apt update && sudo apt install python3-dev")
+    # Terminal UI hatası - print yok, sys.exit direkt
     sys.exit(1)
 
 import threading
@@ -34,23 +32,17 @@ try:
     try:
         from gpio_controller import GPIOController
         HAS_GPIO = True
-        print("✅ GPIO Controller yüklendi - Buzzer/LED/Button aktif!")
     except ImportError:
         HAS_GPIO = False
-        print("⚠️ GPIO controller yok - LED/Buzzer/Button devre dışı")
     
     # D300 Depth Sensor - I2C üzerinden
     try:
         from depth_sensor import D300DepthSensor
         HAS_DEPTH_SENSOR = True
-        print("✅ D300 Depth Sensor yüklendi - I2C derinlik ölçümü aktif!")
     except ImportError:
         HAS_DEPTH_SENSOR = False
-        print("⚠️ Depth sensor modülü yok - I2C özelliği devre dışı")
         
 except ImportError as e:
-    print(f"❌ Kritik import hatası: {e}")
-    print("💡 En azından mavlink_handler.py gerekli!")
     sys.exit(1)
 
 class GPIOIntegration:
@@ -65,15 +57,12 @@ class GPIOIntegration:
             try:
                 self.gpio = GPIOController(config)
                 if self.gpio.initialize():
-                    print("✅ GPIO başlatıldı - Buzzer/LED/Button hazır!")
                     # Button callback ayarla
                     self.gpio.setup_button_callback(self.emergency_button_pressed)
                     self.gpio_ready = True
                 else:
-                    print("⚠️ GPIO başlatma başarısız")
                     self.gpio_ready = False
             except Exception as e:
-                print(f"⚠️ GPIO init hatası: {e}")
                 self.gpio_ready = False
         else:
             self.gpio_ready = False
@@ -85,21 +74,17 @@ class GPIOIntegration:
                 # İlk önce gerçek sensörü dene
                 self.depth_sensor = D300DepthSensor(config_path="config/hardware_config.json")
                 if self.depth_sensor.connect():
-                    print("✅ D300 I2C sensörü bağlandı!")
                     self.depth_sensor.start_monitoring(interval=0.1)  # 10Hz
                     self.depth_ready = True
                 else:
                     # Gerçek sensör yoksa simülasyon moduna geç
-                    print("🎮 D300 simülasyon moduna geçiliyor...")
                     self.depth_sensor = D300DepthSensor(simulation_mode=True)
                     if self.depth_sensor.connect():
                         self.depth_sensor.start_monitoring(interval=0.1)
                         self.depth_ready = True
-                        print("✅ D300 simülasyon modu aktif!")
                     else:
                         self.depth_ready = False
             except Exception as e:
-                print(f"⚠️ D300 init hatası: {e}")
                 self.depth_ready = False
         else:
             self.depth_ready = False
@@ -113,7 +98,7 @@ class GPIOIntegration:
     
     def emergency_button_pressed(self):
         """Acil durum butonu basıldı"""
-        print("🚨 ACİL DURUM BUTONU BASILDI!")
+        # Log yerine direkt callback çağır
         if self.gpio_ready:
             # Acil durum LED/buzzer pattern
             self.gpio.emergency_led_pattern()
@@ -445,9 +430,9 @@ class AdvancedTerminalGUI:
             
             # Bağlantı kurulmaya çalışılıyor - DETAYLI LOG
             self.log("⏳ mavlink.connect() çağrılıyor (timeout: 20s)...")
-            print("🔧 DEBUG: mavlink.connect() çağrılıyor...")  # Terminal'de de gör
+            self.log("🔧 DEBUG: mavlink.connect() çağrılıyor...")
             connect_result = self.mavlink.connect()
-            print(f"🔧 DEBUG: connect() sonucu: {connect_result}")  # Terminal'de de gör
+            self.log(f"🔧 DEBUG: connect() sonucu: {connect_result}")
             self.log(f"🔍 mavlink.connect() sonucu: {connect_result}")
             
             if connect_result:
@@ -459,9 +444,9 @@ class AdvancedTerminalGUI:
                 
                 # Sistem durumunu kontrol et
                 self.log("🔍 check_system_status() çağrılıyor...")
-                print(f"🔧 DEBUG: connect() sonrası mavlink.connected = {self.mavlink.connected}")
+                self.log(f"🔧 DEBUG: connect() sonrası mavlink.connected = {self.mavlink.connected}")
                 self.mavlink.check_system_status()
-                print(f"🔧 DEBUG: check_system_status() sonrası mavlink.connected = {self.mavlink.connected}")
+                self.log(f"🔧 DEBUG: check_system_status() sonrası mavlink.connected = {self.mavlink.connected}")
                 self.log(f"📊 MAVLink durumu: Connected={self.mavlink.connected}, Armed={self.mavlink.armed}")
                 
                 # TCP data connected flag'i ayarla - DOĞRULAMA İLE
@@ -526,8 +511,8 @@ class AdvancedTerminalGUI:
         self.log("✅ Sistem başlatma tamamlandı!")
         
         # Başlangıç durumu özeti - DÜZELTİLDİ!
-        print(f"🔧 DEBUG: Final tcp_data['connected'] = {self.tcp_data['connected']}")
-        print(f"🔧 DEBUG: Final live_imu['connected'] = {self.live_imu['connected']}")
+        self.log(f"🔧 DEBUG: Final tcp_data['connected'] = {self.tcp_data['connected']}")
+        self.log(f"🔧 DEBUG: Final live_imu['connected'] = {self.live_imu['connected']}")
         
         # Son durum kontrolü - DOGRU BİLGİ VER!
         if self.tcp_data['connected'] and self.mavlink and self.mavlink.connected:
@@ -536,11 +521,9 @@ class AdvancedTerminalGUI:
                 self.log("🎯 GPIO: Buzzer/LED/Button aktif, acil durum butonu hazır!")
             if self.gpio_integration.depth_ready:
                 self.log("🎯 D300: I2C derinlik sensörü aktif!")
-            print("🔧 DEBUG: HAZIR mesajı yazdırıldı")
         else:
             self.log("⚠️ KISMÎ: TCP bağlantısı BAŞARISIZ - offline mod aktiv")
             self.log(f"🔧 Detay: mavlink={self.mavlink is not None}, connected={getattr(self.mavlink, 'connected', False)}")
-            print("🔧 DEBUG: KISMÎ mesajı yazdırıldı")
     
     def start_tcp_data_thread(self):
         """TCP veri thread'ini başlat - yüksek frekanslı"""
@@ -2147,7 +2130,7 @@ class AdvancedTerminalGUI:
         try:
             curses.wrapper(self._curses_main)
         except Exception as e:
-            print(f"❌ Terminal GUI hatası: {e}")
+            pass  # Curses içinde print yapma
         finally:
             self.cleanup()
     
@@ -2157,11 +2140,8 @@ class AdvancedTerminalGUI:
         self.main_loop()
 
 if __name__ == "__main__":
-    print("🚀 TEKNOFEST Su Altı ROV - Advanced Terminal GUI başlatılıyor...")
-    
     # Çalışma dizinini kontrol et
     if not os.path.exists("config"):
-        print("❌ config/ klasörü bulunamadı! App/ klasörünün içinden çalıştırın.")
         sys.exit(1)
     
     # Terminal GUI'yi başlat
@@ -2169,13 +2149,10 @@ if __name__ == "__main__":
         gui = AdvancedTerminalGUI()
         gui.run()
     except KeyboardInterrupt:
-        print("\n👋 Kullanıcı tarafından durduruldu!")
+        pass
     except ImportError as e:
-        print(f"❌ Import hatası: {e}")
-        print("💡 Eksik kütüphane: pip install -r requirements.txt")
         sys.exit(1)
     except Exception as e:
-        print(f"❌ Kritik hata: {e}")
         import traceback
         traceback.print_exc()
         sys.exit(1) 

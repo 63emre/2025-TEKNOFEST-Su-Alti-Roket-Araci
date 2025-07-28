@@ -99,17 +99,31 @@ class MAVLinkHandler:
             return False
     
     def request_imu_streams(self):
-        """IMU veri akışlarını başlat"""
+        """IMU veri akışlarını başlat - ArduSub uyumlu"""
         try:
             print("📡 IMU veri akışları başlatılıyor...")
             
-            # 20 Hz = 50,000 microseconds
-            stream_rate = 50000
+            # ArduSub için REQUEST_DATA_STREAM kullan
+            self.master.mav.request_data_stream_send(
+                self.master.target_system,
+                self.master.target_component,
+                mavutil.mavlink.MAV_DATA_STREAM_RAW_SENSORS,
+                10,  # 10 Hz
+                1    # start
+            )
             
+            self.master.mav.request_data_stream_send(
+                self.master.target_system,
+                self.master.target_component,
+                mavutil.mavlink.MAV_DATA_STREAM_EXTRA1,
+                10,  # 10 Hz
+                1    # start
+            )
+            
+            # Ayrıca SET_MESSAGE_INTERVAL da dene
             message_intervals = [
-                (mavutil.mavlink.MAVLINK_MSG_ID_HIGHRES_IMU, stream_rate),
-                (mavutil.mavlink.MAVLINK_MSG_ID_ATTITUDE, stream_rate),
-                (mavutil.mavlink.MAVLINK_MSG_ID_VFR_HUD, 100000),  # 10 Hz for speed
+                (mavutil.mavlink.MAVLINK_MSG_ID_ATTITUDE, 100000),  # 10 Hz
+                (mavutil.mavlink.MAVLINK_MSG_ID_VFR_HUD, 200000),   # 5 Hz
             ]
             
             for msg_id, interval in message_intervals:
@@ -120,7 +134,7 @@ class MAVLinkHandler:
                     0, msg_id, interval, 0, 0, 0, 0, 0
                 )
             
-            print("✅ IMU streams başlatıldı (HIGHRES_IMU 20Hz, ATTITUDE 20Hz)")
+            print("✅ IMU streams başlatıldı (RAW_SENSORS + ATTITUDE)")
             
         except Exception as e:
             print(f"❌ IMU stream request hatası: {e}")
@@ -336,72 +350,34 @@ class MAVLinkHandler:
             return self.control_servos_raw(roll_output, pitch_output, yaw_output)
     
     def get_imu_data(self):
-        """IMU verilerini al - HIGHRES_IMU kullanarak (ArduSub uyumlu)"""
+        """IMU verilerini al - Basitleştirilmiş versiyon"""
         if not self.connected or not self.master:
             return None
             
         try:
-            # HIGHRES_IMU mesajını dene (ArduSub'da bu var!)
-            msg = self.master.recv_match(type='HIGHRES_IMU', blocking=False, timeout=0.05)
+            # Önce HIGHRES_IMU dene
+            msg = self.master.recv_match(type='HIGHRES_IMU', blocking=False, timeout=0.01)
             if msg:
-                # HIGHRES_IMU formatı - direkt SI units
-                accel_x = msg.xacc  # m/s²
-                accel_y = msg.yacc  # m/s²
-                accel_z = msg.zacc  # m/s²
-                gyro_x = msg.xgyro  # rad/s
-                gyro_y = msg.ygyro  # rad/s
-                gyro_z = msg.zgyro  # rad/s
+                return msg.xacc, msg.yacc, msg.zacc, msg.xgyro, msg.ygyro, msg.zgyro
+            
+            # Sonra ATTITUDE dene (gyro rates için)
+            msg_att = self.master.recv_match(type='ATTITUDE', blocking=False, timeout=0.01)
+            if msg_att:
+                # ATTITUDE'den gyro rates + gravity estimate
+                import math
+                roll_rad = msg_att.roll
+                pitch_rad = msg_att.pitch
                 
-                return accel_x, accel_y, accel_z, gyro_x, gyro_y, gyro_z
-            
-            # Alternatif: SCALED_IMU mesajını dene
-            msg_scaled = self.master.recv_match(type='SCALED_IMU', blocking=False, timeout=0.05)
-            if msg_scaled:
-                # SCALED_IMU formatı
-                accel_x = msg_scaled.xacc / 1000.0  # mg to m/s²
-                accel_y = msg_scaled.yacc / 1000.0
-                accel_z = msg_scaled.zacc / 1000.0
-                gyro_x = msg_scaled.xgyro / 1000.0 * (math.pi / 180.0)  # mrad/s to rad/s
-                gyro_y = msg_scaled.ygyro / 1000.0 * (math.pi / 180.0)
-                gyro_z = msg_scaled.zgyro / 1000.0 * (math.pi / 180.0)
+                # Gravity vector estimate
+                accel_x = -9.81 * math.sin(pitch_rad)
+                accel_y = 9.81 * math.sin(roll_rad) * math.cos(pitch_rad)
+                accel_z = 9.81 * math.cos(roll_rad) * math.cos(pitch_rad)
                 
-                return accel_x, accel_y, accel_z, gyro_x, gyro_y, gyro_z
-            
-            # Son alternatif: RAW_IMU
-            msg_raw = self.master.recv_match(type='RAW_IMU', blocking=False, timeout=0.05)
-            if msg_raw:
-                # RAW_IMU formatı
-                accel_x = msg_raw.xacc / 1000.0 * 9.81  # mg to m/s²
-                accel_y = msg_raw.yacc / 1000.0 * 9.81
-                accel_z = msg_raw.zacc / 1000.0 * 9.81
-                gyro_x = msg_raw.xgyro / 1000.0 * (math.pi / 180.0)  # mdeg/s to rad/s
-                gyro_y = msg_raw.ygyro / 1000.0 * (math.pi / 180.0)
-                gyro_z = msg_raw.zgyro / 1000.0 * (math.pi / 180.0)
-                
-                return accel_x, accel_y, accel_z, gyro_x, gyro_y, gyro_z
-            
-            # DEBUG: TCP'de hangi mesajlar var kontrol et
-            if not hasattr(self, 'imu_debug_counter'):
-                self.imu_debug_counter = 0
-            self.imu_debug_counter += 1
-            
-            if self.imu_debug_counter % 500 == 1:  # Her 500 call'da bir debug
-                print(f"🔍 IMU DEBUG #{self.imu_debug_counter}: HIGHRES_IMU, SCALED_IMU, RAW_IMU bulunamadı")
-                # Herhangi bir mesaj var mı?
-                any_msg = self.master.recv_match(blocking=False, timeout=0.05)
-                if any_msg:
-                    print(f"🔍 TCP'de bulunan mesaj tipi: {any_msg.get_type()}")
-                else:
-                    print("🔍 TCP'de hiç mesaj yok!")
+                return accel_x, accel_y, accel_z, msg_att.rollspeed, msg_att.pitchspeed, msg_att.yawspeed
                     
         except Exception as e:
-            # Debug için hata göster
-            if not hasattr(self, 'imu_error_counter'):
-                self.imu_error_counter = 0
-            self.imu_error_counter += 1
-            
-            if self.imu_error_counter % 100 == 1:  # Her 100 hatada bir log
-                print(f"❌ IMU data exception #{self.imu_error_counter}: {e}")
+            # Sessiz hata - terminal'i bozma
+            pass
         
         return None
     
