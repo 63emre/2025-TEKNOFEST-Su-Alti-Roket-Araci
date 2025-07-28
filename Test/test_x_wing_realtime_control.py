@@ -23,7 +23,23 @@ import termios
 import tty
 import select
 from pymavlink import mavutil
-import RPi.GPIO as GPIO
+# Pi5 GPIO Support - RPi.GPIO yerine gpiozero kullan
+try:
+    import RPi.GPIO as GPIO
+    HAS_RPI_GPIO = True
+    print("✅ RPi.GPIO library loaded")
+except ImportError:
+    HAS_RPI_GPIO = False
+    print("⚠️ RPi.GPIO not available")
+
+# Pi5 için alternatif GPIO
+try:
+    from gpiozero import PWMOutputDevice, LED
+    HAS_GPIOZERO = True
+    print("✅ gpiozero library loaded (Pi5 compatible)")
+except ImportError:
+    HAS_GPIOZERO = False
+    print("⚠️ gpiozero not available")
 
 # MAVLink bağlantı adresi - DYNAMIC CONFIGURATION SYSTEM
 try:
@@ -86,9 +102,11 @@ class XWingRealtimeController:
         self.master = None
         self.connected = False
         
-        # GPIO
+        # GPIO - Pi5 compatible
         self.gpio_initialized = False
         self.buzzer_pwm = None
+        self.buzzer_device = None  # gpiozero device
+        self.gpio_method = "none"  # "rpi_gpio", "gpiozero", or "none"
         
         # GERÇEK HARDWARE - Servo pozisyonları
         self.servo_positions = {
@@ -114,49 +132,79 @@ class XWingRealtimeController:
         self.old_settings = None
         
     def setup_gpio(self):
-        """GPIO pinlerini başlat"""
-        try:
-            GPIO.setmode(GPIO.BCM)
-            GPIO.setwarnings(False)
-            
-            # Buzzer pin setup
-            GPIO.setup(GPIO_BUZZER_PWM, GPIO.OUT)
-            GPIO.output(GPIO_BUZZER_PWM, GPIO.LOW)
-            
-            # Setup PWM for Buzzer
-            self.buzzer_pwm = GPIO.PWM(GPIO_BUZZER_PWM, BUZZER_FREQUENCY)
-            self.buzzer_pwm.start(0)
-            
-            self.gpio_initialized = True
-            print("✅ GPIO pinleri başlatıldı")
-            return True
-            
-        except Exception as e:
-            print(f"❌ GPIO başlatma hatası: {e}")
-            return False
+        """GPIO pinlerini başlat - Pi5 compatible"""
+        # Pi5 için gpiozero dene
+        if HAS_GPIOZERO:
+            try:
+                self.buzzer_device = PWMOutputDevice(GPIO_BUZZER_PWM, frequency=BUZZER_FREQUENCY)
+                self.gpio_initialized = True
+                self.gpio_method = "gpiozero"
+                print("✅ GPIO pinleri başlatıldı (gpiozero - Pi5 compatible)")
+                return True
+            except Exception as e:
+                print(f"⚠️ gpiozero GPIO hatası: {e}")
+        
+        # Fallback: RPi.GPIO dene
+        if HAS_RPI_GPIO:
+            try:
+                GPIO.setmode(GPIO.BCM)
+                GPIO.setwarnings(False)
+                
+                # Buzzer pin setup
+                GPIO.setup(GPIO_BUZZER_PWM, GPIO.OUT)
+                GPIO.output(GPIO_BUZZER_PWM, GPIO.LOW)
+                
+                # Setup PWM for Buzzer
+                self.buzzer_pwm = GPIO.PWM(GPIO_BUZZER_PWM, BUZZER_FREQUENCY)
+                self.buzzer_pwm.start(0)
+                
+                self.gpio_initialized = True
+                self.gpio_method = "rpi_gpio"
+                print("✅ GPIO pinleri başlatıldı (RPi.GPIO - eski Pi)")
+                return True
+                
+            except Exception as e:
+                print(f"⚠️ RPi.GPIO hatası: {e}")
+        
+        # GPIO başarısız - ama devam et
+        print("⚠️ GPIO başlatılamadı - buzzer devre dışı ama test devam ediyor")
+        self.gpio_initialized = False
+        self.gpio_method = "none"
+        return True  # Test'e devam etsin
     
     def cleanup_gpio(self):
-        """GPIO temizliği"""
+        """GPIO temizliği - Pi5 compatible"""
         try:
-            if self.gpio_initialized and self.buzzer_pwm:
-                self.buzzer_pwm.stop()
-                GPIO.cleanup()
-                print("🔄 GPIO temizlendi")
+            if self.gpio_initialized:
+                if self.gpio_method == "gpiozero" and self.buzzer_device:
+                    self.buzzer_device.close()
+                    print("🔄 GPIO temizlendi (gpiozero)")
+                elif self.gpio_method == "rpi_gpio" and self.buzzer_pwm:
+                    self.buzzer_pwm.stop()
+                    GPIO.cleanup()
+                    print("🔄 GPIO temizlendi (RPi.GPIO)")
         except Exception as e:
             print(f"⚠️ GPIO temizleme uyarısı: {e}")
     
     def play_tone(self, frequency, duration=0.1, volume=30):
-        """Buzzer ton çalma"""
+        """Buzzer ton çalma - Pi5 compatible"""
         if not self.gpio_initialized:
             return
             
         try:
-            self.buzzer_pwm.ChangeFrequency(frequency)
-            self.buzzer_pwm.ChangeDutyCycle(volume)
-            time.sleep(duration)
-            self.buzzer_pwm.ChangeDutyCycle(0)
+            if self.gpio_method == "gpiozero" and self.buzzer_device:
+                # gpiozero ile buzzer
+                pwm_value = volume / 100.0  # 0-1 range
+                self.buzzer_device.pulse(fade_in_time=0, fade_out_time=duration, n=1)
+            elif self.gpio_method == "rpi_gpio" and self.buzzer_pwm:
+                # RPi.GPIO ile buzzer
+                self.buzzer_pwm.ChangeFrequency(frequency)
+                self.buzzer_pwm.ChangeDutyCycle(volume)
+                time.sleep(duration)
+                self.buzzer_pwm.ChangeDutyCycle(0)
         except Exception as e:
-            print(f"⚠️ Buzzer hatası: {e}")
+            # Buzzer hatası önemli değil - sessizce devam et
+            pass
     
     def log_realtime_movement(self, movement_type, details):
         """Real-time hareket logları - VIDEO TEST için optimize"""
