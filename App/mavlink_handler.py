@@ -87,6 +87,16 @@ class MAVLinkHandler:
             self.request_imu_streams()
             
             return True
+            
+        except Exception as e:
+            print(f"❌ TCP MAVLink bağlantı hatası: {e}")
+            print(f"🔧 Exception türü: {type(e).__name__}")
+            print("💡 Kontrol et: ArduSub çalışıyor mu? TCP port açık mı?")
+            print(f"🔍 Connection string: {connection_string}")
+            import traceback
+            print(f"📄 Traceback: {traceback.format_exc()}")
+            self.connected = False
+            return False
     
     def request_imu_streams(self):
         """IMU veri akışlarını başlat"""
@@ -114,16 +124,6 @@ class MAVLinkHandler:
             
         except Exception as e:
             print(f"❌ IMU stream request hatası: {e}")
-            
-        except Exception as e:
-            print(f"❌ TCP MAVLink bağlantı hatası: {e}")
-            print(f"🔧 Exception türü: {type(e).__name__}")
-            print("💡 Kontrol et: ArduSub çalışıyor mu? TCP port açık mı?")
-            print(f"🔍 Connection string: {connection_string}")
-            import traceback
-            print(f"📄 Traceback: {traceback.format_exc()}")
-            self.connected = False
-            return False
     
     def disconnect(self):
         """Bağlantıyı kapat"""
