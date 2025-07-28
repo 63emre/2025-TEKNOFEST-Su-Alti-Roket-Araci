@@ -2,11 +2,18 @@
   "pixhawk": {
     "servos": {
       "front_left": 1,
-      "rear_left": 3,
-      "rear_right": 4,
-      "front_right": 5
+      "front_right": 3,
+      "rear_left": 4,
+      "rear_right": 5
     },
     "motor": 6,
+    "real_hardware_channels": {
+      "aux1_front_left": 9,
+      "aux3_front_right": 11,
+      "aux4_rear_left": 12,
+      "aux5_rear_right": 13,
+      "aux6_motor": 14
+    },
     "pwm_limits": {
       "servo_min": 1100,
       "servo_max": 1900,

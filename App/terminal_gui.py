@@ -224,15 +224,28 @@ class AdvancedTerminalGUI:
             
         except Exception as e:
             self.log(f"❌ Config yükleme hatası: {e}")
-            # Minimal config
+            # GERÇEK HARDWARE - Minimal config
             self.config = {
                 "pixhawk": {
-                    "servos": {"front_left": 1, "rear_left": 3, "rear_right": 4, "front_right": 5},
-                    "motor": 6,
+                    "servos": {
+                        "front_left": 1,   # AUX1 → MAVLink 9 (Ön Sol)
+                        "front_right": 3,  # AUX3 → MAVLink 11 (Ön Sağ)
+                        "rear_left": 4,    # AUX4 → MAVLink 12 (Arka Sol)
+                        "rear_right": 5    # AUX5 → MAVLink 13 (Arka Sağ)
+                    },
+                    "motor": 6,  # AUX6 → MAVLink 14 (Ana Motor)
                     "pwm_limits": {"servo_min": 1100, "servo_max": 1900, "servo_neutral": 1500, "motor_min": 1000, "motor_max": 2000, "motor_stop": 1500}
                 },
                 "mavlink": {"connection_string": "tcp:127.0.0.1:5777"},
-                "raspberry_pi": {"i2c": {"depth_sensor_address": "0x76", "bus_number": 1}}
+                "raspberry_pi": {"i2c": {"depth_sensor_address": "0x76", "bus_number": 1}},
+                # GERÇEK X-Wing Hardware Layout
+                "x_wing_hardware": {
+                    "front_left_aux1": 9,   # Ön Sol
+                    "front_right_aux3": 11, # Ön Sağ  
+                    "rear_left_aux4": 12,   # Arka Sol
+                    "rear_right_aux5": 13,  # Arka Sağ
+                    "motor_aux6": 14        # Ana Motor
+                }
             }
     
     def log(self, message):

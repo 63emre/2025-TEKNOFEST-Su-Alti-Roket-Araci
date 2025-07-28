@@ -218,40 +218,64 @@ class MAVLinkHandler:
             return False
     
     def send_raw_motor_pwm(self, pwm_value):
-        """Motor PWM gönder"""
+        """Motor PWM gönder - GERÇEK HARDWARE AUX6"""
         if not self.connected or not self.armed:
             return False
             
-        motor_channel = self.config["pixhawk"]["motor"]
+        # GERÇEK HARDWARE: Motor AUX6 → MAVLink Channel 14
+        motor_channel = 14  # AUX6 = MAVLink channel 14
         limits = self.config["pixhawk"]["pwm_limits"]
         
         # Motor PWM limitlerini kontrol et
         pwm_value = max(limits["motor_min"], min(limits["motor_max"], pwm_value))
         
+        # Real-time motor debug logging
+        if abs(pwm_value - limits["motor_neutral"]) > 50:
+            direction = "İLERİ" if pwm_value > limits["motor_neutral"] else "GERİ"
+            power = abs(pwm_value - limits["motor_neutral"]) * 100 // 500
+            print(f"🚁 MOTOR CONTROL: {direction} - PWM:{pwm_value}µs ({power}%)")
+        
         return self.send_raw_servo_pwm(motor_channel, pwm_value)
     
     def control_servos_raw(self, roll, pitch, yaw):
-        """RAW servo kontrolü - direkt PWM"""
+        """RAW servo kontrolü - GERÇEK HARDWARE X-Mixing"""
         if not self.armed:
             return False
             
         with self.control_lock:
-            # X-fin matrix hesaplaması
+            # GERÇEK HARDWARE CONFIG
             servos = self.config["pixhawk"]["servos"]
             neutral = self.config["pixhawk"]["pwm_limits"]["servo_neutral"]
             
-            # X konfigürasyonu servo kontrolü
-            front_left_pwm = neutral + (roll * 10) + (pitch * 8) + (yaw * 5)
-            front_right_pwm = neutral - (roll * 10) + (pitch * 8) - (yaw * 5)
-            rear_left_pwm = neutral + (roll * 10) - (pitch * 8) - (yaw * 5)
-            rear_right_pwm = neutral - (roll * 10) - (pitch * 8) + (yaw * 5)
+            # GERÇEK X-Wing Matrix Hesaplaması
+            # Hardware: AUX1(Ön Sol), AUX3(Ön Sağ), AUX4(Arka Sol), AUX5(Arka Sağ)
             
-            # Servo komutlarını gönder
+            # X-Mixing formülü (optimize edilmiş multiplier'lar)
+            front_left_pwm = neutral + (pitch * 8) + (roll * 10) + (yaw * 6)    # AUX1: Ön Sol
+            front_right_pwm = neutral + (pitch * 8) - (roll * 10) - (yaw * 6)   # AUX3: Ön Sağ
+            rear_left_pwm = neutral - (pitch * 8) + (roll * 10) - (yaw * 6)     # AUX4: Arka Sol  
+            rear_right_pwm = neutral - (pitch * 8) - (roll * 10) + (yaw * 6)    # AUX5: Arka Sağ
+            
+            # PWM limit kontrolü
+            servo_min = self.config["pixhawk"]["pwm_limits"]["servo_min"]
+            servo_max = self.config["pixhawk"]["pwm_limits"]["servo_max"]
+            
+            front_left_pwm = max(servo_min, min(servo_max, int(front_left_pwm)))
+            front_right_pwm = max(servo_min, min(servo_max, int(front_right_pwm)))
+            rear_left_pwm = max(servo_min, min(servo_max, int(rear_left_pwm)))
+            rear_right_pwm = max(servo_min, min(servo_max, int(rear_right_pwm)))
+            
+            # GERÇEK HARDWARE - Servo komutlarını MAVLink channel'lara gönder
             results = []
-            results.append(self.send_raw_servo_pwm(servos["front_left"], int(front_left_pwm)))
-            results.append(self.send_raw_servo_pwm(servos["front_right"], int(front_right_pwm)))
-            results.append(self.send_raw_servo_pwm(servos["rear_left"], int(rear_left_pwm)))
-            results.append(self.send_raw_servo_pwm(servos["rear_right"], int(rear_right_pwm)))
+            results.append(self.send_raw_servo_pwm(9, front_left_pwm))   # AUX1 → MAVLink 9 (Ön Sol)
+            results.append(self.send_raw_servo_pwm(11, front_right_pwm)) # AUX3 → MAVLink 11 (Ön Sağ)
+            results.append(self.send_raw_servo_pwm(12, rear_left_pwm))   # AUX4 → MAVLink 12 (Arka Sol)
+            results.append(self.send_raw_servo_pwm(13, rear_right_pwm))  # AUX5 → MAVLink 13 (Arka Sağ)
+            
+            # Real-time debug logging
+            if abs(roll) > 1 or abs(pitch) > 1 or abs(yaw) > 1:
+                print(f"🎮 X-WING RAW CONTROL: R={roll:.1f}° P={pitch:.1f}° Y={yaw:.1f}°")
+                print(f"   PWM → AUX1:{front_left_pwm} AUX3:{front_right_pwm} AUX4:{rear_left_pwm} AUX5:{rear_right_pwm}")
             
             return all(results)
     

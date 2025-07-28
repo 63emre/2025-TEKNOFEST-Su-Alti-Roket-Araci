@@ -36,20 +36,22 @@ except ImportError:
     MAV_ADDRESS = 'tcp:127.0.0.1:5777'
     print(f"⚠️ Using fallback connection: {MAV_ADDRESS}")
 
-# Servo kanalları (AUX to MAVLink channel mapping)
+# GERÇEK HARDWARE - Servo kanalları (AUX to MAVLink channel mapping)
 SERVO_CHANNELS = {
-    'aux1': 9,   # AUX 1 = Servo channel 9 (Ön Sol)
-    'aux3': 11,  # AUX 3 = Servo channel 11 (Arka Sol)
-    'aux4': 12,  # AUX 4 = Servo channel 12 (Arka Sağ)
-    'aux5': 13   # AUX 5 = Servo channel 13 (Ekstra)
+    'aux1': 9,   # AUX 1 = Ön Sol Fin (MAVLink 9)
+    'aux3': 11,  # AUX 3 = Ön Sağ Fin (MAVLink 11)
+    'aux4': 12,  # AUX 4 = Arka Sol Fin (MAVLink 12)
+    'aux5': 13,  # AUX 5 = Arka Sağ Fin (MAVLink 13)
+    'aux6': 14   # AUX 6 = Ana Motor (MAVLink 14)
 }
 
-# X Kanat Konfigürasyonu
+# GERÇEK X-Wing Konfigürasyonu
 X_WING_CONFIG = {
-    'front_left': 'aux1',   # Ön Sol
-    'rear_left': 'aux3',    # Arka Sol
-    'rear_right': 'aux4',   # Arka Sağ
-    'extra': 'aux5'         # Ekstra kontrol
+    'front_left': 'aux1',   # Ön Sol (AUX1)
+    'front_right': 'aux3',  # Ön Sağ (AUX3)
+    'rear_left': 'aux4',    # Arka Sol (AUX4)
+    'rear_right': 'aux5',   # Arka Sağ (AUX5)
+    'motor': 'aux6'         # Ana Motor (AUX6)
 }
 
 # GPIO Pin Tanımları
@@ -88,12 +90,20 @@ class XWingRealtimeController:
         self.gpio_initialized = False
         self.buzzer_pwm = None
         
-        # Servo pozisyonları
+        # GERÇEK HARDWARE - Servo pozisyonları
         self.servo_positions = {
-            'aux1': PWM_MID,
-            'aux3': PWM_MID,
-            'aux4': PWM_MID,
-            'aux5': PWM_MID
+            'aux1': PWM_MID,  # Ön Sol Fin
+            'aux3': PWM_MID,  # Ön Sağ Fin
+            'aux4': PWM_MID,  # Arka Sol Fin
+            'aux5': PWM_MID,  # Arka Sağ Fin
+            'aux6': PWM_MID   # Ana Motor
+        }
+        
+        # Real-time control state tracking
+        self.last_control_time = time.time()
+        self.control_rate = 0
+        self.movement_state = {
+            'roll': 0, 'pitch': 0, 'yaw': 0, 'motor': 0
         }
         
         # Kontrol modu
@@ -147,6 +157,47 @@ class XWingRealtimeController:
             self.buzzer_pwm.ChangeDutyCycle(0)
         except Exception as e:
             print(f"⚠️ Buzzer hatası: {e}")
+    
+    def log_realtime_movement(self, movement_type, details):
+        """Real-time hareket logları - VIDEO TEST için optimize"""
+        current_time = time.time()
+        
+        # Control rate hesapla
+        rate = 1.0 / (current_time - self.last_control_time) if current_time > self.last_control_time else 0
+        self.control_rate = rate
+        
+        print(f"🎮 {movement_type}: {details}")
+        print(f"   📊 Control Rate: {rate:.1f}Hz")
+        print(f"   📍 Current PWM Values:")
+        print(f"      AUX1(Ön Sol): {self.servo_positions['aux1']}µs")
+        print(f"      AUX3(Ön Sağ): {self.servo_positions['aux3']}µs")
+        print(f"      AUX4(Arka Sol): {self.servo_positions['aux4']}µs")
+        print(f"      AUX5(Arka Sağ): {self.servo_positions['aux5']}µs")
+        print(f"      AUX6(Motor): {self.servo_positions['aux6']}µs")
+        
+        # Dinamik hareket durumu
+        active_movements = []
+        if self.movement_state['roll'] != 0:
+            direction = "SAĞ" if self.movement_state['roll'] > 0 else "SOL" 
+            active_movements.append(f"ROLL {direction}")
+        if self.movement_state['pitch'] != 0:
+            direction = "YUKARI" if self.movement_state['pitch'] > 0 else "AŞAĞI"
+            active_movements.append(f"PITCH {direction}")
+        if self.movement_state['yaw'] != 0:
+            direction = "SAĞ" if self.movement_state['yaw'] > 0 else "SOL"
+            active_movements.append(f"YAW {direction}")
+        if self.movement_state['motor'] != 0:
+            direction = "İLERİ" if self.movement_state['motor'] > 0 else "GERİ"
+            active_movements.append(f"MOTOR {direction}")
+        
+        if active_movements:
+            print(f"   🚀 Aktif Hareketler: {' + '.join(active_movements)}")
+        
+        print("-" * 60)
+    
+    def update_control_rate(self):
+        """Control rate güncelle"""
+        self.last_control_time = time.time()
     
     def connect_pixhawk(self):
         """Pixhawk bağlantısı"""
@@ -295,67 +346,115 @@ class XWingRealtimeController:
             self.play_tone(NOTES['move'], 0.05, 20)
     
     def x_pattern_control(self, key):
-        """X pattern kontrolü"""
+        """X pattern kontrolü - GERÇEK HARDWARE MAPPING"""
         moved = False
         
-        # Roll kontrolü (A/D - Sol/Sağ finler birlikte)
+        # GERÇEK HARDWARE MAPPING:
+        # AUX1: Ön Sol,  AUX3: Ön Sağ,  AUX4: Arka Sol,  AUX5: Arka Sağ
+        
+        # Roll kontrolü (A/D - Sol/Sağ taraf finleri)
         if key == 'A':  # Sol roll
-            # Sol finler yukarı, sağ finler aşağı
-            self.set_servo_pwm('aux1', min(PWM_MAX, self.servo_positions['aux1'] + PWM_STEP))
-            self.set_servo_pwm('aux3', min(PWM_MAX, self.servo_positions['aux3'] + PWM_STEP))
-            self.set_servo_pwm('aux4', max(PWM_MIN, self.servo_positions['aux4'] - PWM_STEP))
+            # Sol taraf finler (AUX1+AUX4) yukarı, sağ taraf (AUX3+AUX5) aşağı
+            self.set_servo_pwm('aux1', min(PWM_MAX, self.servo_positions['aux1'] + PWM_STEP))  # Ön Sol +
+            self.set_servo_pwm('aux4', min(PWM_MAX, self.servo_positions['aux4'] + PWM_STEP))  # Arka Sol +
+            self.set_servo_pwm('aux3', max(PWM_MIN, self.servo_positions['aux3'] - PWM_STEP))  # Ön Sağ -
+            self.set_servo_pwm('aux5', max(PWM_MIN, self.servo_positions['aux5'] - PWM_STEP))  # Arka Sağ -
+            self.movement_state['roll'] = -1  # Sol tarafa roll
+            self.log_realtime_movement("ROLL SOL", f"Sol finler YUKARİ, Sağ finler AŞAĞI")
             moved = True
         elif key == 'D':  # Sağ roll
-            # Sağ finler yukarı, sol finler aşağı
-            self.set_servo_pwm('aux1', max(PWM_MIN, self.servo_positions['aux1'] - PWM_STEP))
-            self.set_servo_pwm('aux3', max(PWM_MIN, self.servo_positions['aux3'] - PWM_STEP))
-            self.set_servo_pwm('aux4', min(PWM_MAX, self.servo_positions['aux4'] + PWM_STEP))
+            # Sağ taraf finler (AUX3+AUX5) yukarı, sol taraf (AUX1+AUX4) aşağı
+            self.set_servo_pwm('aux1', max(PWM_MIN, self.servo_positions['aux1'] - PWM_STEP))  # Ön Sol -
+            self.set_servo_pwm('aux4', max(PWM_MIN, self.servo_positions['aux4'] - PWM_STEP))  # Arka Sol -
+            self.set_servo_pwm('aux3', min(PWM_MAX, self.servo_positions['aux3'] + PWM_STEP))  # Ön Sağ +
+            self.set_servo_pwm('aux5', min(PWM_MAX, self.servo_positions['aux5'] + PWM_STEP))  # Arka Sağ +
+            self.movement_state['roll'] = 1   # Sağ tarafa roll
+            self.log_realtime_movement("ROLL SAĞ", f"Sağ finler YUKARİ, Sol finler AŞAĞI")
             moved = True
         
-        # Pitch kontrolü (W/S - Ön/Arka finler birlikte)
-        elif key == 'W':  # Pitch up
-            # Ön finler aşağı, arka finler yukarı
-            self.set_servo_pwm('aux1', max(PWM_MIN, self.servo_positions['aux1'] - PWM_STEP))
-            self.set_servo_pwm('aux3', min(PWM_MAX, self.servo_positions['aux3'] + PWM_STEP))
-            self.set_servo_pwm('aux4', min(PWM_MAX, self.servo_positions['aux4'] + PWM_STEP))
+        # Pitch kontrolü (W/S - Ön/Arka finler)
+        elif key == 'W':  # Pitch up (burun yukarı)
+            # Ön finler (AUX1+AUX3) aşağı, arka finler (AUX4+AUX5) yukarı
+            self.set_servo_pwm('aux1', max(PWM_MIN, self.servo_positions['aux1'] - PWM_STEP))  # Ön Sol -
+            self.set_servo_pwm('aux3', max(PWM_MIN, self.servo_positions['aux3'] - PWM_STEP))  # Ön Sağ -
+            self.set_servo_pwm('aux4', min(PWM_MAX, self.servo_positions['aux4'] + PWM_STEP))  # Arka Sol +
+            self.set_servo_pwm('aux5', min(PWM_MAX, self.servo_positions['aux5'] + PWM_STEP))  # Arka Sağ +
+            self.movement_state['pitch'] = 1  # Pitch up
+            self.log_realtime_movement("PITCH YUKARI", f"Ön finler AŞAĞI, Arka finler YUKARİ")
             moved = True
-        elif key == 'S':  # Pitch down
-            # Ön finler yukarı, arka finler aşağı
-            self.set_servo_pwm('aux1', min(PWM_MAX, self.servo_positions['aux1'] + PWM_STEP))
-            self.set_servo_pwm('aux3', max(PWM_MIN, self.servo_positions['aux3'] - PWM_STEP))
-            self.set_servo_pwm('aux4', max(PWM_MIN, self.servo_positions['aux4'] - PWM_STEP))
+        elif key == 'S':  # Pitch down (burun aşağı)
+            # Ön finler (AUX1+AUX3) yukarı, arka finler (AUX4+AUX5) aşağı
+            self.set_servo_pwm('aux1', min(PWM_MAX, self.servo_positions['aux1'] + PWM_STEP))  # Ön Sol +
+            self.set_servo_pwm('aux3', min(PWM_MAX, self.servo_positions['aux3'] + PWM_STEP))  # Ön Sağ +
+            self.set_servo_pwm('aux4', max(PWM_MIN, self.servo_positions['aux4'] - PWM_STEP))  # Arka Sol -
+            self.set_servo_pwm('aux5', max(PWM_MIN, self.servo_positions['aux5'] - PWM_STEP))  # Arka Sağ -
+            self.movement_state['pitch'] = -1 # Pitch down
+            self.log_realtime_movement("PITCH AŞAĞI", f"Ön finler YUKARİ, Arka finler AŞAĞI")
             moved = True
         
         # Yaw kontrolü (Q/E - X diagonal)
-        elif key == 'Q':  # Yaw left
-            # AUX1 & AUX4 bir yön, AUX3 diğer yön
-            self.set_servo_pwm('aux1', min(PWM_MAX, self.servo_positions['aux1'] + PWM_STEP))
-            self.set_servo_pwm('aux4', min(PWM_MAX, self.servo_positions['aux4'] + PWM_STEP))
-            self.set_servo_pwm('aux3', max(PWM_MIN, self.servo_positions['aux3'] - PWM_STEP))
+        elif key == 'Q':  # Yaw left (sola döüş)
+            # X-diagonal: AUX1(Ön Sol)+AUX5(Arka Sağ) vs AUX3(Ön Sağ)+AUX4(Arka Sol)
+            self.set_servo_pwm('aux1', min(PWM_MAX, self.servo_positions['aux1'] + PWM_STEP))  # Ön Sol +
+            self.set_servo_pwm('aux5', min(PWM_MAX, self.servo_positions['aux5'] + PWM_STEP))  # Arka Sağ +
+            self.set_servo_pwm('aux3', max(PWM_MIN, self.servo_positions['aux3'] - PWM_STEP))  # Ön Sağ -
+            self.set_servo_pwm('aux4', max(PWM_MIN, self.servo_positions['aux4'] - PWM_STEP))  # Arka Sol -
+            self.movement_state['yaw'] = -1   # Yaw left
+            self.log_realtime_movement("YAW SOL", f"X-diagonal: AUX1+AUX5 vs AUX3+AUX4")
             moved = True
-        elif key == 'E':  # Yaw right
-            # AUX3 & AUX1 bir yön, AUX4 diğer yön
-            self.set_servo_pwm('aux1', max(PWM_MIN, self.servo_positions['aux1'] - PWM_STEP))
-            self.set_servo_pwm('aux4', max(PWM_MIN, self.servo_positions['aux4'] - PWM_STEP))
-            self.set_servo_pwm('aux3', min(PWM_MAX, self.servo_positions['aux3'] + PWM_STEP))
+        elif key == 'E':  # Yaw right (sağa dönüş)
+            # X-diagonal: AUX3(Ön Sağ)+AUX4(Arka Sol) vs AUX1(Ön Sol)+AUX5(Arka Sağ)
+            self.set_servo_pwm('aux1', max(PWM_MIN, self.servo_positions['aux1'] - PWM_STEP))  # Ön Sol -
+            self.set_servo_pwm('aux5', max(PWM_MIN, self.servo_positions['aux5'] - PWM_STEP))  # Arka Sağ -
+            self.set_servo_pwm('aux3', min(PWM_MAX, self.servo_positions['aux3'] + PWM_STEP))  # Ön Sağ +
+            self.set_servo_pwm('aux4', min(PWM_MAX, self.servo_positions['aux4'] + PWM_STEP))  # Arka Sol +
+            self.movement_state['yaw'] = 1    # Yaw right
+            self.log_realtime_movement("YAW SAĞ", f"X-diagonal: AUX3+AUX4 vs AUX1+AUX5")
+            moved = True
+        
+        # Motor kontrolü (O/L)
+        elif key == 'O':  # Motor ileri
+            self.set_servo_pwm('aux6', min(PWM_MAX, self.servo_positions['aux6'] + PWM_STEP))
+            self.movement_state['motor'] = 1
+            self.log_realtime_movement("MOTOR İLERİ", f"PWM: {self.servo_positions['aux6']}")
+            moved = True
+        elif key == 'L':  # Motor geri
+            self.set_servo_pwm('aux6', max(PWM_MIN, self.servo_positions['aux6'] - PWM_STEP))
+            self.movement_state['motor'] = -1
+            self.log_realtime_movement("MOTOR GERİ", f"PWM: {self.servo_positions['aux6']}")
             moved = True
         
         if moved:
             self.play_tone(NOTES['move'], 0.05, 25)
+            self.update_control_rate()
     
     def synchronized_control(self, key):
-        """Senkronize kontrol - tüm finler birlikte"""
+        """Senkronize kontrol - tüm finler birlikte - GERÇEK HARDWARE"""
         moved = False
+        
+        # GERÇEK HARDWARE: AUX1, AUX3, AUX4, AUX5, AUX6
         
         if key == 'W':  # Tüm finler yukarı
             for aux in ['aux1', 'aux3', 'aux4', 'aux5']:
                 new_pos = min(PWM_MAX, self.servo_positions[aux] + PWM_STEP)
                 self.set_servo_pwm(aux, new_pos)
+            self.log_realtime_movement("TÜM FİNLER YUKARI", f"Senkronize hareket: +{PWM_STEP}µs")
             moved = True
         elif key == 'S':  # Tüm finler aşağı
             for aux in ['aux1', 'aux3', 'aux4', 'aux5']:
                 new_pos = max(PWM_MIN, self.servo_positions[aux] - PWM_STEP)
                 self.set_servo_pwm(aux, new_pos)
+            self.log_realtime_movement("TÜM FİNLER AŞAĞI", f"Senkronize hareket: -{PWM_STEP}µs")
+            moved = True
+        elif key == 'O':  # Motor ileri
+            new_pos = min(PWM_MAX, self.servo_positions['aux6'] + PWM_STEP)
+            self.set_servo_pwm('aux6', new_pos)
+            self.log_realtime_movement("MOTOR İLERİ (SYNC)", f"PWM: {new_pos}µs")
+            moved = True
+        elif key == 'L':  # Motor geri
+            new_pos = max(PWM_MIN, self.servo_positions['aux6'] - PWM_STEP)
+            self.set_servo_pwm('aux6', new_pos)
+            self.log_realtime_movement("MOTOR GERİ (SYNC)", f"PWM: {new_pos}µs")
             moved = True
         
         if moved:

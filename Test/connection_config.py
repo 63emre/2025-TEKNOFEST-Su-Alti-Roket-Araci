@@ -130,12 +130,12 @@ def get_test_constants():
         'TCP_IP': config['ip'],
         'TCP_PORT': config['port'],
         
-        # Servo Channels (X-Configuration)
+        # Servo Channels (GERÇEK X-Configuration)
         'SERVO_CHANNELS': {
-            'fin_front_left': 1,   # AUX 1
-            'fin_front_right': 2,  # AUX 2  
-            'fin_rear_left': 3,    # AUX 3
-            'fin_rear_right': 4    # AUX 4
+            'fin_front_left': 1,   # AUX 1 → MAVLink 9
+            'fin_front_right': 3,  # AUX 3 → MAVLink 11  
+            'fin_rear_left': 4,    # AUX 4 → MAVLink 12
+            'fin_rear_right': 5    # AUX 5 → MAVLink 13
         },
         
         # PWM Values
@@ -152,13 +152,22 @@ def get_test_constants():
             'extra': 'aux5'         # Ekstra kontrol
         },
         
-        # Servo Mapping (AUX to MAVLink channel)
+        # Servo Mapping (GERÇEK AUX to MAVLink channel)
         'AUX_TO_MAVLINK': {
-            'aux1': 9,   # AUX 1 = Servo channel 9
-            'aux2': 10,  # AUX 2 = Servo channel 10
-            'aux3': 11,  # AUX 3 = Servo channel 11
-            'aux4': 12,  # AUX 4 = Servo channel 12
-            'aux5': 13   # AUX 5 = Servo channel 13
+            'aux1': 9,   # AUX 1 = Ön Sol Fin (MAVLink 9)
+            'aux3': 11,  # AUX 3 = Ön Sağ Fin (MAVLink 11)
+            'aux4': 12,  # AUX 4 = Arka Sol Fin (MAVLink 12)
+            'aux5': 13,  # AUX 5 = Arka Sağ Fin (MAVLink 13)
+            'aux6': 14   # AUX 6 = Ana Motor (MAVLink 14)
+        },
+        
+        # GERÇEK X-Wing Hardware Layout
+        'REAL_HARDWARE': {
+            'front_left_aux1': 9,   # Ön Sol
+            'front_right_aux3': 11, # Ön Sağ
+            'rear_left_aux4': 12,   # Arka Sol
+            'rear_right_aux5': 13,  # Arka Sağ
+            'motor_aux6': 14        # Ana Motor
         }
     }
 
