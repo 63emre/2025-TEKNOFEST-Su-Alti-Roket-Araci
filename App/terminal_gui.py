@@ -1000,18 +1000,24 @@ class AdvancedTerminalGUI:
         else:
             self.stdscr.addstr(start_row + 5, 4, "GPIO:  ❌ Devre dışı", curses.color_pair(2))
         
-        # Komut menüsü - MOTOR KONTROL EKLENDİ
-        self.stdscr.addstr(start_row + 7, 2, "📋 KONTROL KOMUTLARI:", curses.color_pair(4) | curses.A_BOLD)
+        # Hızlı yüzdürme modu durumu göster
+        if hasattr(self, 'quick_swim_mode') and self.quick_swim_mode:
+            self.stdscr.addstr(start_row + 6, 4, "🏊 HIZLI YÜZDİRME MODU AKTİF!", curses.color_pair(2) | curses.A_BOLD)
+            self.stdscr.addstr(start_row + 7, 6, "1-3: Yüz/Sığ/Derin  4-5: Sol/Sağ  6-7: İleri/Geri  ESC: Çıkış", curses.color_pair(3))
+        
+        # Komut menüsü - MOTOR KONTROL VE HIZLI YÜZDİRME EKLENDİ
+        menu_start_row = start_row + 8 if hasattr(self, 'quick_swim_mode') and self.quick_swim_mode else start_row + 7
+        self.stdscr.addstr(menu_start_row, 2, "📋 KONTROL KOMUTLARI:", curses.color_pair(4) | curses.A_BOLD)
         
         commands = [
             "W/S: Pitch ±",       "A/D: Roll ±",        "Q/E: Yaw ±",
             "J/K: Motor ±5%",     "I/M: Motor ±15%",    "N: Motor STOP",
-            "R/F: RAW/PID Mode",  "0: Mission Plan",    "T: Test Scripts",
-            "G: GPIO Test",       "Z: TCP Debug",       "B: Buzzer Test",
-            "Space: ARM/DISARM",  "C: Config",          "X: Exit",
+            "R/F: RAW/PID Mode",  "X: Hızlı Yüzme",     "0: Mission Plan",
+            "T: Test Scripts",    "G: GPIO Test",       "Z: TCP Debug",
+            "B: Buzzer Test",     "Space: ARM/DISARM",  "C: Config",
         ]
         
-        row = start_row + 8
+        row = menu_start_row + 1
         col = 4
         for i, cmd in enumerate(commands):
             if i % 3 == 0 and i > 0:
@@ -1256,6 +1262,15 @@ class AdvancedTerminalGUI:
         elif key == ord('b') or key == ord('B'):
             self.gpio_integration.beep_warning()
             self.log("🔊 Buzzer test - uyarı sesi çalındı")
+        
+        # Hızlı yüzdürme modu
+        elif key == ord('x') or key == ord('X'):
+            self.quick_swim_commands()
+        
+        # Hızlı yüzdürme komutları (sadece quick swim mode aktifse)
+        elif hasattr(self, 'quick_swim_mode') and self.quick_swim_mode:
+            if self.handle_quick_swim_command(key):
+                return  # Komut başarılı, diğer kontrolleri atla
         
         # Diğer özellikler
         elif key == ord('c'):
@@ -1896,6 +1911,156 @@ class AdvancedTerminalGUI:
         else:
             self.log("⚠️ MAVLink bağlantısı gerekli")
             self.gpio_integration.beep_error()
+    
+    def quick_swim_commands(self):
+        """Hızlı yüzdürme komutları - Real-time kontrol"""
+        if not self.mavlink or not self.mavlink.connected:
+            self.log("❌ MAVLink bağlantısı gerekli!")
+            return
+        
+        self.log("\n🏊 HIZLI YÜZDİRME KOMUTLARI AKTİF!")
+        self.log("🎮 Kontroller:")
+        self.log("   1,2,3 = Yüzdürme seviyeleri (yüzey, sığ, derin)")
+        self.log("   4,5 = Sol/Sağ dönüş")
+        self.log("   6,7 = İleri/Geri")
+        self.log("   0 = Neutral (dur)")
+        self.log("   ESC = Çıkış")
+        
+        # Quick swim mode flag
+        self.quick_swim_mode = True
+        
+        # Pre-defined PWM values for quick commands
+        self.quick_swim_pwm = {
+            'neutral': 1500,
+            'motor_stop': 1500,
+            'surface_swim': {'fins': 1450, 'motor': 1520},   # Hafif yukarı + yavaş
+            'shallow_dive': {'fins': 1550, 'motor': 1550},   # Hafif aşağı + orta
+            'deep_dive': {'fins': 1600, 'motor': 1550},      # Orta aşağı + orta  
+            'turn_left': {'left': 1550, 'right': 1450, 'motor': 1530},
+            'turn_right': {'left': 1450, 'right': 1550, 'motor': 1530},
+            'forward': {'fins': 1500, 'motor': 1600},        # Neutral fins + hızlı
+            'reverse': {'fins': 1500, 'motor': 1450}         # Neutral fins + geri
+        }
+        
+        self.log("✅ Hızlı yüzdürme modu aktif - sayı tuşlarını kullanın!")
+    
+    def handle_quick_swim_command(self, key):
+        """Hızlı yüzdürme komutunu işle"""
+        if not hasattr(self, 'quick_swim_mode') or not self.quick_swim_mode:
+            return False
+        
+        if not self.mavlink or not self.mavlink.connected:
+            return False
+        
+        try:
+            # Servo channels (X-wing config)
+            channels = {
+                'front_left': 1,   # AUX1
+                'front_right': 3,  # AUX3
+                'rear_left': 4,    # AUX4
+                'rear_right': 5,   # AUX5
+                'motor': 6         # AUX6
+            }
+            
+            if key == ord('0'):
+                # Neutral position
+                for servo in ['front_left', 'front_right', 'rear_left', 'rear_right']:
+                    self.mavlink.set_servo_pwm(channels[servo], self.quick_swim_pwm['neutral'])
+                self.mavlink.set_servo_pwm(channels['motor'], self.quick_swim_pwm['motor_stop'])
+                self.log("🏊 Neutral pozisyon - durma")
+                
+            elif key == ord('1'):
+                # Surface swim
+                pwm = self.quick_swim_pwm['surface_swim']['fins']
+                motor_pwm = self.quick_swim_pwm['surface_swim']['motor']
+                for servo in ['front_left', 'front_right', 'rear_left', 'rear_right']:
+                    self.mavlink.set_servo_pwm(channels[servo], pwm)
+                self.mavlink.set_servo_pwm(channels['motor'], motor_pwm)
+                self.log("🏊 Su yüzeyinde yüzdürme - tüm finler hafif yukarı")
+                
+            elif key == ord('2'):
+                # Shallow dive
+                pwm = self.quick_swim_pwm['shallow_dive']['fins']
+                motor_pwm = self.quick_swim_pwm['shallow_dive']['motor']
+                for servo in ['front_left', 'front_right', 'rear_left', 'rear_right']:
+                    self.mavlink.set_servo_pwm(channels[servo], pwm)
+                self.mavlink.set_servo_pwm(channels['motor'], motor_pwm)
+                self.log("🏊 Sığ dalış - 0.5m derinlik")
+                
+            elif key == ord('3'):
+                # Deep dive
+                pwm = self.quick_swim_pwm['deep_dive']['fins']
+                motor_pwm = self.quick_swim_pwm['deep_dive']['motor']
+                for servo in ['front_left', 'front_right', 'rear_left', 'rear_right']:
+                    self.mavlink.set_servo_pwm(channels[servo], pwm)
+                self.mavlink.set_servo_pwm(channels['motor'], motor_pwm)
+                self.log("🏊 Derin dalış - 1m derinlik")
+                
+            elif key == ord('4'):
+                # Turn left
+                left_pwm = self.quick_swim_pwm['turn_left']['left']
+                right_pwm = self.quick_swim_pwm['turn_left']['right']
+                motor_pwm = self.quick_swim_pwm['turn_left']['motor']
+                
+                self.mavlink.set_servo_pwm(channels['front_left'], left_pwm)
+                self.mavlink.set_servo_pwm(channels['rear_left'], left_pwm)
+                self.mavlink.set_servo_pwm(channels['front_right'], right_pwm)
+                self.mavlink.set_servo_pwm(channels['rear_right'], right_pwm)
+                self.mavlink.set_servo_pwm(channels['motor'], motor_pwm)
+                self.log("🏊 Sol dönüş - X-wing asimetrik kontrol")
+                
+            elif key == ord('5'):
+                # Turn right
+                left_pwm = self.quick_swim_pwm['turn_right']['left']
+                right_pwm = self.quick_swim_pwm['turn_right']['right']
+                motor_pwm = self.quick_swim_pwm['turn_right']['motor']
+                
+                self.mavlink.set_servo_pwm(channels['front_left'], left_pwm)
+                self.mavlink.set_servo_pwm(channels['rear_left'], left_pwm)
+                self.mavlink.set_servo_pwm(channels['front_right'], right_pwm)
+                self.mavlink.set_servo_pwm(channels['rear_right'], right_pwm)
+                self.mavlink.set_servo_pwm(channels['motor'], motor_pwm)
+                self.log("🏊 Sağ dönüş - X-wing asimetrik kontrol")
+                
+            elif key == ord('6'):
+                # Forward
+                pwm = self.quick_swim_pwm['forward']['fins']
+                motor_pwm = self.quick_swim_pwm['forward']['motor']
+                for servo in ['front_left', 'front_right', 'rear_left', 'rear_right']:
+                    self.mavlink.set_servo_pwm(channels[servo], pwm)
+                self.mavlink.set_servo_pwm(channels['motor'], motor_pwm)
+                self.log("🏊 Hızlı ileri - düz yüzdürme")
+                
+            elif key == ord('7'):
+                # Reverse
+                pwm = self.quick_swim_pwm['reverse']['fins']
+                motor_pwm = self.quick_swim_pwm['reverse']['motor']
+                for servo in ['front_left', 'front_right', 'rear_left', 'rear_right']:
+                    self.mavlink.set_servo_pwm(channels[servo], pwm)
+                self.mavlink.set_servo_pwm(channels['motor'], motor_pwm)
+                self.log("🏊 Geri hareket")
+                
+            elif key == 27:  # ESC key
+                # Exit quick swim mode
+                self.quick_swim_mode = False
+                # Return to neutral
+                for servo in ['front_left', 'front_right', 'rear_left', 'rear_right']:
+                    self.mavlink.set_servo_pwm(channels[servo], self.quick_swim_pwm['neutral'])
+                self.mavlink.set_servo_pwm(channels['motor'], self.quick_swim_pwm['motor_stop'])
+                self.log("🏊 Hızlı yüzdürme modu kapatıldı - normal kontrollere dönüldü")
+                return True
+            else:
+                return False
+            
+            # GPIO feedback
+            if hasattr(self, 'gpio_integration') and self.gpio_integration:
+                self.gpio_integration.beep_success()
+            
+            return True
+            
+        except Exception as e:
+            self.log(f"❌ Hızlı yüzdürme komutu hatası: {e}")
+            return False
     
     def main_loop(self):
         """Ana döngü - optimize edilmiş"""
