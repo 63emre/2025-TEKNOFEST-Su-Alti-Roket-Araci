@@ -26,7 +26,7 @@ from sensor_manager import SensorManager
 class MainWindow(QMainWindow):
     def __init__(self):
         super().__init__()
-        self.setWindowTitle("TEKNOFEST 2025 - Su Altı ROV Kontrol Sistemi")
+        self.setWindowTitle("TEKNOFEST 2025 - Su Altı ROV Kontrol Sistemi [Pi5 Hardware Test]")
         self.setGeometry(100, 100, 1200, 800)
         
         # Sistem bileşenleri
@@ -390,6 +390,10 @@ class MainWindow(QMainWindow):
     def setup_system(self):
         """Sistem bileşenlerini başlat"""
         try:
+            self.log_message("🚀 TEKNOFEST ROV Sistemi Başlatılıyor...")
+            self.log_message("📋 Pi5 Hardware Test Modu Aktif")
+            self.log_message("🔗 X-Wing Konfigürasyonu: AUX1,3,4,5 + Motor AUX6")
+            
             # Config yükle
             config = self.load_hardware_config()
             
@@ -406,11 +410,12 @@ class MainWindow(QMainWindow):
             else:
                 self.log_message("⚠️ GPIO simülasyon modunda")
             
-            # D300 Derinlik Sensörü
-            self.depth_sensor = D300DepthSensor()
+            # D300 Derinlik Sensörü (0x76 adresinden)
+            d300_address = int(config.get("raspberry_pi", {}).get("i2c", {}).get("depth_sensor_address", "0x76"), 16)
+            self.depth_sensor = D300DepthSensor(address=d300_address)
             if self.depth_sensor.connect():
                 self.depth_sensor.start_monitoring()
-                self.log_message("✅ D300 derinlik sensörü başlatıldı")
+                self.log_message(f"✅ D300 derinlik sensörü başlatıldı (0x{d300_address:02x})")
             else:
                 self.log_message("⚠️ D300 sensörü simülasyon modunda")
             
@@ -452,8 +457,25 @@ class MainWindow(QMainWindow):
                 return json.load(f)
         except Exception as e:
             self.log_message(f"⚠️ Config yükleme hatası: {e}")
-            # Varsayılan config döndür
+            # Varsayılan config döndür (Pi5 Hardware Test)
             return {
+                "pixhawk": {
+                    "servos": {
+                        "front_left": 1,
+                        "rear_left": 3, 
+                        "rear_right": 4,
+                        "front_right": 5
+                    },
+                    "motor": 6,
+                    "pwm_limits": {
+                        "servo_min": 1100,
+                        "servo_max": 1900,
+                        "servo_neutral": 1500,
+                        "motor_min": 1000,
+                        "motor_max": 2000,
+                        "motor_stop": 1500
+                    }
+                },
                 "raspberry_pi": {
                     "gpio": {
                         "buzzer": 7,
@@ -463,7 +485,15 @@ class MainWindow(QMainWindow):
                         "led_blue": 6,
                         "warning_led": 8,
                         "system_status_led": 10
+                    },
+                    "i2c": {
+                        "depth_sensor_address": "0x76"
                     }
+                },
+                "mavlink": {
+                    "connection_string": "tcp:127.0.0.1:5777",
+                    "heartbeat_timeout": 30,
+                    "command_timeout": 5
                 }
             }
     
@@ -501,7 +531,7 @@ class MainWindow(QMainWindow):
             if self.mavlink_handler:
                 self.mavlink_handler.disconnect()
             
-            self.log_message("🔄 Sistem temizliği tamamlandı")
+            self.log_message("🔄 Pi5 Hardware Test - Sistem temizliği tamamlandı")
             
         except Exception as e:
             print(f"Temizlik hatası: {e}")
@@ -788,14 +818,32 @@ class MainWindow(QMainWindow):
             self.pitch_line.setData(self.pitch_data)
             self.roll_line.setData(self.roll_data)
             
+            # D300 derinlik bilgisi
+            depth_info = ""
+            if self.depth_sensor and self.depth_sensor.connected:
+                depth_info = f"""
+D300 Derinlik Sensörü (0x76):
+Derinlik: {self.depth_sensor.depth_m:.2f} m
+Sıcaklık: {self.depth_sensor.temperature_c:.1f}°C
+Basınç:   {self.depth_sensor.pressure_mbar:.1f} mbar
+"""
+            
             # Telemetry text güncelle
-            telemetry_info = f"""IMU Verileri:
+            telemetry_info = f"""🔧 HARDWARE STATUS - Pi5 Test Modu:
+
+IMU Verileri:
 Roll:  {roll:+7.2f}°
 Pitch: {pitch:+7.2f}°
 Yaw:   {yaw:+7.2f}°
 
+Kontrol Sistemi:
 Kontrol Modu: {self.mavlink_handler.control_mode.upper()}
 Navigation:   {self.navigation_engine.current_mode if self.navigation_engine else 'N/A'}
+{depth_info}
+Hardware Mapping:
+• Ön Sol Fin: AUX1  • Ön Sağ Fin: AUX3
+• Arka Sol Fin: AUX4 • Arka Sağ Fin: AUX5
+• Ana Motor: AUX6
 """
             self.telemetry_text.setText(telemetry_info)
         
@@ -884,8 +932,19 @@ Navigation:   {self.navigation_engine.current_mode if self.navigation_engine els
         """Hakkında penceresi"""
         about_text = """
 TEKNOFEST 2025 - Su Altı Roket Aracı Kontrol Sistemi
+🚀 Pi5 Hardware Test Modu 🚀
 
-Bu uygulama aşağıdaki özellikleri içerir:
+Hardware Konfigürasyonu:
+• Ön Sol Fin:  AUX1    • Ön Sağ Fin:  AUX3
+• Arka Sol Fin: AUX4   • Arka Sağ Fin: AUX5
+• Ana Motor: AUX6
+
+Sensör Sistemi:
+• D300 Derinlik Sensörü (I2C 0x76)
+• 1x LED, 1x Buzzer, 1x Button
+• Pixhawk MAVLink TCP Bağlantısı
+
+Özellikler:
 • Real-time ROV kontrolü (W,A,S,D tuşları)
 • RAW PWM vs PID kontrol modları
 • GPS ve IMU navigation sistemleri
@@ -894,7 +953,8 @@ Bu uygulama aşağıdaki özellikleri içerir:
 • Script entegrasyonu
 
 Geliştirici: TEKNOFEST Takımı
-Sürüm: 1.0
+Platform: Raspberry Pi 5
+Sürüm: 1.1 Hardware Test
 Tarih: 2025
         """
         QMessageBox.about(self, "Hakkında", about_text)
@@ -942,7 +1002,7 @@ class PinConfigEditor(QDialog):
         layout = QVBoxLayout(self)
         
         # Başlık
-        title = QLabel("🔧 Hardware Pin Konfigürasyonu")
+        title = QLabel("🔧 Pi5 Hardware Pin Konfigürasyonu")
         title.setFont(QFont("Arial", 14, QFont.Bold))
         title.setAlignment(Qt.AlignCenter)
         layout.addWidget(title)
@@ -1159,7 +1219,7 @@ class PinConfigEditor(QDialog):
                         "system_status_led": self.pin_widgets["raspberry_pi_gpio_system_status_led"].value()
                     },
                     "i2c": {
-                        "depth_sensor_address": "0x77"
+                        "depth_sensor_address": "0x76"
                     }
                 },
                 "mavlink": {
