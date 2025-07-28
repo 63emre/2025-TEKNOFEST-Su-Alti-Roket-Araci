@@ -2,6 +2,7 @@
 """
 TEKNOFEST Su Altı ROV - Advanced Terminal GUI
 TCP-Based Real-time Control & Mission Planning System
+GPIO & I2C Full Integration (Buzzer, LED, Button, D300 Depth Sensor)
 """
 
 import sys
@@ -25,30 +26,153 @@ import math
 from datetime import datetime
 from collections import deque
 
-# Local imports - BASİTLEŞTİRİLDİ
+# Local imports - BASİTLEŞTİRİLDİ VE GPIO/I2C EKLENDİ
 try:
     from mavlink_handler import MAVLinkHandler
-    # Opsiyonel imports - hata verirse devam et
+    
+    # GPIO Controller - ZORUNİ DEĞIL AMA KULLANILACAK
+    try:
+        from gpio_controller import GPIOController
+        HAS_GPIO = True
+        print("✅ GPIO Controller yüklendi - Buzzer/LED/Button aktif!")
+    except ImportError:
+        HAS_GPIO = False
+        print("⚠️ GPIO controller yok - LED/Buzzer/Button devre dışı")
+    
+    # D300 Depth Sensor - I2C üzerinden
     try:
         from depth_sensor import D300DepthSensor
         HAS_DEPTH_SENSOR = True
+        print("✅ D300 Depth Sensor yüklendi - I2C derinlik ölçümü aktif!")
     except ImportError:
         HAS_DEPTH_SENSOR = False
         print("⚠️ Depth sensor modülü yok - I2C özelliği devre dışı")
-    
-    try:
-        from gpio_controller import GPIOController  
-        HAS_GPIO = True
-    except ImportError:
-        HAS_GPIO = False
-        print("⚠️ GPIO controller yok - LED/Buzzer devre dışı")
         
-    # Navigation ve vibration monitor şimdilik kaldırıldı - basit terminal için gerekli değil
-    
 except ImportError as e:
     print(f"❌ Kritik import hatası: {e}")
     print("💡 En azından mavlink_handler.py gerekli!")
     sys.exit(1)
+
+class GPIOIntegration:
+    """GPIO ve I2C entegrasyon yöneticisi"""
+    
+    def __init__(self, config):
+        self.config = config
+        
+        # GPIO controller
+        self.gpio = None
+        if HAS_GPIO:
+            try:
+                self.gpio = GPIOController(config)
+                if self.gpio.initialize():
+                    print("✅ GPIO başlatıldı - Buzzer/LED/Button hazır!")
+                    # Button callback ayarla
+                    self.gpio.setup_button_callback(self.emergency_button_pressed)
+                    self.gpio_ready = True
+                else:
+                    print("⚠️ GPIO başlatma başarısız")
+                    self.gpio_ready = False
+            except Exception as e:
+                print(f"⚠️ GPIO init hatası: {e}")
+                self.gpio_ready = False
+        else:
+            self.gpio_ready = False
+        
+        # D300 Depth sensor
+        self.depth_sensor = None
+        if HAS_DEPTH_SENSOR:
+            try:
+                # İlk önce gerçek sensörü dene
+                self.depth_sensor = D300DepthSensor(config_path="config/hardware_config.json")
+                if self.depth_sensor.connect():
+                    print("✅ D300 I2C sensörü bağlandı!")
+                    self.depth_sensor.start_monitoring(interval=0.1)  # 10Hz
+                    self.depth_ready = True
+                else:
+                    # Gerçek sensör yoksa simülasyon moduna geç
+                    print("🎮 D300 simülasyon moduna geçiliyor...")
+                    self.depth_sensor = D300DepthSensor(simulation_mode=True)
+                    if self.depth_sensor.connect():
+                        self.depth_sensor.start_monitoring(interval=0.1)
+                        self.depth_ready = True
+                        print("✅ D300 simülasyon modu aktif!")
+                    else:
+                        self.depth_ready = False
+            except Exception as e:
+                print(f"⚠️ D300 init hatası: {e}")
+                self.depth_ready = False
+        else:
+            self.depth_ready = False
+        
+        # Emergency button callback function
+        self.emergency_callback = None
+    
+    def set_emergency_callback(self, callback):
+        """Acil durum butonu callback ayarla"""
+        self.emergency_callback = callback
+    
+    def emergency_button_pressed(self):
+        """Acil durum butonu basıldı"""
+        print("🚨 ACİL DURUM BUTONU BASILDI!")
+        if self.gpio_ready:
+            # Acil durum LED/buzzer pattern
+            self.gpio.emergency_led_pattern()
+            self.gpio.buzzer_beep(2000, 0.3, 80)  # 2kHz, 300ms, 80% volume
+        
+        if self.emergency_callback:
+            self.emergency_callback()
+    
+    def set_system_status_led(self, status):
+        """Sistem durum LED ayarla"""
+        if self.gpio_ready:
+            self.gpio.status_led_pattern(status)
+    
+    def set_connection_status_led(self, connected, armed=False):
+        """Bağlantı durumu LED'i"""
+        if not self.gpio_ready:
+            return
+        
+        if armed:
+            self.gpio.set_rgb_led(100, 0, 0)  # ARMED: Kırmızı
+        elif connected:
+            self.gpio.set_rgb_led(0, 100, 0)  # CONNECTED: Yeşil
+        else:
+            self.gpio.set_rgb_led(100, 50, 0)  # DISCONNECTED: Turuncu
+    
+    def beep_success(self):
+        """Başarı sesi"""
+        if self.gpio_ready:
+            self.gpio.buzzer_beep(1500, 0.1, 50)
+    
+    def beep_error(self):
+        """Hata sesi"""
+        if self.gpio_ready:
+            self.gpio.buzzer_beep(500, 0.3, 70)
+    
+    def beep_warning(self):
+        """Uyarı sesi"""
+        if self.gpio_ready:
+            self.gpio.buzzer_beep(1000, 0.2, 60)
+    
+    def read_button(self):
+        """Buton durumu oku"""
+        if self.gpio_ready:
+            return self.gpio.read_button()
+        return False
+    
+    def get_depth_data(self):
+        """Derinlik sensörü verisi"""
+        if self.depth_ready and self.depth_sensor:
+            return self.depth_sensor.get_sensor_data()
+        return None
+    
+    def cleanup(self):
+        """GPIO/I2C temizliği"""
+        if self.gpio and self.gpio_ready:
+            self.gpio.cleanup()
+        
+        if self.depth_sensor and self.depth_ready:
+            self.depth_sensor.disconnect()
 
 class MissionPlanner:
     """Görev planlama sistemi"""
@@ -104,15 +228,15 @@ class TestScriptManager:
     
     def __init__(self):
         self.available_scripts = {
-            '1': {'name': 'Motor Testi', 'file': 'scripts/motor_test.py', 'desc': 'Tüm motorları test et'},
+            '1': {'name': 'Motor Testi', 'file': 'Test/test_motor_control.py', 'desc': 'Tüm motorları test et'},
             '2': {'name': 'Servo Kalibrasyon', 'file': 'scripts/servo_calibration.py', 'desc': 'Servo kalibrasyonu'},
             '3': {'name': 'IMU Kalibrasyon', 'file': 'scripts/imu_calibration.py', 'desc': 'IMU kalibrasyonu'},
             '4': {'name': 'Sistem Kontrolü', 'file': 'scripts/system_check.py', 'desc': 'Tam sistem kontrolü'},
-            '5': {'name': 'Depth Sensör Test', 'file': 'scripts/test_d300_depth_sensor.py', 'desc': 'D300 depth sensörü test'},
-            '6': {'name': 'GPIO Test', 'file': 'scripts/test_gpio_button.py', 'desc': 'GPIO buton/LED test'},
+            '5': {'name': 'D300 Test', 'file': 'Test/test_d300_depth_sensor.py', 'desc': 'D300 I2C derinlik test'},
+            '6': {'name': 'GPIO Test', 'file': 'Test/test_gpio_button.py', 'desc': 'GPIO buton/LED test'},
             '7': {'name': 'Acil Durum Test', 'file': 'scripts/emergency_stop.py', 'desc': 'Acil durum protokolü'},
-            '8': {'name': 'Stabilizasyon Test', 'file': 'scripts/test_stabilization.py', 'desc': 'Stabilizasyon test'},
-            '9': {'name': 'Full System Test', 'file': 'scripts/test_full_system.py', 'desc': 'Tam sistem testi'}
+            '8': {'name': 'Stabilizasyon Test', 'file': 'Test/test_stabilization.py', 'desc': 'Stabilizasyon test'},
+            '9': {'name': 'Full System Test', 'file': 'Test/test_full_system.py', 'desc': 'Tam sistem testi'}
         }
         self.running_script = None
     
@@ -154,11 +278,17 @@ class TestScriptManager:
 
 class AdvancedTerminalGUI:
     def __init__(self):
-        """Advanced Terminal GUI başlatıcı"""
+        """Advanced Terminal GUI başlatıcı - FULL GPIO/I2C INTEGRATION"""
+        
+        # Config yükle
+        self.load_config()
+        
+        # GPIO ve I2C entegrasyonu - YENİ!
+        self.gpio_integration = GPIOIntegration(self.config)
+        self.gpio_integration.set_emergency_callback(self.emergency_stop_callback)
+        
         # Sistem bileşenleri - BASİTLEŞTİRİLDİ
         self.mavlink = None
-        self.depth_sensor = None
-        self.gpio_controller = None
         
         # Yeni sistem bileşenleri
         self.mission_planner = MissionPlanner()
@@ -170,17 +300,17 @@ class AdvancedTerminalGUI:
         self.armed = False
         self.running = True
         
-        # Real-time kontrol - düzeltme
+        # Real-time kontrol - MOTOR KONTROL EKLENDİ
         self.active_keys = set()
         self.servo_values = {'roll': 0, 'pitch': 0, 'yaw': 0}
-        self.motor_value = 0
+        self.motor_value = 0  # Motor değeri
         self.depth_target = 0
         
         # Terminal UI
         self.stdscr = None
         self.height = 0
         self.width = 0
-        self.current_menu = "main"  # main, mission_plan, test_scripts
+        self.current_menu = "main"  # main, mission_plan, test_scripts, gpio_test
         
         # Logs - debug için artırıldı
         self.log_messages = deque(maxlen=200)
@@ -203,13 +333,18 @@ class AdvancedTerminalGUI:
             'last_packet': 0
         }
         
+        # D300 Depth sensor data - YENİ!
+        self.depth_data = {
+            'depth_m': 0.0,
+            'temperature_c': 20.0,
+            'pressure_mbar': 1013.25,
+            'connected': False
+        }
+        
         # Thread kontrolü
         self.data_lock = threading.Lock()
         self.data_thread = None
         self.data_thread_running = False
-        
-        # Config
-        self.load_config()
     
     def load_config(self):
         """Konfigürasyon yükle - optimize edilmiş"""
@@ -237,14 +372,17 @@ class AdvancedTerminalGUI:
                     "pwm_limits": {"servo_min": 1100, "servo_max": 1900, "servo_neutral": 1500, "motor_min": 1000, "motor_max": 2000, "motor_stop": 1500}
                 },
                 "mavlink": {"connection_string": "tcp:127.0.0.1:5777"},
-                "raspberry_pi": {"i2c": {"depth_sensor_address": "0x76", "bus_number": 1}},
-                # GERÇEK X-Wing Hardware Layout
-                "x_wing_hardware": {
-                    "front_left_aux1": 9,   # Ön Sol
-                    "front_right_aux3": 11, # Ön Sağ  
-                    "rear_left_aux4": 12,   # Arka Sol
-                    "rear_right_aux5": 13,  # Arka Sağ
-                    "motor_aux6": 14        # Ana Motor
+                "raspberry_pi": {
+                    "gpio": {
+                        "buzzer": 7,
+                        "control_button": 13,
+                        "led_red": 4,
+                        "led_green": 5,
+                        "led_blue": 6,
+                        "warning_led": 8,
+                        "system_status_led": 10
+                    },
+                    "i2c": {"depth_sensor_address": "0x76", "bus_number": 1}
                 }
             }
     
@@ -256,9 +394,47 @@ class AdvancedTerminalGUI:
         with self.data_lock:
             self.log_messages.append(log_entry)
     
+    def emergency_stop_callback(self):
+        """Acil durum butonu callback"""
+        self.log("🚨 ACİL DURUM BUTONU BASILDI - TÜM SİSTEMLER DURDURULUYOR!")
+        
+        # Tüm kontrolleri sıfırla
+        self.servo_values = {'roll': 0, 'pitch': 0, 'yaw': 0}
+        self.motor_value = 0
+        
+        # Sistem disarm
+        if self.armed:
+            self.armed = False
+            if self.mavlink and self.mavlink.connected:
+                try:
+                    self.mavlink.emergency_stop()
+                except:
+                    pass
+        
+        # Görevleri durdur
+        self.mission_planner.mission_running = False
+        
+        # Buzzer pattern çal
+        self.gpio_integration.beep_error()
+        
+        self.log("✅ Acil durum prosedürü tamamlandı!")
+    
     def init_systems(self):
         """Sistem bileşenlerini başlat - TCP odaklı - DÜZELTİLDİ"""
         self.log("🚀 TEKNOFEST ROV Advanced Terminal GUI başlatılıyor...")
+        
+        # GPIO sistem durumunu belirt
+        if self.gpio_integration.gpio_ready:
+            self.log("✅ GPIO sistemleri hazır - Buzzer/LED/Button aktif!")
+            self.gpio_integration.set_system_status_led('connecting')
+        else:
+            self.log("⚠️ GPIO sistemler devre dışı - sadece TCP kontrol")
+        
+        # D300 derinlik sensörü durumu
+        if self.gpio_integration.depth_ready:
+            self.log("✅ D300 derinlik sensörü hazır - I2C data akışı aktif!")
+        else:
+            self.log("⚠️ D300 derinlik sensörü devre dışı")
         
         # TCP MAVLink bağlantısı - DETAYLI DEBUG
         try:
@@ -277,6 +453,10 @@ class AdvancedTerminalGUI:
             if connect_result:
                 self.log("✅ TCP MAVLink bağlantısı kuruldu (127.0.0.1:5777)!")
                 
+                # GPIO LED güncelle
+                self.gpio_integration.set_connection_status_led(True, self.armed)
+                self.gpio_integration.beep_success()
+                
                 # Sistem durumunu kontrol et
                 self.log("🔍 check_system_status() çağrılıyor...")
                 print(f"🔧 DEBUG: connect() sonrası mavlink.connected = {self.mavlink.connected}")
@@ -293,7 +473,7 @@ class AdvancedTerminalGUI:
                     self.live_imu['connected'] = True
                     self.log(f"✅ TCP flags set edildi: tcp_data={self.tcp_data['connected']}, live_imu={self.live_imu['connected']}")
                     
-                    # IMU test - çalışıyor mu kontrol et
+                    # İlk IMU test - çalışıyor mu kontrol et
                     test_imu = self.mavlink.get_imu_data()
                     if test_imu:
                         self.log("✅ İlk IMU verisi alındı - sistem hazır!")
@@ -304,19 +484,17 @@ class AdvancedTerminalGUI:
                     self.tcp_data['connected'] = False
                     self.live_imu['connected'] = False
                 
-                # İlk IMU test
-                test_imu = self.mavlink.get_imu_data()
-                if test_imu:
-                    self.log("✅ IMU verileri test edildi - data akışı başlatılıyor!")
-                else:
-                    self.log("⚠️ IMU verileri henüz gelmedi, thread başlatılıyor...")
-                
             else:
                 self.log("❌ TCP MAVLink bağlantısı başliyor ama connect() False döndü!")
                 self.log("🔧 Debug: TCP test script çalışıyor ama GUI bağlanamıyor")
                 self.log("💡 Çözüm: mavlink_handler.py timeout veya config sorunu")
                 self.tcp_data['connected'] = False
                 self.live_imu['connected'] = False
+                
+                # GPIO hata sinyali
+                self.gpio_integration.set_connection_status_led(False, False)
+                self.gpio_integration.beep_error()
+                
         except Exception as e:
             self.log(f"❌ TCP MAVLink exception hatası: {e}")
             self.log(f"🔧 Exception türü: {type(e).__name__}")
@@ -324,36 +502,10 @@ class AdvancedTerminalGUI:
             self.log(f"🔍 Traceback: {traceback.format_exc()}")
             self.tcp_data['connected'] = False
             self.live_imu['connected'] = False
-        
-        # Opsiyonel bileşenler - hata verirse devam et
-        
-        # I2C Depth sensor (0x76 adresinde) - OPSIYONEL
-        if HAS_DEPTH_SENSOR:
-            try:
-                self.depth_sensor = D300DepthSensor()
-                if self.depth_sensor.connect():
-                    self.log("✅ I2C Depth sensörü (0x76) bağlandı!")
-                else:
-                    self.log("⚠️ I2C Depth sensörü (0x76) bağlanamadı")
-                    self.depth_sensor = None
-            except Exception as e:
-                self.log(f"⚠️ I2C Depth sensör hatası: {e}")
-                self.depth_sensor = None
-        else:
-            self.depth_sensor = None
-            self.log("ℹ️ Depth sensor modülü yüklü değil")
-        
-        # GPIO controller - OPSIYONEL 
-        if HAS_GPIO:
-            try:
-                self.gpio_controller = GPIOController(self.config)
-                self.log("✅ GPIO controller başlatıldı")
-            except Exception as e:
-                self.log(f"⚠️ GPIO controller hatası: {e}")
-                self.gpio_controller = None
-        else:
-            self.gpio_controller = None
-            self.log("ℹ️ GPIO controller modülü yüklü değil")
+            
+            # GPIO hata sinyali
+            self.gpio_integration.set_connection_status_led(False, False)
+            self.gpio_integration.beep_error()
         
         # TCP veri thread başlat
         self.start_tcp_data_thread()
@@ -362,6 +514,8 @@ class AdvancedTerminalGUI:
         if self.mavlink and self.mavlink.connected:
             self.armed = self.mavlink.armed
             self.log(f"🔐 ARM durumu senkronize edildi: {self.armed}")
+            # GPIO LED güncelle
+            self.gpio_integration.set_connection_status_led(True, self.armed)
         
         self.log("✅ Sistem başlatma tamamlandı!")
         
@@ -371,6 +525,10 @@ class AdvancedTerminalGUI:
         
         if self.tcp_data['connected']:
             self.log("🎯 HAZIR: TCP bağlı, IMU aktif, kontroller hazır!")
+            if self.gpio_integration.gpio_ready:
+                self.log("🎯 GPIO: Buzzer/LED/Button aktif, acil durum butonu hazır!")
+            if self.gpio_integration.depth_ready:
+                self.log("🎯 D300: I2C derinlik sensörü aktif!")
             print("🔧 DEBUG: HAZIR mesajı yazdırıldı")
         else:
             self.log("⚠️ KISMÎ: TCP bağlantısı yok, offline mod aktiv")
@@ -384,7 +542,7 @@ class AdvancedTerminalGUI:
         self.log("🔄 TCP veri thread'i başlatıldı (50Hz)")
     
     def tcp_data_loop(self):
-        """TCP veri döngüsü - 50Hz live data"""
+        """TCP veri döngüsü - 50Hz live data + GPIO/I2C integration"""
         last_update = time.time()
         update_counter = 0
         
@@ -396,6 +554,7 @@ class AdvancedTerminalGUI:
                 # 50Hz veri güncelleme
                 if dt >= 0.02:  # 20ms = 50Hz
                     self.update_tcp_data()
+                    self.update_gpio_data()  # YENİ - GPIO/I2C data update
                     update_counter += 1
                     
                     # Her saniye rate hesapla
@@ -410,6 +569,20 @@ class AdvancedTerminalGUI:
             except Exception as e:
                 self.log(f"❌ TCP veri döngüsü hatası: {e}")
                 time.sleep(0.1)
+    
+    def update_gpio_data(self):
+        """GPIO ve I2C veri güncelleme - YENİ!"""
+        # D300 derinlik sensörü verisi güncelle
+        if self.gpio_integration.depth_ready:
+            depth_data = self.gpio_integration.get_depth_data()
+            if depth_data:
+                with self.data_lock:
+                    self.depth_data.update(depth_data)
+        
+        # GPIO buton durumu kontrol (interrupt dışında polling de yap)
+        if self.gpio_integration.gpio_ready:
+            button_pressed = self.gpio_integration.read_button()
+            # Button state değişikliği için log gerekmez, interrupt callback var
     
     def update_tcp_data(self):
         """TCP'den live veri güncelle - DEBUG EKLENDI"""
@@ -449,6 +622,8 @@ class AdvancedTerminalGUI:
             with self.data_lock:
                 if self.tcp_data.get('connected', False):
                     self.log("⚠️ TCP Thread: MAVLink bağlantısı kesildi")
+                    # GPIO LED güncelle
+                    self.gpio_integration.set_connection_status_led(False, False)
                 self.tcp_data['connected'] = False
                 self.live_imu['connected'] = False
             return
@@ -598,19 +773,21 @@ class AdvancedTerminalGUI:
     
     def draw_header(self):
         """Başlık çiz"""
-        title = "🚀 TEKNOFEST ROV - Advanced Terminal [TCP:127.0.0.1:5777] 🚀"
+        title = "🚀 TEKNOFEST ROV - Full GPIO/I2C Terminal [TCP:127.0.0.1:5777] 🚀"
         self.stdscr.addstr(0, max(0, (self.width - len(title)) // 2), title, curses.color_pair(4) | curses.A_BOLD)
         
-        # Durum satırı
+        # Durum satırı - GPIO/I2C durumu eklendi
         status_line = 1
         tcp_status = "✅ TCP BAĞLI" if self.tcp_data['connected'] else "❌ TCP BAĞLI DEĞİL"
         arm_status = "🔴 ARMED" if self.armed else "🟢 DISARMED"
+        gpio_status = "🔧 GPIO/I2C" if (self.gpio_integration.gpio_ready or self.gpio_integration.depth_ready) else "❌ NO GPIO"
         menu_status = f"📋 {self.current_menu.upper()}"
         
         self.stdscr.addstr(status_line, 2, f"TCP: {tcp_status}", curses.color_pair(1 if self.tcp_data['connected'] else 2))
         self.stdscr.addstr(status_line, 25, f"Durum: {arm_status}", curses.color_pair(2 if self.armed else 1))
-        self.stdscr.addstr(status_line, 45, f"Kontrol: {self.control_mode}", curses.color_pair(5))
-        self.stdscr.addstr(status_line, 65, f"Menü: {menu_status}", curses.color_pair(4))
+        self.stdscr.addstr(status_line, 45, f"HW: {gpio_status}", curses.color_pair(1 if (self.gpio_integration.gpio_ready or self.gpio_integration.depth_ready) else 2))
+        self.stdscr.addstr(status_line, 65, f"Kontrol: {self.control_mode}", curses.color_pair(5))
+        self.stdscr.addstr(status_line, 85, f"Menü: {menu_status}", curses.color_pair(4))
         
         # Çizgi
         self.stdscr.addstr(2, 0, "─" * min(self.width, 120), curses.color_pair(4))
@@ -670,6 +847,41 @@ class AdvancedTerminalGUI:
                 self.stdscr.addstr(start_row + 4, 4, "YAW:   ---- °", curses.color_pair(2))
                 self.stdscr.addstr(start_row + 6, 4, "❌ TCP bağlantısı yok - IMU verisi alınamıyor", curses.color_pair(2))
     
+    def draw_depth_sensor_display(self):
+        """D300 Derinlik sensörü görüntüleme - YENİ!"""
+        start_row = 9
+        
+        with self.data_lock:
+            # Başlık
+            self.stdscr.addstr(start_row, 55, "🌊 D300 DEPTH SENSOR (I2C)", curses.color_pair(4) | curses.A_BOLD)
+            
+            if self.gpio_integration.depth_ready and self.depth_data['connected']:
+                # Derinlik verisi
+                depth_val = self.depth_data['depth_m']
+                depth_color = curses.color_pair(1) if depth_val < 5 else curses.color_pair(3) if depth_val < 8 else curses.color_pair(2)
+                self.stdscr.addstr(start_row + 1, 57, f"DEPTH:   {depth_val:7.2f}m", depth_color | curses.A_BOLD)
+                
+                # Sıcaklık verisi
+                temp_val = self.depth_data['temperature_c']
+                temp_color = curses.color_pair(1) if 15 < temp_val < 30 else curses.color_pair(3)
+                self.stdscr.addstr(start_row + 2, 57, f"TEMP:    {temp_val:7.1f}°C", temp_color)
+                
+                # Basınç verisi
+                pressure_val = self.depth_data['pressure_mbar']
+                self.stdscr.addstr(start_row + 3, 57, f"PRESS:   {pressure_val:7.1f}mb", curses.color_pair(6))
+                
+                # I2C durum
+                self.stdscr.addstr(start_row + 4, 57, "I2C: ✅ ACTIVE", curses.color_pair(1))
+                
+            else:
+                self.stdscr.addstr(start_row + 1, 57, "DEPTH:   ----  m", curses.color_pair(2))
+                self.stdscr.addstr(start_row + 2, 57, "TEMP:    ----  °C", curses.color_pair(2))
+                self.stdscr.addstr(start_row + 3, 57, "PRESS:   ----  mb", curses.color_pair(2))
+                if self.gpio_integration.depth_ready:
+                    self.stdscr.addstr(start_row + 4, 57, "I2C: ⚠️ NO DATA", curses.color_pair(3))
+                else:
+                    self.stdscr.addstr(start_row + 4, 57, "I2C: ❌ DISABLED", curses.color_pair(2))
+    
     def draw_angle_bar(self, row, col, angle, label):
         """Açı için görsel çubuk çiz"""
         try:
@@ -695,7 +907,7 @@ class AdvancedTerminalGUI:
     
     def draw_controls_and_menu(self):
         """Kontrol ve menü bilgileri"""
-        start_row = 9
+        start_row = 14  # Depth sensor için yer açıldı
         
         if self.current_menu == "main":
             self.draw_main_controls(start_row)
@@ -703,9 +915,11 @@ class AdvancedTerminalGUI:
             self.draw_mission_planning(start_row)
         elif self.current_menu == "test_scripts":
             self.draw_test_script_menu(start_row)
+        elif self.current_menu == "gpio_test":
+            self.draw_gpio_test_menu(start_row)
     
     def draw_main_controls(self, start_row):
-        """Ana kontrol menüsü"""
+        """Ana kontrol menüsü - MOTOR KONTROL EKLENDİ"""
         self.stdscr.addstr(start_row, 2, "⌨️  MANUEL KONTROL:", curses.color_pair(4) | curses.A_BOLD)
         
         # Real-time kontrol durumu
@@ -714,20 +928,29 @@ class AdvancedTerminalGUI:
         # YAW değeri daha belirgin görüntüleme
         yaw_display_color = curses.color_pair(3) | curses.A_BOLD if abs(self.servo_values['yaw']) > 0 else curses.color_pair(5)
         self.stdscr.addstr(start_row + 3, 4, f"Yaw:   {self.servo_values['yaw']:+4.0f}° [Q/E]", yaw_display_color)
-        self.stdscr.addstr(start_row + 4, 4, f"Motor: {self.motor_value:+4.0f}% [O/L]", curses.color_pair(1 if abs(self.motor_value) < 50 else 3))
         
-        # Komut menüsü
-        self.stdscr.addstr(start_row + 6, 2, "📋 MENÜ KOMUTLARI:", curses.color_pair(4) | curses.A_BOLD)
+        # MOTOR KONTROL - YENİ VE DETAYLI!
+        motor_display_color = curses.color_pair(1) if abs(self.motor_value) < 30 else curses.color_pair(3) if abs(self.motor_value) < 70 else curses.color_pair(2)
+        self.stdscr.addstr(start_row + 4, 4, f"Motor: {self.motor_value:+4.0f}% [J/K] [I/M boost]", motor_display_color | curses.A_BOLD)
+        
+        # GPIO durumu göster
+        if self.gpio_integration.gpio_ready:
+            self.stdscr.addstr(start_row + 5, 4, "GPIO:  ✅ Buzzer/LED/Button aktif", curses.color_pair(1))
+        else:
+            self.stdscr.addstr(start_row + 5, 4, "GPIO:  ❌ Devre dışı", curses.color_pair(2))
+        
+        # Komut menüsü - MOTOR KONTROL EKLENDİ
+        self.stdscr.addstr(start_row + 7, 2, "📋 KONTROL KOMUTLARI:", curses.color_pair(4) | curses.A_BOLD)
         
         commands = [
             "W/S: Pitch ±",       "A/D: Roll ±",        "Q/E: Yaw ±",
-            "O/L: Motor ±",       "PgUp/PgDn: Güçlü Motor", "Space: ARM/DISARM",
-            "R/F: RAW/PID",       "0: Mission Plan",    "T: Test Scripts",
-            "C: Config",          "V: Vibration",       "G: GPS Data",
-            "X: Exit (Pencere)",  "",                   ""
+            "J/K: Motor ±5%",     "I/M: Motor ±15%",    "Space: ARM/DISARM",
+            "R/F: RAW/PID Mode",  "0: Mission Plan",    "T: Test Scripts",
+            "G: GPIO Test",       "C: Config",          "V: Vibration",
+            "P: GPS Data",        "B: Buzzer Test",     "X: Exit",
         ]
         
-        row = start_row + 7
+        row = start_row + 8
         col = 4
         for i, cmd in enumerate(commands):
             if i % 3 == 0 and i > 0:
@@ -736,6 +959,43 @@ class AdvancedTerminalGUI:
             if cmd:
                 self.stdscr.addstr(row, col, cmd[:18], curses.color_pair(6))
             col += 22
+    
+    def draw_gpio_test_menu(self, start_row):
+        """GPIO test menüsü - YENİ!"""
+        self.stdscr.addstr(start_row, 2, "🔧 GPIO/I2C TEST MENÜSÜ:", curses.color_pair(4) | curses.A_BOLD)
+        
+        # GPIO durum bilgisi
+        gpio_status = "✅ AKTIF" if self.gpio_integration.gpio_ready else "❌ DEVRE DIŞI"
+        i2c_status = "✅ AKTIF" if self.gpio_integration.depth_ready else "❌ DEVRE DIŞI"
+        
+        self.stdscr.addstr(start_row + 1, 4, f"GPIO Durum: {gpio_status}", curses.color_pair(1 if self.gpio_integration.gpio_ready else 2))
+        self.stdscr.addstr(start_row + 2, 4, f"I2C D300:   {i2c_status}", curses.color_pair(1 if self.gpio_integration.depth_ready else 2))
+        
+        # GPIO test komutları
+        self.stdscr.addstr(start_row + 4, 4, "GPIO TEST KOMUTLARI:", curses.color_pair(3))
+        
+        gpio_commands = [
+            "1: Kırmızı LED",     "2: Yeşil LED",       "3: Mavi LED",
+            "4: Warning LED",     "5: Status LED",      "6: RGB LED Test",
+            "7: Buzzer Beep",     "8: Buzzer Alarm",    "9: Button Test",
+        ]
+        
+        row = start_row + 5
+        for i, cmd in enumerate(gpio_commands):
+            if i % 3 == 0 and i > 0:
+                row += 1
+            col = 4 + (i % 3) * 20
+            if row < self.height - 5:
+                self.stdscr.addstr(row, col, cmd, curses.color_pair(6))
+        
+        # I2C test komutları
+        self.stdscr.addstr(start_row + 9, 4, "I2C TEST KOMUTLARI:", curses.color_pair(3))
+        self.stdscr.addstr(start_row + 10, 6, "D: D300 Depth Test", curses.color_pair(6))
+        self.stdscr.addstr(start_row + 11, 6, "S: I2C Scanner", curses.color_pair(6))
+        self.stdscr.addstr(start_row + 12, 6, "C: Calibrate Surface", curses.color_pair(6))
+        
+        # Menü kontrolü
+        self.stdscr.addstr(start_row + 14, 4, "B: Ana menüye dön", curses.color_pair(4))
     
     def draw_mission_planning(self, start_row):
         """Görev planlama menüsü"""
@@ -755,7 +1015,8 @@ class AdvancedTerminalGUI:
             if i % 3 == 0 and i > 0:
                 row += 1
             col = 4 + (i % 3) * 25
-            self.stdscr.addstr(row, col, cmd, curses.color_pair(6))
+            if row < self.height - 8:
+                self.stdscr.addstr(row, col, cmd, curses.color_pair(6))
         
         # Görev akışı kontrolleri
         self.stdscr.addstr(start_row + 6, 4, "AKIŞ KONTROL:", curses.color_pair(3))
@@ -768,7 +1029,8 @@ class AdvancedTerminalGUI:
         if mission_summary:
             self.stdscr.addstr(start_row + 11, 4, "PLANLANAN GÖREVLER:", curses.color_pair(3))
             for i, mission in enumerate(mission_summary[:6]):  # Max 6 görev göster
-                self.stdscr.addstr(start_row + 12 + i, 6, mission, curses.color_pair(5))
+                if start_row + 12 + i < self.height - 2:
+                    self.stdscr.addstr(start_row + 12 + i, 6, mission, curses.color_pair(5))
         else:
             self.stdscr.addstr(start_row + 11, 4, "Henüz görev eklenmemiş. Yukarıdaki komutları kullanın.", curses.color_pair(6))
     
@@ -841,9 +1103,11 @@ class AdvancedTerminalGUI:
             self.handle_mission_planning(key)
         elif self.current_menu == "test_scripts":
             self.handle_test_scripts(key)
+        elif self.current_menu == "gpio_test":
+            self.handle_gpio_test(key)
     
     def handle_main_controls(self, key):
-        """Ana kontrol tuşları"""
+        """Ana kontrol tuşları - MOTOR KONTROL EKLENDİ"""
         # Real-time servo kontrol - DEBUG EKLENDI
         if key == ord('w'):
             self.active_keys.add('w')
@@ -864,23 +1128,39 @@ class AdvancedTerminalGUI:
             self.active_keys.add('e')
             self.log("🎯 E tuşu basıldı - YAW SOL hareket başlatılıyor!")
         
-        # Motor kontrol - DÜZELTİLDİ
-        elif key == ord('o') or key == ord('O'):
+        # MOTOR KONTROL TUŞLARI - TAM YENİ SISTEM!
+        elif key == ord('j') or key == ord('J'):
+            old_motor = self.motor_value
             self.motor_value = min(100, self.motor_value + 5)
             self.send_motor_command()
-            self.log(f"🎮 Motor: {self.motor_value}%")
-        elif key == ord('l') or key == ord('L'):
+            self.log(f"🚁 Motor İLERİ: {old_motor}% → {self.motor_value}% (J tuşu)")
+            self.gpio_integration.beep_success()
+        elif key == ord('k') or key == ord('K'):
+            old_motor = self.motor_value
             self.motor_value = max(-100, self.motor_value - 5)
             self.send_motor_command()
-            self.log(f"🎮 Motor: {self.motor_value}%")
-        elif key == curses.KEY_PPAGE:  # Page Up
+            self.log(f"🚁 Motor GERİ: {old_motor}% → {self.motor_value}% (K tuşu)")
+            self.gpio_integration.beep_success()
+        elif key == ord('i') or key == ord('I'):
+            old_motor = self.motor_value
             self.motor_value = min(100, self.motor_value + 15)
             self.send_motor_command()
-            self.log(f"🎮 Motor BOOST: {self.motor_value}%")
-        elif key == curses.KEY_NPAGE:  # Page Down
+            self.log(f"🚁 Motor BOOST İLERİ: {old_motor}% → {self.motor_value}% (I tuşu)")
+            self.gpio_integration.beep_warning()
+        elif key == ord('m') or key == ord('M'):
+            old_motor = self.motor_value
             self.motor_value = max(-100, self.motor_value - 15)
             self.send_motor_command()
-            self.log(f"🎮 Motor BOOST: {self.motor_value}%")
+            self.log(f"🚁 Motor BOOST GERİ: {old_motor}% → {self.motor_value}% (M tuşu)")
+            self.gpio_integration.beep_warning()
+        
+        # Motor STOP - SPACE haricinde
+        elif key == ord('n') or key == ord('N'):
+            old_motor = self.motor_value
+            self.motor_value = 0
+            self.send_motor_command()
+            self.log(f"🚁 Motor STOP: {old_motor}% → 0% (N tuşu)")
+            self.gpio_integration.beep_error()
         
         # ARM/DISARM
         elif key == ord(' '):  # Space
@@ -890,9 +1170,11 @@ class AdvancedTerminalGUI:
         elif key == ord('r'):
             self.control_mode = "RAW"
             self.log("🎛️ Kontrol modu: RAW PWM")
+            self.gpio_integration.beep_success()
         elif key == ord('f'):
             self.control_mode = "PID"
             self.log("🎛️ Kontrol modu: PID")
+            self.gpio_integration.beep_success()
         
         # Menü geçişleri
         elif key == ord('0'):
@@ -901,14 +1183,111 @@ class AdvancedTerminalGUI:
         elif key == ord('t') or key == ord('T'):
             self.current_menu = "test_scripts"
             self.log("🔧 Test script menüsüne geçildi")
+        elif key == ord('g') or key == ord('G'):
+            self.current_menu = "gpio_test"
+            self.log("🔧 GPIO/I2C test menüsüne geçildi")
+        
+        # GPIO hızlı testler
+        elif key == ord('b') or key == ord('B'):
+            self.gpio_integration.beep_warning()
+            self.log("🔊 Buzzer test - uyarı sesi çalındı")
         
         # Diğer özellikler
         elif key == ord('c'):
             self.show_config_menu()
         elif key == ord('v'):
             self.show_vibration_data()
-        elif key == ord('g'):
+        elif key == ord('p'):
             self.show_gps_data()
+    
+    def handle_gpio_test(self, key):
+        """GPIO test menüsü tuşları - YENİ!"""
+        # LED testleri
+        if key == ord('1'):
+            self.gpio_integration.gpio.set_led('red', True, 100)
+            self.log("🔴 Kırmızı LED açıldı")
+            # 1 saniye sonra kapat
+            threading.Timer(1.0, lambda: self.gpio_integration.gpio.set_led('red', False)).start()
+        elif key == ord('2'):
+            self.gpio_integration.gpio.set_led('green', True, 100)
+            self.log("🟢 Yeşil LED açıldı")
+            threading.Timer(1.0, lambda: self.gpio_integration.gpio.set_led('green', False)).start()
+        elif key == ord('3'):
+            self.gpio_integration.gpio.set_led('blue', True, 100)
+            self.log("🔵 Mavi LED açıldı")
+            threading.Timer(1.0, lambda: self.gpio_integration.gpio.set_led('blue', False)).start()
+        elif key == ord('4'):
+            self.gpio_integration.gpio.set_led('warning', True)
+            self.log("⚠️ Warning LED açıldı")
+            threading.Timer(1.0, lambda: self.gpio_integration.gpio.set_led('warning', False)).start()
+        elif key == ord('5'):
+            self.gpio_integration.gpio.set_led('status', True)
+            self.log("📊 Status LED açıldı")
+            threading.Timer(1.0, lambda: self.gpio_integration.gpio.set_led('status', False)).start()
+        elif key == ord('6'):
+            # RGB LED renk döngüsü
+            def rgb_cycle():
+                colors = [(100, 0, 0), (0, 100, 0), (0, 0, 100), (100, 100, 0), (100, 0, 100), (0, 100, 100)]
+                for r, g, b in colors:
+                    self.gpio_integration.gpio.set_rgb_led(r, g, b)
+                    time.sleep(0.3)
+                self.gpio_integration.gpio.set_rgb_led(0, 0, 0)
+            threading.Thread(target=rgb_cycle, daemon=True).start()
+            self.log("🌈 RGB LED renk döngüsü başlatıldı")
+        
+        # Buzzer testleri
+        elif key == ord('7'):
+            self.gpio_integration.gpio.buzzer_beep(1000, 0.3, 50)
+            self.log("🔊 Buzzer beep testi (1000Hz)")
+        elif key == ord('8'):
+            # Alarm pattern
+            def alarm_pattern():
+                for _ in range(3):
+                    self.gpio_integration.gpio.buzzer_beep(2000, 0.2, 70)
+                    time.sleep(0.1)
+                    self.gpio_integration.gpio.buzzer_beep(1000, 0.2, 70)
+                    time.sleep(0.1)
+            threading.Thread(target=alarm_pattern, daemon=True).start()
+            self.log("🚨 Buzzer alarm pattern çalındı")
+        elif key == ord('9'):
+            # Button durumu göster
+            button_state = self.gpio_integration.read_button()
+            self.log(f"🔘 Button durumu: {'BASILDI' if button_state else 'BASILMADI'}")
+        
+        # I2C testleri
+        elif key == ord('d') or key == ord('D'):
+            if self.gpio_integration.depth_ready:
+                depth_data = self.gpio_integration.get_depth_data()
+                if depth_data:
+                    self.log(f"🌊 D300 Test: {depth_data['depth_m']:.2f}m, {depth_data['temperature_c']:.1f}°C")
+                else:
+                    self.log("❌ D300 veri alınamadı")
+            else:
+                self.log("❌ D300 sensörü hazır değil")
+        elif key == ord('s') or key == ord('S'):
+            self.log("🔍 I2C tarama başlatılıyor...")
+            # I2C scanner çalıştır
+            try:
+                result = subprocess.run([sys.executable, "i2c_scanner.py"], capture_output=True, text=True, timeout=10)
+                for line in result.stdout.strip().split('\n')[-3:]:  # Son 3 satır
+                    if line.strip():
+                        self.log(f"I2C: {line}")
+            except Exception as e:
+                self.log(f"❌ I2C tarama hatası: {e}")
+        elif key == ord('c') or key == ord('C'):
+            if self.gpio_integration.depth_sensor:
+                success = self.gpio_integration.depth_sensor.calibrate_surface()
+                if success:
+                    self.log("✅ D300 yüzey kalibrasyonu tamamlandı")
+                else:
+                    self.log("❌ D300 kalibrasyon başarısız")
+            else:
+                self.log("❌ D300 sensörü yok")
+        
+        # Menü geçişi
+        elif key == ord('b') or key == ord('B'):
+            self.current_menu = "main"
+            self.log("🔙 Ana menüye dönüldü")
     
     def handle_mission_planning(self, key):
         """Görev planlama tuşları"""
@@ -920,18 +1299,22 @@ class AdvancedTerminalGUI:
                 if self.mission_planner.add_mission(command, value):
                     cmd_name = self.mission_planner.mission_commands[command]['name']
                     self.log(f"✅ Görev eklendi: {cmd_name} ({value})")
+                    self.gpio_integration.beep_success()
         
         # Görev kontrolü
         elif key == ord('\n') or key == ord('\r'):  # Enter
             if self.mission_planner.start_mission():
                 self.log("🚀 Görev akışı başlatıldı!")
+                self.gpio_integration.beep_warning()
                 self.execute_mission_flow()
             else:
                 self.log("❌ Başlatılacak görev yok!")
+                self.gpio_integration.beep_error()
         
         elif key == ord('c') or key == ord('C'):
             self.mission_planner.clear_missions()
             self.log("🗑️ Tüm görevler temizlendi")
+            self.gpio_integration.beep_success()
         
         elif key == ord('b') or key == ord('B'):
             self.current_menu = "main"
@@ -945,11 +1328,13 @@ class AdvancedTerminalGUI:
             if self.test_manager.run_script(script_id, self.test_script_callback):
                 script_info = self.test_manager.available_scripts.get(script_id, {})
                 self.log(f"🔧 Test başlatıldı: {script_info.get('name', 'Unknown')}")
+                self.gpio_integration.beep_success()
         
         # Script durdurma
         elif key == ord('s') or key == ord('S'):
             if self.test_manager.running_script:
                 self.log("⏹️ Çalışan script durduruluyor...")
+                self.gpio_integration.beep_warning()
                 # Script durdurma işlemi burada implement edilecek
             else:
                 self.log("⚠️ Çalışan script yok")
@@ -1293,9 +1678,10 @@ class AdvancedTerminalGUI:
             self.log(f"❌ Motor komut hatası: {e}")
     
     def toggle_arm(self):
-        """ARM/DISARM toggle - BASIT VE GÜÇLÜ"""
+        """ARM/DISARM toggle - GPIO entegrasyonu ile"""
         if not self.mavlink or not self.mavlink.connected:
             self.log("❌ TCP MAVLink bağlantısı yok!")
+            self.gpio_integration.beep_error()
             return
         
         try:
@@ -1307,6 +1693,10 @@ class AdvancedTerminalGUI:
                 self.armed = False
                 self.log("🟢 GUI DISARM edildi (servo komutları artık gönderilmez)")
                 
+                # GPIO LED güncelle - YENİ!
+                self.gpio_integration.set_connection_status_led(True, False)
+                self.gpio_integration.beep_success()
+                
                 # Kontrolleri sıfırla
                 self.servo_values = {'roll': 0, 'pitch': 0, 'yaw': 0}
                 self.motor_value = 0
@@ -1317,11 +1707,20 @@ class AdvancedTerminalGUI:
                 if self.mavlink.arm_system():
                     self.armed = True
                     self.log("🔴 GUI ARM edildi! Servo komutları MAVLink'e gönderilecek!")
-                    self.log("🎮 Artık Q/E, W/S, A/D, O/L tuşları servo'ları hareket ettirir!")
+                    self.log("🎮 Artık Q/E, W/S, A/D, J/K/I/M tuşları kontrolleri hareket ettirir!")
+                    
+                    # GPIO LED güncelle - YENİ!
+                    self.gpio_integration.set_connection_status_led(True, True)
+                    self.gpio_integration.beep_warning()  # ARM uyarısı
+                    
                 else:
                     self.log("⚠️ ARM başarısız ama GUI ARM moduna geçiyor (test için)")
                     self.armed = True  # Test için GUI'de ARM yap
                     self.log("💡 Manuel kontroller çalışır ama servo'lar hareket etmez")
+                    
+                    # GPIO uyarı - YENİ!
+                    self.gpio_integration.set_connection_status_led(True, True)
+                    self.gpio_integration.beep_error()
             
         except Exception as e:
             self.log(f"❌ ARM/DISARM hatası: {e}")
@@ -1329,6 +1728,10 @@ class AdvancedTerminalGUI:
             self.armed = not self.armed
             status = "ARM" if self.armed else "DISARM"
             self.log(f"🔄 GUI {status} durumuna geçirildi (test için)")
+            
+            # GPIO hata sinyali - YENİ!
+            self.gpio_integration.beep_error()
+            self.gpio_integration.set_connection_status_led(True, self.armed)
     
     def show_config_menu(self):
         """Konfigürasyon menüsü"""
@@ -1349,10 +1752,13 @@ class AdvancedTerminalGUI:
             if gps_data:
                 lat, lon, alt, sats = gps_data
                 self.log(f"🗺️ GPS: Lat={lat:.6f}° Lon={lon:.6f}° Alt={alt:.1f}m Sats={sats}")
+                self.gpio_integration.beep_success()
             else:
                 self.log("🗺️ GPS verisi alınamadı")
+                self.gpio_integration.beep_error()
         else:
             self.log("⚠️ MAVLink bağlantısı gerekli")
+            self.gpio_integration.beep_error()
     
     def main_loop(self):
         """Ana döngü - optimize edilmiş"""
@@ -1370,6 +1776,7 @@ class AdvancedTerminalGUI:
                     # UI bileşenlerini çiz
                     self.draw_header()
                     self.draw_live_imu_display()
+                    self.draw_depth_sensor_display()
                     self.draw_controls_and_menu()
                     self.draw_logs()
                     
@@ -1394,7 +1801,7 @@ class AdvancedTerminalGUI:
                 self.log(f"❌ Ana döngü hatası: {e}")
     
     def cleanup(self):
-        """Temizlik işlemleri"""
+        """Temizlik işlemleri - GPIO/I2C DİL entegrasyonu"""
         self.log("🔄 Sistem kapatılıyor...")
         
         # Thread'leri durdur
@@ -1413,12 +1820,19 @@ class AdvancedTerminalGUI:
             except:
                 pass
         
-        # Depth sensor
-        if self.depth_sensor:
+        # GPIO ve I2C temizliği - YENİ!
+        if self.gpio_integration:
             try:
-                self.depth_sensor.disconnect()
-            except:
-                pass
+                # Son ses - sistem kapanıyor
+                self.gpio_integration.beep_warning()
+                self.gpio_integration.set_rgb_led(100, 100, 0)  # Turuncu
+                time.sleep(0.2)
+                self.gpio_integration.set_rgb_led(0, 0, 0)  # Kapat
+                
+                # GPIO/I2C cleanup
+                self.gpio_integration.cleanup()
+            except Exception as e:
+                self.log(f"⚠️ GPIO cleanup hatası: {e}")
         
         self.log("✅ Sistem temizlendi!")
     
