@@ -298,7 +298,29 @@ class MAVLinkHandler:
             return self.control_servos_raw(roll_output, pitch_output, yaw_output)
     
     def get_imu_data(self):
-        """IMU verilerini al"""
+        """IMU verilerini al (Roll, Pitch, Yaw)"""
+        if not self.connected:
+            return None
+            
+        try:
+            # ATTITUDE mesajını al (Roll, Pitch, Yaw için)
+            msg = self.master.recv_match(type='ATTITUDE', blocking=False, timeout=0.1)
+            if msg:
+                # Radians to degrees
+                roll = math.degrees(msg.roll)
+                pitch = math.degrees(msg.pitch) 
+                yaw = math.degrees(msg.yaw)
+                
+                return roll, pitch, yaw
+                
+        except Exception as e:
+            print(f"❌ IMU veri hatası: {e}")
+            pass
+            
+        return None
+    
+    def get_raw_imu_data(self):
+        """RAW IMU verilerini al (Accelerometer, Gyro)"""
         if not self.connected:
             return None
             

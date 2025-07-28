@@ -222,11 +222,11 @@ class HeadlessServoTest:
             while True:
                 imu_data = self.mavlink.get_imu_data()
                 
-                if imu_data:
-                    roll, pitch, yaw = imu_data
+                if imu_data and len(imu_data) >= 3:
+                    roll, pitch, yaw = imu_data[0], imu_data[1], imu_data[2]
                     print(f"\rRoll: {roll:+6.1f}° | Pitch: {pitch:+6.1f}° | Yaw: {yaw:+6.1f}°", end="", flush=True)
                 else:
-                    print(f"\r❌ IMU verisi alınamıyor", end="", flush=True)
+                    print(f"\r❌ IMU verisi alınamıyor (bağlantı kontrol edin)    ", end="", flush=True)
                 
                 time.sleep(0.1)  # 10Hz
                 
