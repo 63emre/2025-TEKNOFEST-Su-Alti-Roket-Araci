@@ -132,7 +132,7 @@ Li-Polimer Pil Besleme
 
 ### **Fin Control Matrix - X Konfigürasyonu (AUX 1-4)**
 ```
-   Ön Sol (AUX 1) ────────────── Ön Sağ (AUX 2)
+   Ön Sol (AUX 1) ────────────── Ön Sağ (AUX 3)
        │   \                 /   │
        │    \               /    │
        │     \             /     │
@@ -149,12 +149,14 @@ Li-Polimer Pil Besleme
        │     /             \     │
        │    /               \    │
        │   /                 \   │
-  Arka Sol (AUX 3) ────────────── Arka Sağ (AUX 4)
+  Arka Sol (AUX 4) ────────────── Arka Sağ (AUX 5)
 
 X-Konfigürasyon Kontrol Matrisi:
 Roll Control  → AUX 1 & AUX 3 vs AUX 2 & AUX 4 (Çapraz Differential)
 Pitch Control → AUX 1 & AUX 2 vs AUX 3 & AUX 4 (Ön/Arka Differential)  
 Yaw Control   → AUX 1 & AUX 4 vs AUX 2 & AUX 3 (X-Diagonal)
+aux 6 MOTOR
+
 ```
 
 ### **PWM Signal Specs**

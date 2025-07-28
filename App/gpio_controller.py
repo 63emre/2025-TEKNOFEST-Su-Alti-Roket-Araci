@@ -76,11 +76,9 @@ class GPIOController:
                     pwm.start(0)
                 
                 self.initialized = True
-                print("✅ GPIO sistemi başlatıldı")
                 return True
                 
         except Exception as e:
-            print(f"❌ GPIO başlatma hatası: {e}")
             return False
     
     def cleanup(self):
@@ -98,10 +96,9 @@ class GPIOController:
                 GPIO.cleanup()
                 
                 self.initialized = False
-                print("🔄 GPIO temizlendi")
                 
         except Exception as e:
-            print(f"⚠️ GPIO temizleme uyarısı: {e}")
+            pass
     
     def set_led(self, led_name, state, brightness=100):
         """LED kontrol (on/off veya PWM)"""

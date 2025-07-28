@@ -2123,9 +2123,6 @@ class AdvancedTerminalGUI:
     
     def run(self):
         """Uygulamayı çalıştır"""
-        # Sistem bileşenlerini başlat
-        self.init_systems()
-        
         # Curses uygulamasını başlat
         try:
             curses.wrapper(self._curses_main)
@@ -2137,6 +2134,8 @@ class AdvancedTerminalGUI:
     def _curses_main(self, stdscr):
         """Curses ana fonksiyonu"""
         self.init_curses(stdscr)
+        # Sistem bileşenlerini curses SONRASI başlat
+        self.init_systems()
         self.main_loop()
 
 if __name__ == "__main__":
