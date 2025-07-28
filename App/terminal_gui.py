@@ -469,27 +469,32 @@ class AdvancedTerminalGUI:
                 
                 # Double check: Gerçekten bağlı mı?
                 if self.mavlink and self.mavlink.connected:
-                    self.tcp_data['connected'] = True
-                    self.live_imu['connected'] = True
-                    self.log(f"✅ TCP flags set edildi: tcp_data={self.tcp_data['connected']}, live_imu={self.live_imu['connected']}")
+                    # TCP flags'i init time'da set ET - DATA THREAD DEĞİL!
+                    with self.data_lock:
+                        self.tcp_data['connected'] = True
+                        self.live_imu['connected'] = True
+                    self.log(f"✅ TCP flags INIT'te set edildi: tcp_data={self.tcp_data['connected']}, live_imu={self.live_imu['connected']}")
                     
                     # İlk IMU test - çalışıyor mu kontrol et
                     test_imu = self.mavlink.get_imu_data()
                     if test_imu:
                         self.log("✅ İlk IMU verisi alındı - sistem hazır!")
+                        self.log(f"🔧 İlk IMU: ax={test_imu[0]:.2f}, ay={test_imu[1]:.2f}, az={test_imu[2]:.2f}")
                     else:
-                        self.log("⚠️ IMU verisi alınamadı ama bağlantı var")
+                        self.log("⚠️ IMU verisi alınamadı - data thread beklenecek")
                 else:
                     self.log("❌ mavlink.connected False - TCP flags set edilmedi!")
-                    self.tcp_data['connected'] = False
-                    self.live_imu['connected'] = False
+                    with self.data_lock:
+                        self.tcp_data['connected'] = False
+                        self.live_imu['connected'] = False
                 
             else:
-                self.log("❌ TCP MAVLink bağlantısı başliyor ama connect() False döndü!")
-                self.log("🔧 Debug: TCP test script çalışıyor ama GUI bağlanamıyor")
-                self.log("💡 Çözüm: mavlink_handler.py timeout veya config sorunu")
-                self.tcp_data['connected'] = False
-                self.live_imu['connected'] = False
+                self.log("❌ TCP MAVLink bağlantısı başarısız - connect() False döndü!")
+                self.log("🔧 Debug: socat çalışıyor ama MAVLink connect edemedi")
+                self.log("💡 Çözüm: mavlink_handler.py connection string veya timeout sorunu")
+                with self.data_lock:
+                    self.tcp_data['connected'] = False
+                    self.live_imu['connected'] = False
                 
                 # GPIO hata sinyali
                 self.gpio_integration.set_connection_status_led(False, False)
@@ -500,8 +505,9 @@ class AdvancedTerminalGUI:
             self.log(f"🔧 Exception türü: {type(e).__name__}")
             import traceback
             self.log(f"🔍 Traceback: {traceback.format_exc()}")
-            self.tcp_data['connected'] = False
-            self.live_imu['connected'] = False
+            with self.data_lock:
+                self.tcp_data['connected'] = False
+                self.live_imu['connected'] = False
             
             # GPIO hata sinyali
             self.gpio_integration.set_connection_status_led(False, False)
@@ -519,11 +525,12 @@ class AdvancedTerminalGUI:
         
         self.log("✅ Sistem başlatma tamamlandı!")
         
-        # Başlangıç durumu özeti
+        # Başlangıç durumu özeti - DÜZELTİLDİ!
         print(f"🔧 DEBUG: Final tcp_data['connected'] = {self.tcp_data['connected']}")
         print(f"🔧 DEBUG: Final live_imu['connected'] = {self.live_imu['connected']}")
         
-        if self.tcp_data['connected']:
+        # Son durum kontrolü - DOGRU BİLGİ VER!
+        if self.tcp_data['connected'] and self.mavlink and self.mavlink.connected:
             self.log("🎯 HAZIR: TCP bağlı, IMU aktif, kontroller hazır!")
             if self.gpio_integration.gpio_ready:
                 self.log("🎯 GPIO: Buzzer/LED/Button aktif, acil durum butonu hazır!")
@@ -531,7 +538,8 @@ class AdvancedTerminalGUI:
                 self.log("🎯 D300: I2C derinlik sensörü aktif!")
             print("🔧 DEBUG: HAZIR mesajı yazdırıldı")
         else:
-            self.log("⚠️ KISMÎ: TCP bağlantısı yok, offline mod aktiv")
+            self.log("⚠️ KISMÎ: TCP bağlantısı BAŞARISIZ - offline mod aktiv")
+            self.log(f"🔧 Detay: mavlink={self.mavlink is not None}, connected={getattr(self.mavlink, 'connected', False)}")
             print("🔧 DEBUG: KISMÎ mesajı yazdırıldı")
     
     def start_tcp_data_thread(self):
@@ -585,27 +593,36 @@ class AdvancedTerminalGUI:
             # Button state değişikliği için log gerekmez, interrupt callback var
     
     def update_tcp_data(self):
-        """TCP'den live veri güncelle - DEBUG EKLENDI"""
+        """TCP'den live veri güncelle - DEBUG EKLENDI VE DÜZELTİLDİ"""
         # DEBUG: Bağlantı durumunu kontrol et
         if not hasattr(self, 'tcp_debug_counter'):
             self.tcp_debug_counter = 0
         self.tcp_debug_counter += 1
         
-        # Her 100 call'da bir debug
-        if self.tcp_debug_counter % 100 == 0:
+        # Her 250 call'da bir debug (5 saniyede bir @ 50Hz)
+        debug_this_call = (self.tcp_debug_counter % 250 == 0)
+        
+        if debug_this_call:
             mavlink_exists = self.mavlink is not None
             mavlink_connected = self.mavlink.connected if self.mavlink else False
-            self.log(f"🔍 TCP Thread Debug: mavlink={mavlink_exists}, connected={mavlink_connected}")
+            self.log(f"🔍 TCP Thread Debug #{self.tcp_debug_counter}: mavlink={mavlink_exists}, connected={mavlink_connected}")
         
-        # TCP Thread connection check - DÜZELTİLDİ
+        # TCP Thread connection check - EARLY RETURN İF NO MAVLINK
         if not self.mavlink:
+            if debug_this_call:
+                self.log("❌ TCP Thread: MAVLink object yok")
             with self.data_lock:
                 self.tcp_data['connected'] = False
                 self.live_imu['connected'] = False
             return
         
-        # MAVLink connected check - DAHA TOLERANSLI
+        # MAVLink connected check - DAHA TOLERANSLI VE DEBUG'LI
         if not hasattr(self.mavlink, 'connected') or not self.mavlink.connected:
+            if debug_this_call:
+                has_connected_attr = hasattr(self.mavlink, 'connected')
+                connected_value = getattr(self.mavlink, 'connected', 'N/A')
+                self.log(f"⚠️ TCP Thread: mavlink.connected check failed - has_attr={has_connected_attr}, value={connected_value}")
+            
             # Bağlantı yoksa ama master varsa yeniden kontrol et
             if hasattr(self.mavlink, 'master') and self.mavlink.master:
                 try:
@@ -614,29 +631,59 @@ class AdvancedTerminalGUI:
                     if msg:
                         # Heartbeat varsa bağlantı var demektir
                         self.mavlink.connected = True
-                except:
-                    pass
+                        if debug_this_call:
+                            self.log("✅ TCP Thread: Heartbeat bulundu - connected=True set edildi")
+                    else:
+                        if debug_this_call:
+                            self.log("⚠️ TCP Thread: Heartbeat bulunamadı")
+                except Exception as e:
+                    if debug_this_call:
+                        self.log(f"❌ TCP Thread: Heartbeat check hatası: {e}")
         
         # Hala bağlantı yoksa False set et
         if not getattr(self.mavlink, 'connected', False):
             with self.data_lock:
-                if self.tcp_data.get('connected', False):
-                    self.log("⚠️ TCP Thread: MAVLink bağlantısı kesildi")
+                # Sadece durum değişirse log
+                was_connected = self.tcp_data.get('connected', False)
+                if was_connected:
+                    self.log("⚠️ TCP Thread: MAVLink bağlantısı KESİLDİ")
                     # GPIO LED güncelle
                     self.gpio_integration.set_connection_status_led(False, False)
                 self.tcp_data['connected'] = False
                 self.live_imu['connected'] = False
             return
         
+        # MAVLink bağlı - IMU verisi almaya çalış
         try:
-            # IMU verilerini TCP'den direkt al - DEBUG TEST SONUCU DÜZELTMESİ
+            # IMU verilerini TCP'den direkt al - DETAILED DEBUG + ALTERNATIVE
             raw_imu = self.mavlink.get_imu_data()
+            
+            # Eğer ana IMU yoksa alternatif dene - YENİ!
+            if not raw_imu and hasattr(self.mavlink, 'get_imu_data_alternative'):
+                raw_imu = self.mavlink.get_imu_data_alternative()
+                if raw_imu and debug_this_call:
+                    self.log("🔧 TCP Thread: ALTERNATIVE IMU source kullanıldı (ATTITUDE)")
+            
+            if debug_this_call:
+                if raw_imu:
+                    self.log(f"🔧 TCP Thread: get_imu_data() SUCCESS - len={len(raw_imu)}")
+                else:
+                    self.log("⚠️ TCP Thread: get_imu_data() FAILED - None return (her iki method da)")
+            
             if raw_imu and len(raw_imu) >= 6:
                 with self.data_lock:
                     # Raw veriyi sakla
                     self.tcp_data['imu_raw'] = raw_imu
+                    
+                    # Connection status update - sadece durum değişikliğinde
+                    was_connected = self.tcp_data.get('connected', False)
                     self.tcp_data['connected'] = True
                     self.tcp_data['last_packet'] = time.time()
+                    
+                    if not was_connected:
+                        self.log("✅ TCP Thread: IMU data akışı BAŞLADI!")
+                        # GPIO LED güncelle
+                        self.gpio_integration.set_connection_status_led(True, self.armed)
                     
                     # Live IMU hesapla - YAW dahil
                     self.calculate_live_orientation(raw_imu)
@@ -662,29 +709,43 @@ class AdvancedTerminalGUI:
                         self.data_debug_counter = 0
                     self.data_debug_counter += 1
                     
-                    if self.data_debug_counter % 100 == 0:
+                    if self.data_debug_counter % 250 == 0:  # 5 saniyede bir
                         accel_x, accel_y, accel_z = raw_imu[0], raw_imu[1], raw_imu[2]
                         gyro_x, gyro_y, gyro_z = raw_imu[3], raw_imu[4], raw_imu[5]
-                        self.log(f"🔧 TCP Data: Rate={self.live_imu['update_rate']}Hz, IMU=({accel_x:.2f},{accel_y:.2f},{accel_z:.2f})")
-                        self.log(f"🎯 GYRO Data: gx={gyro_x:.3f} gy={gyro_y:.3f} gz={gyro_z:.3f} (YAW için gz kullanılıyor)")
+                        self.log(f"🔧 TCP Data OK: Rate={self.live_imu['update_rate']}Hz, IMU=({accel_x:.2f},{accel_y:.2f},{accel_z:.2f})")
                         
             else:
                 # IMU verisi gelmiyorsa durum güncelle
                 with self.data_lock:
-                    if time.time() - self.tcp_data.get('last_packet', 0) > 2.0:  # 2 saniye timeout
+                    last_packet_time = self.tcp_data.get('last_packet', 0)
+                    data_age = time.time() - last_packet_time
+                    
+                    if data_age > 2.0:  # 2 saniye timeout
+                        was_connected = self.tcp_data.get('connected', False)
+                        if was_connected:
+                            self.log(f"⚠️ TCP Thread: IMU data timeout ({data_age:.1f}s)")
+                            # GPIO LED güncelle
+                            self.gpio_integration.set_connection_status_led(False, False)
+                        
                         self.tcp_data['connected'] = False
                         self.live_imu['connected'] = False
                         self.live_imu['update_rate'] = 0
                         
         except Exception as e:
             with self.data_lock:
+                was_connected = self.tcp_data.get('connected', False)
+                if was_connected:
+                    self.log(f"❌ TCP Thread: IMU data exception - bağlantı kesilecek")
+                    # GPIO LED güncelle
+                    self.gpio_integration.set_connection_status_led(False, False)
+                
                 self.tcp_data['connected'] = False
                 self.live_imu['connected'] = False
                 self.live_imu['update_rate'] = 0
             
             # Error logging (her hata için değil, sadece yeni hatalar için)
             if not hasattr(self, 'last_tcp_error') or time.time() - self.last_tcp_error > 5.0:
-                self.log(f"❌ TCP veri hatası: {e}")
+                self.log(f"❌ TCP data exception: {e}")
                 self.last_tcp_error = time.time()
     
     def calculate_live_orientation(self, raw_imu):
@@ -944,10 +1005,10 @@ class AdvancedTerminalGUI:
         
         commands = [
             "W/S: Pitch ±",       "A/D: Roll ±",        "Q/E: Yaw ±",
-            "J/K: Motor ±5%",     "I/M: Motor ±15%",    "Space: ARM/DISARM",
+            "J/K: Motor ±5%",     "I/M: Motor ±15%",    "N: Motor STOP",
             "R/F: RAW/PID Mode",  "0: Mission Plan",    "T: Test Scripts",
-            "G: GPIO Test",       "C: Config",          "V: Vibration",
-            "P: GPS Data",        "B: Buzzer Test",     "X: Exit",
+            "G: GPIO Test",       "Z: TCP Debug",       "B: Buzzer Test",
+            "Space: ARM/DISARM",  "C: Config",          "X: Exit",
         ]
         
         row = start_row + 8
@@ -1176,6 +1237,10 @@ class AdvancedTerminalGUI:
             self.log("🎛️ Kontrol modu: PID")
             self.gpio_integration.beep_success()
         
+        # TCP CONNECTION DEBUG - YENİ! ⭐
+        elif key == ord('z') or key == ord('Z'):
+            self.tcp_connection_debug()
+        
         # Menü geçişleri
         elif key == ord('0'):
             self.current_menu = "mission_plan"
@@ -1199,6 +1264,78 @@ class AdvancedTerminalGUI:
             self.show_vibration_data()
         elif key == ord('p'):
             self.show_gps_data()
+    
+    def tcp_connection_debug(self):
+        """TCP bağlantı debug - INSTANT TEST"""
+        self.log("🔍 TCP CONNECTION DEBUG BAŞLATILIYOR...")
+        
+        # MAVLink durumu
+        if self.mavlink:
+            self.log(f"📡 MAVLink Object: ✅ EXISTS")
+            self.log(f"📡 mavlink.connected: {getattr(self.mavlink, 'connected', 'N/A')}")
+            self.log(f"📡 mavlink.master: {getattr(self.mavlink, 'master', 'N/A') is not None}")
+            
+            # Master durumu
+            if hasattr(self.mavlink, 'master') and self.mavlink.master:
+                try:
+                    # Son mesajı kontrol et
+                    msg = self.mavlink.master.recv_match(blocking=False, timeout=0.1)
+                    if msg:
+                        self.log(f"📡 Son mesaj tipi: {msg.get_type()}")
+                    else:
+                        self.log("📡 Hiç mesaj yok")
+                        
+                    # IMU verisi test et - VE ALTERNATIVE
+                    imu_test = self.mavlink.get_imu_data()
+                    if imu_test:
+                        self.log(f"📡 IMU test: ✅ SUCCESS - {len(imu_test)} values")
+                        self.log(f"📡 IMU sample: ax={imu_test[0]:.3f}, ay={imu_test[1]:.3f}, az={imu_test[2]:.3f}")
+                    else:
+                        self.log("📡 IMU test: ❌ FAILED - None return")
+                        # Alternative test
+                        if hasattr(self.mavlink, 'get_imu_data_alternative'):
+                            imu_alt = self.mavlink.get_imu_data_alternative()
+                            if imu_alt:
+                                self.log(f"📡 IMU ALTERNATIVE: ✅ SUCCESS - {len(imu_alt)} values")
+                                self.log(f"📡 ALT sample: ax={imu_alt[0]:.3f}, gy={imu_alt[4]:.3f}, gz={imu_alt[5]:.3f}")
+                            else:
+                                self.log("📡 IMU ALTERNATIVE: ❌ FAILED")
+                        
+                except Exception as e:
+                    self.log(f"📡 Master test error: {e}")
+            else:
+                self.log("📡 Master: ❌ NOT EXISTS")
+        else:
+            self.log("📡 MAVLink Object: ❌ NOT EXISTS")
+        
+        # Thread durumu
+        with self.data_lock:
+            self.log(f"🔄 TCP Data Connected: {self.tcp_data['connected']}")
+            self.log(f"🔄 Live IMU Connected: {self.live_imu['connected']}")
+            self.log(f"🔄 IMU Update Rate: {self.live_imu['update_rate']}Hz")
+            
+            last_packet = self.tcp_data.get('last_packet', 0)
+            if last_packet > 0:
+                data_age = time.time() - last_packet
+                self.log(f"🔄 Son veri: {data_age:.1f} saniye önce")
+            else:
+                self.log("🔄 Hiç veri alınmamış")
+        
+        # TCP port kontrolü - shell command
+        try:
+            import subprocess
+            result = subprocess.run(['ss', '-tlnp'], capture_output=True, text=True, timeout=3)
+            for line in result.stdout.split('\n'):
+                if '5777' in line:
+                    self.log(f"🔌 Port 5777: {line.strip()}")
+                    break
+            else:
+                self.log("🔌 Port 5777: ❌ NOT LISTENING")
+        except Exception as e:
+            self.log(f"🔌 Port check error: {e}")
+        
+        self.log("🔍 TCP CONNECTION DEBUG TAMAMLANDI")
+        self.gpio_integration.beep_success()
     
     def handle_gpio_test(self, key):
         """GPIO test menüsü tuşları - YENİ!"""

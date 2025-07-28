@@ -306,7 +306,7 @@ class MAVLinkHandler:
             return self.control_servos_raw(roll_output, pitch_output, yaw_output)
     
     def get_imu_data(self):
-        """IMU verilerini al - Pi5 + TCP optimize"""
+        """IMU verilerini al - Pi5 + TCP optimize - DEBUG ENHANCED"""
         if not self.connected or not self.master:
             return None
             
@@ -336,10 +336,60 @@ class MAVLinkHandler:
                 gyro_z = msg_scaled.zgyro / 1000.0 * (math.pi / 180.0)
                 
                 return accel_x, accel_y, accel_z, gyro_x, gyro_y, gyro_z
+            
+            # DEBUG: TCP'de hangi mesajlar var kontrol et - YENİ!
+            # Sadece debug amaçlı - her 1000 call'da bir
+            if not hasattr(self, 'imu_debug_counter'):
+                self.imu_debug_counter = 0
+            self.imu_debug_counter += 1
+            
+            if self.imu_debug_counter % 1000 == 1:  # İlk call ve sonra her 1000'de bir
+                print(f"🔍 IMU DEBUG #{self.imu_debug_counter}: RAW_IMU ve SCALED_IMU bulunamadı")
+                # Herhangi bir mesaj var mı?
+                any_msg = self.master.recv_match(blocking=False, timeout=0.05)
+                if any_msg:
+                    print(f"🔍 TCP'de bulunan mesaj tipi: {any_msg.get_type()}")
+                    # Eğer ATTITUDE mesajı varsa kullanabiliriz
+                    if any_msg.get_type() == 'ATTITUDE':
+                        print("🔍 ATTITUDE mesajı bulundu - alternatif IMU source!")
+                else:
+                    print("🔍 TCP'de hiç mesaj yok!")
+                    
+        except Exception as e:
+            # Debug için hata göster
+            if not hasattr(self, 'imu_error_counter'):
+                self.imu_error_counter = 0
+            self.imu_error_counter += 1
+            
+            if self.imu_error_counter % 100 == 1:  # Her 100 hatada bir log
+                print(f"❌ IMU data exception #{self.imu_error_counter}: {e}")
+        
+        return None
+    
+    def get_imu_data_alternative(self):
+        """ATTITUDE mesajından IMU verisi al - TCP için alternatif"""
+        if not self.connected or not self.master:
+            return None
+            
+        try:
+            # ATTITUDE mesajını dene - ArduSub'da her zaman var
+            msg = self.master.recv_match(type='ATTITUDE', blocking=False, timeout=0.05)
+            if msg:
+                # ATTITUDE mesajından sadece gyro değerleri
+                rollspeed = msg.rollspeed   # rad/s
+                pitchspeed = msg.pitchspeed # rad/s
+                yawspeed = msg.yawspeed     # rad/s
+                
+                # Accel değerleri ATTITUDE'de yok, sabit değer ver
+                accel_x = 0.0
+                accel_y = 0.0  
+                accel_z = 9.81  # Gravity
+                
+                return accel_x, accel_y, accel_z, rollspeed, pitchspeed, yawspeed
                 
         except Exception as e:
-            # Sessiz hata - çok fazla log olmasın
             pass
+        
         return None
     
     def get_gps_data(self):
