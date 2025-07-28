@@ -83,7 +83,37 @@ class MAVLinkHandler:
             # Sistem durumunu kontrol et
             self.check_system_status()
             
+            # IMU data stream'lerini request et
+            self.request_imu_streams()
+            
             return True
+    
+    def request_imu_streams(self):
+        """IMU veri akışlarını başlat"""
+        try:
+            print("📡 IMU veri akışları başlatılıyor...")
+            
+            # 20 Hz = 50,000 microseconds
+            stream_rate = 50000
+            
+            message_intervals = [
+                (mavutil.mavlink.MAVLINK_MSG_ID_HIGHRES_IMU, stream_rate),
+                (mavutil.mavlink.MAVLINK_MSG_ID_ATTITUDE, stream_rate),
+                (mavutil.mavlink.MAVLINK_MSG_ID_VFR_HUD, 100000),  # 10 Hz for speed
+            ]
+            
+            for msg_id, interval in message_intervals:
+                self.master.mav.command_long_send(
+                    self.master.target_system,
+                    self.master.target_component,
+                    mavutil.mavlink.MAV_CMD_SET_MESSAGE_INTERVAL,
+                    0, msg_id, interval, 0, 0, 0, 0, 0
+                )
+            
+            print("✅ IMU streams başlatıldı (HIGHRES_IMU 20Hz, ATTITUDE 20Hz)")
+            
+        except Exception as e:
+            print(f"❌ IMU stream request hatası: {e}")
             
         except Exception as e:
             print(f"❌ TCP MAVLink bağlantı hatası: {e}")
@@ -306,21 +336,21 @@ class MAVLinkHandler:
             return self.control_servos_raw(roll_output, pitch_output, yaw_output)
     
     def get_imu_data(self):
-        """IMU verilerini al - Pi5 + TCP optimize - DEBUG ENHANCED"""
+        """IMU verilerini al - HIGHRES_IMU kullanarak (ArduSub uyumlu)"""
         if not self.connected or not self.master:
             return None
             
         try:
-            # Pi5'te TCP üzerinden IMU verisi almayı optimize et
-            msg = self.master.recv_match(type='RAW_IMU', blocking=False, timeout=0.05)
+            # HIGHRES_IMU mesajını dene (ArduSub'da bu var!)
+            msg = self.master.recv_match(type='HIGHRES_IMU', blocking=False, timeout=0.05)
             if msg:
-                # Convert to SI units - DÜZELTİLDİ
-                accel_x = msg.xacc / 1000.0 * 9.81  # mg to m/s² (gravity included)
-                accel_y = msg.yacc / 1000.0 * 9.81
-                accel_z = msg.zacc / 1000.0 * 9.81
-                gyro_x = msg.xgyro / 1000.0 * (math.pi / 180.0)  # mdeg/s to rad/s
-                gyro_y = msg.ygyro / 1000.0 * (math.pi / 180.0)
-                gyro_z = msg.zgyro / 1000.0 * (math.pi / 180.0)
+                # HIGHRES_IMU formatı - direkt SI units
+                accel_x = msg.xacc  # m/s²
+                accel_y = msg.yacc  # m/s²
+                accel_z = msg.zacc  # m/s²
+                gyro_x = msg.xgyro  # rad/s
+                gyro_y = msg.ygyro  # rad/s
+                gyro_z = msg.zgyro  # rad/s
                 
                 return accel_x, accel_y, accel_z, gyro_x, gyro_y, gyro_z
             
@@ -337,21 +367,30 @@ class MAVLinkHandler:
                 
                 return accel_x, accel_y, accel_z, gyro_x, gyro_y, gyro_z
             
-            # DEBUG: TCP'de hangi mesajlar var kontrol et - YENİ!
-            # Sadece debug amaçlı - her 1000 call'da bir
+            # Son alternatif: RAW_IMU
+            msg_raw = self.master.recv_match(type='RAW_IMU', blocking=False, timeout=0.05)
+            if msg_raw:
+                # RAW_IMU formatı
+                accel_x = msg_raw.xacc / 1000.0 * 9.81  # mg to m/s²
+                accel_y = msg_raw.yacc / 1000.0 * 9.81
+                accel_z = msg_raw.zacc / 1000.0 * 9.81
+                gyro_x = msg_raw.xgyro / 1000.0 * (math.pi / 180.0)  # mdeg/s to rad/s
+                gyro_y = msg_raw.ygyro / 1000.0 * (math.pi / 180.0)
+                gyro_z = msg_raw.zgyro / 1000.0 * (math.pi / 180.0)
+                
+                return accel_x, accel_y, accel_z, gyro_x, gyro_y, gyro_z
+            
+            # DEBUG: TCP'de hangi mesajlar var kontrol et
             if not hasattr(self, 'imu_debug_counter'):
                 self.imu_debug_counter = 0
             self.imu_debug_counter += 1
             
-            if self.imu_debug_counter % 1000 == 1:  # İlk call ve sonra her 1000'de bir
-                print(f"🔍 IMU DEBUG #{self.imu_debug_counter}: RAW_IMU ve SCALED_IMU bulunamadı")
+            if self.imu_debug_counter % 500 == 1:  # Her 500 call'da bir debug
+                print(f"🔍 IMU DEBUG #{self.imu_debug_counter}: HIGHRES_IMU, SCALED_IMU, RAW_IMU bulunamadı")
                 # Herhangi bir mesaj var mı?
                 any_msg = self.master.recv_match(blocking=False, timeout=0.05)
                 if any_msg:
                     print(f"🔍 TCP'de bulunan mesaj tipi: {any_msg.get_type()}")
-                    # Eğer ATTITUDE mesajı varsa kullanabiliriz
-                    if any_msg.get_type() == 'ATTITUDE':
-                        print("🔍 ATTITUDE mesajı bulundu - alternatif IMU source!")
                 else:
                     print("🔍 TCP'de hiç mesaj yok!")
                     
@@ -375,20 +414,30 @@ class MAVLinkHandler:
             # ATTITUDE mesajını dene - ArduSub'da her zaman var
             msg = self.master.recv_match(type='ATTITUDE', blocking=False, timeout=0.05)
             if msg:
-                # ATTITUDE mesajından sadece gyro değerleri
-                rollspeed = msg.rollspeed   # rad/s
-                pitchspeed = msg.pitchspeed # rad/s
-                yawspeed = msg.yawspeed     # rad/s
+                # ATTITUDE mesajından angle rates
+                gyro_x = msg.rollspeed   # rad/s (roll rate)
+                gyro_y = msg.pitchspeed  # rad/s (pitch rate)
+                gyro_z = msg.yawspeed    # rad/s (yaw rate)
                 
-                # Accel değerleri ATTITUDE'de yok, sabit değer ver
-                accel_x = 0.0
-                accel_y = 0.0  
-                accel_z = 9.81  # Gravity
+                # Accelerometer verisi yok, gravity estimate yapalım
+                import math
+                roll_rad = msg.roll
+                pitch_rad = msg.pitch
                 
-                return accel_x, accel_y, accel_z, rollspeed, pitchspeed, yawspeed
+                # Gravity vector estimate
+                accel_x = -9.81 * math.sin(pitch_rad)
+                accel_y = 9.81 * math.sin(roll_rad) * math.cos(pitch_rad)
+                accel_z = 9.81 * math.cos(roll_rad) * math.cos(pitch_rad)
                 
+                return accel_x, accel_y, accel_z, gyro_x, gyro_y, gyro_z
+            
         except Exception as e:
-            pass
+            if not hasattr(self, 'alt_imu_error_counter'):
+                self.alt_imu_error_counter = 0
+            self.alt_imu_error_counter += 1
+            
+            if self.alt_imu_error_counter % 100 == 1:
+                print(f"❌ Alternative IMU data exception #{self.alt_imu_error_counter}: {e}")
         
         return None
     
