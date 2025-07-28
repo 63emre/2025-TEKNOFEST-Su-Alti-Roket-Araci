@@ -106,7 +106,7 @@ class HeadlessServoTest:
                     print("❌ PWM değeri 1100-1900 arasında olmalı!")
                     continue
                 
-                # Servo komutunu gönder
+                # Servo komutunu gönder (test için ARM kontrolü olmadan)
                 success = self.mavlink.set_servo_pwm(servo['channel'], pwm_value)
                 
                 if success:

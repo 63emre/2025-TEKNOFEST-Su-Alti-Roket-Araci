@@ -199,6 +199,39 @@ class MAVLinkHandler:
         except Exception as e:
             print(f"❌ Servo PWM hatası: {e}")
             return False
+
+    def send_servo_test_pwm(self, channel, pwm_value):
+        """Test için servo PWM gönder - ARM kontrolü olmadan"""
+        if not self.connected:
+            print("❌ MAVLink bağlı değil!")
+            return False
+        
+        # PWM limitlerini kontrol et
+        limits = self.config["pixhawk"]["pwm_limits"]
+        pwm_value = max(limits["servo_min"], min(limits["servo_max"], pwm_value))
+        
+        try:
+            # Test modu için ARM kontrolü yapmadan gönder
+            self.master.mav.command_long_send(
+                self.master.target_system,
+                self.master.target_component,
+                mavutil.mavlink.MAV_CMD_DO_SET_SERVO,
+                0, channel, pwm_value, 0, 0, 0, 0, 0
+            )
+            
+            # Test modu için response bekle
+            time.sleep(0.1)
+            
+            self.last_pwm_values[channel] = pwm_value
+            return True
+            
+        except Exception as e:
+            print(f"❌ Test Servo PWM hatası: {e}")
+            return False
+
+    def set_servo_pwm(self, channel, pwm_value):
+        """Servo PWM ayarla (test için alias)"""
+        return self.send_servo_test_pwm(channel, pwm_value)
     
     def send_raw_motor_pwm(self, pwm_value):
         """Motor PWM gönder"""
