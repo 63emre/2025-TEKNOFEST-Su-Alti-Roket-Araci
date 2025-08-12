@@ -377,7 +377,6 @@ python3 terminal_gui.py --joystick /dev/input/js0
 ### 🔗 Bağlantılar:
 - **GitHub**: [TEKNOFEST ROV Project]
 - **Dokümantasyon**: App/README.md
-- **Web GUI**: App/web_gui.py (alternatif)
 
 ---
 

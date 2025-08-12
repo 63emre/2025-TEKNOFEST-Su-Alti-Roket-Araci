@@ -365,7 +365,7 @@ class AdvancedTerminalGUI:
                 "i2c": {"bus_number": 1, "depth_sensor_address": "0x76"}
             },
             "mavlink": {"connection_string": self.serial_port, "baudrate": self.baud_rate},
-            "network": {"web_gui_port": 5000, "log_level": "INFO"}
+            "network": {"log_level": "INFO"}
         }
         
         try:

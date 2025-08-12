@@ -56,7 +56,6 @@
     "timeout": 5
   },
   "network": {
-    "web_gui_port": 5000,
     "log_level": "INFO"
   }
 } 

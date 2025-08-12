@@ -257,23 +257,11 @@ SERVO_FIN_REAR_RIGHT = 5    # AUX 5 - Arka Sağ
 # AUX 7-8 - Gelecek geliştirmeler
 
 # GPIO Pins - Kontrol
-GPIO_POWER_BUTTON = 18      # Güç Butonu
-GPIO_EMERGENCY_STOP = 19    # Acil Kesme 
-GPIO_POWER_RELAY = 21       # Ana Güç Rölesi
-GPIO_PAYLOAD_SENSOR = 22    # Payload Durumu
-GPIO_WATER_DETECT = 23      # Su Algılama
+GPIO_POWER_BUTTON = 18      # Görev Butonu
 
 # GPIO Pins - LED ve Buzzer
 GPIO_LED_RED = 4            # Kırmızı LED
-GPIO_LED_GREEN = 5          # Yeşil LED  
-GPIO_LED_BLUE = 6           # Mavi LED
 GPIO_BUZZER_PWM = 13        # PWM Buzzer
-GPIO_WARNING_LED = 16       # Uyarı LED
-GPIO_SYSTEM_LED = 20        # Sistem LED
-GPIO_MISSION_LED = 24       # Görev LED
-GPIO_EXT_BUZZER = 25        # Dış Buzzer
-GPIO_RGB_STRIP = 26         # RGB LED Strip
-
 # I2C Sensors
 I2C_D300_ADDRESS = 0x76     # D300 Derinlik Sensörü (Pi5 Test)
 
