@@ -56,20 +56,20 @@ except ImportError:
 
 # GERÇEK HARDWARE - Servo kanalları (AUX to MAVLink channel mapping)
 SERVO_CHANNELS = {
-    'aux1': 9,   # AUX 1 = Ön Sol Fin (MAVLink 9)
-    'aux3': 11,  # AUX 3 = Ön Sağ Fin (MAVLink 11)
-    'aux4': 12,  # AUX 4 = Arka Sol Fin (MAVLink 12)
-    'aux5': 13,  # AUX 5 = Arka Sağ Fin (MAVLink 13)
-    'aux6': 14   # AUX 6 = Ana Motor (MAVLink 14)
+    'aux3': 11,   # AUX 1 = Ön Sol Fin (MAVLink 9)
+    'aux4': 12,  # AUX 3 = Ön Sağ Fin (MAVLink 11)
+    'aux5': 13,  # AUX 4 = Arka Sol Fin (MAVLink 12)
+    'aux6': 14,  # AUX 5 = Arka Sağ Fin (MAVLink 13)
+    'aux1': 9   # AUX 6 = Ana Motor (MAVLink 14)
 }
 
 # GERÇEK X-Wing Konfigürasyonu
 X_WING_CONFIG = {
-    'front_left': 'aux1',   # Ön Sol (AUX1)
-    'front_right': 'aux3',  # Ön Sağ (AUX3)
-    'rear_left': 'aux4',    # Arka Sol (AUX4)
-    'rear_right': 'aux5',   # Arka Sağ (AUX5)
-    'motor': 'aux6'         # Ana Motor (AUX6)
+    'front_left': 'aux3',   # Ön Sol (AUX1)
+    'front_right': 'aux4',  # Ön Sağ (AUX3)
+    'rear_left': 'aux5',    # Arka Sol (AUX4)
+    'rear_right': 'aux6',   # Arka Sağ (AUX5)
+    'motor': 'aux1'         # Ana Motor (AUX6)
 }
 
 # GPIO Pin Tanımları
