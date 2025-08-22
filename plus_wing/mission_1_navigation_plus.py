@@ -78,6 +78,46 @@ CONTROL_PARAMS = {
     'dead_reckoning_pid': {'kp': 1.5, 'ki': 0.02, 'kd': 0.4}
 }
 
+# ---- FULL_STABILIZATION2.PY'DEN ALINAN STABİLİZASYON PARAMETRELERİ ----
+
+# Roll stabilizasyonu (manuel_roll.py'den)
+ROLL_SENSE = +1.0
+ROLL_K_ANG_US_PER_RAD = 500.0
+ROLL_DEADBAND_DEG = 1.0
+ROLL_MAX_DELTA_US = 350.0
+
+# Pitch stabilizasyonu (manuel_pitch.py'den)  
+PITCH_SENSE = +1.0
+PITCH_K_ANG_US_PER_RAD = 500.0
+PITCH_DEADBAND_DEG = 1.0
+PITCH_MAX_DELTA_US = 350.0
+
+# Yaw stabilizasyonu (manuel_yaw.py'den)
+YAW_SENSE = +1.0
+YAW_K_ANG_US_PER_RAD = 400.0
+YAW_DEADBAND_DEG = 2.0
+YAW_MAX_DELTA_US = 300.0
+
+# ---- Mekanik Yönler ----
+# Manuel testlerden alınan çalışan yön ayarları
+
+# Roll için (LEFT & RIGHT kanatlar)
+ROLL_DIR_LEFT  = +1.0
+ROLL_DIR_RIGHT = +1.0
+
+# Pitch için (UP & DOWN kanatlar -> RIGHT & LEFT)
+PITCH_DIR_UP   = +1.0
+PITCH_DIR_DOWN = +1.0
+
+# Yaw için (4 kanat koordineli)
+YAW_DIR_UP    = +1.0
+YAW_DIR_DOWN  = +1.0
+YAW_DIR_RIGHT = -1.0
+YAW_DIR_LEFT  = -1.0
+
+# ---- Genel Sınırlar ----
+OVERALL_MAX_DELTA_US = 400.0  # Tüm eksenlerin toplamı için güvenlik sınırı
+
 # Plus Wing servo ve motor kanalları
 MOTOR_CHANNEL = PLUS_WING_CONFIG['MOTOR']['ana_motor']['mavlink_channel']
 SERVO_CHANNELS = PLUS_WING_SERVO_CHANNELS
@@ -126,6 +166,89 @@ class PIDController:
         self.previous_error = 0.0
         self.last_time = time.time()
 
+# ---- FULL_STABILIZATION2.PY'DEN ALINAN STABİLİZASYON FONKSİYONLARI ----
+
+def clamp(v, lo, hi): 
+    return lo if v < lo else hi if v > hi else v
+
+def to_pwm(delta_us):  
+    return int(clamp(PWM_NEUTRAL + delta_us, PWM_MIN, PWM_MAX))
+
+def calculate_roll_commands(roll):
+    """Roll ekseni için servo komutlarını hesapla"""
+    roll_deg = math.degrees(roll)
+    
+    if abs(roll_deg) < ROLL_DEADBAND_DEG:
+        return 0.0, 0.0  # left_cmd, right_cmd
+    
+    # CCW roll -> SOL ↑, SAĞ ↓ (aynı PWM değişimi, fiziksel zıt hareket)
+    u = ROLL_SENSE * roll * ROLL_K_ANG_US_PER_RAD
+    left_cmd_us  = (+u) * ROLL_DIR_LEFT
+    right_cmd_us = (+u) * ROLL_DIR_RIGHT
+    
+    # Sınırla
+    left_cmd_us  = max(-ROLL_MAX_DELTA_US, min(ROLL_MAX_DELTA_US, left_cmd_us))
+    right_cmd_us = max(-ROLL_MAX_DELTA_US, min(ROLL_MAX_DELTA_US, right_cmd_us))
+    
+    return left_cmd_us, right_cmd_us
+
+def calculate_pitch_commands(pitch):
+    """Pitch ekseni için servo komutlarını hesapla"""
+    pitch_deg = math.degrees(pitch)
+    
+    if abs(pitch_deg) < PITCH_DEADBAND_DEG:
+        return 0.0, 0.0  # right_cmd, left_cmd
+    
+    # +pitch (burun yukarı) -> RIGHT ↑, LEFT ↓ (manuel_pitch.py'den)
+    u = PITCH_SENSE * pitch * PITCH_K_ANG_US_PER_RAD
+    right_cmd_us = (+u) * PITCH_DIR_UP    # SERVO_RIGHT için
+    left_cmd_us  = (-u) * PITCH_DIR_DOWN  # SERVO_LEFT için
+    
+    # Sınırla
+    right_cmd_us = max(-PITCH_MAX_DELTA_US, min(PITCH_MAX_DELTA_US, right_cmd_us))
+    left_cmd_us  = max(-PITCH_MAX_DELTA_US, min(PITCH_MAX_DELTA_US, left_cmd_us))
+    
+    return right_cmd_us, left_cmd_us
+
+def calculate_yaw_commands(yaw):
+    """Yaw ekseni için servo komutlarını hesapla"""
+    yaw_deg = math.degrees(yaw)
+    
+    if abs(yaw_deg) < YAW_DEADBAND_DEG:
+        return 0.0, 0.0, 0.0, 0.0  # up_cmd, down_cmd, right_cmd, left_cmd
+    
+    # CCW yaw -> çapraz koordinasyon
+    u = YAW_SENSE * yaw * YAW_K_ANG_US_PER_RAD
+    
+    up_cmd_us    = (-u) * YAW_DIR_UP     # SERVO_UP (14)
+    down_cmd_us  = (+u) * YAW_DIR_DOWN   # SERVO_DOWN (11)
+    right_cmd_us = (-u) * YAW_DIR_RIGHT  # SERVO_RIGHT (12)
+    left_cmd_us  = (-u) * YAW_DIR_LEFT   # SERVO_LEFT (13)
+    
+    # Sınırla
+    up_cmd_us    = max(-YAW_MAX_DELTA_US, min(YAW_MAX_DELTA_US, up_cmd_us))
+    down_cmd_us  = max(-YAW_MAX_DELTA_US, min(YAW_MAX_DELTA_US, down_cmd_us))
+    right_cmd_us = max(-YAW_MAX_DELTA_US, min(YAW_MAX_DELTA_US, right_cmd_us))
+    left_cmd_us  = max(-YAW_MAX_DELTA_US, min(YAW_MAX_DELTA_US, left_cmd_us))
+    
+    return up_cmd_us, down_cmd_us, right_cmd_us, left_cmd_us
+
+def combine_commands(roll_left, roll_right, pitch_right, pitch_left, yaw_up, yaw_down, yaw_right, yaw_left):
+    """Tüm eksenlerin komutlarını birleştir"""
+    # Her kanat için komutları topla
+    final_up_cmd    = yaw_up                    # Sadece YAW
+    final_down_cmd  = yaw_down                  # Sadece YAW  
+    final_right_cmd = roll_right + pitch_right + yaw_right  # ROLL + PITCH + YAW
+    final_left_cmd  = roll_left + pitch_left + yaw_left     # ROLL + PITCH + YAW
+    
+    # Genel güvenlik sınırını uygula
+    final_up_cmd    = max(-OVERALL_MAX_DELTA_US, min(OVERALL_MAX_DELTA_US, final_up_cmd))
+    final_down_cmd  = max(-OVERALL_MAX_DELTA_US, min(OVERALL_MAX_DELTA_US, final_down_cmd))
+    final_right_cmd = max(-OVERALL_MAX_DELTA_US, min(OVERALL_MAX_DELTA_US, final_right_cmd))
+    final_left_cmd  = max(-OVERALL_MAX_DELTA_US, min(OVERALL_MAX_DELTA_US, final_left_cmd))
+    
+    return final_up_cmd, final_down_cmd, final_right_cmd, final_left_cmd
+
 class Mission1Navigator:
     def __init__(self, start_heading=0.0):
         self.master = None
@@ -158,6 +281,9 @@ class Mission1Navigator:
         self.current_roll = 0.0
         self.current_pitch = 0.0
         self.current_yaw = start_heading
+        
+        # Stabilizasyon için yaw offset (full_stabilization2.py'den)
+        self.yaw_offset = None
         
         # Dead reckoning için
         self.last_position_update = time.time()
@@ -234,6 +360,11 @@ class Mission1Navigator:
                 self.current_pitch = math.degrees(attitude_msg.pitch)
                 self.current_yaw = math.degrees(attitude_msg.yaw)
                 self.current_heading = self.current_yaw
+                
+                # Yaw offset ayarla (ilk okumada) - full_stabilization2.py'den
+                if self.yaw_offset is None:
+                    self.yaw_offset = attitude_msg.yaw  # Radyan olarak sakla
+                    print(f"🧭 Yaw referans noktası ayarlandı: {math.degrees(self.yaw_offset):.1f}°")
             
             # Derinlik sensörü (D300 öncelikli, yoksa SCALED_PRESSURE)
             depth_read_success = False
@@ -340,38 +471,99 @@ class Mission1Navigator:
         except:
             return False
     
-    def set_control_surfaces(self, roll_cmd=0, pitch_cmd=0, yaw_cmd=0):
-        """Plus Wing kontrol yüzeylerini ayarla"""
+    def set_control_surfaces(self, roll_cmd=0, pitch_cmd=0, yaw_cmd=0, use_stabilization=True):
+        """Plus Wing kontrol yüzeylerini ayarla - FULL_STABILIZATION2.PY MANTIKLI"""
         if not self.connected:
             return False
         
         try:
-            # Komut değerlerini güçlendir (çok küçük değerler servo hareket ettirmez)
-            roll_cmd = max(-100, min(100, roll_cmd * 2.0))  # 2x güçlendir
-            pitch_cmd = max(-100, min(100, pitch_cmd * 2.0))
-            yaw_cmd = max(-100, min(100, yaw_cmd * 2.0))
+            if use_stabilization and hasattr(self, 'yaw_offset') and self.yaw_offset is not None:
+                # FULL STABİLİZASYON MODU - full_stabilization2.py'deki mantık
+                
+                # Mevcut attitude verilerini radyan olarak al
+                roll_rad = math.radians(self.current_roll)
+                pitch_rad = math.radians(self.current_pitch)
+                raw_yaw_rad = math.radians(self.current_yaw)
+                
+                # Relatif yaw hesapla (full_stabilization2.py'den)
+                yaw_rad = raw_yaw_rad - self.yaw_offset
+                while yaw_rad > math.pi:
+                    yaw_rad -= 2 * math.pi
+                while yaw_rad < -math.pi:
+                    yaw_rad += 2 * math.pi
+                
+                # Stabilizasyon komutlarını hesapla
+                roll_left_cmd, roll_right_cmd = calculate_roll_commands(roll_rad)
+                pitch_right_cmd, pitch_left_cmd = calculate_pitch_commands(pitch_rad)
+                yaw_up_cmd, yaw_down_cmd, yaw_right_cmd, yaw_left_cmd = calculate_yaw_commands(yaw_rad)
+                
+                # Manual komutları ekle (eğer varsa)
+                if abs(roll_cmd) > 0.1 or abs(pitch_cmd) > 0.1 or abs(yaw_cmd) > 0.1:
+                    # Manual komutları stabilizasyon komutlarına ekle
+                    manual_roll_us = roll_cmd * 5.0   # Çevirme faktörü
+                    manual_pitch_us = pitch_cmd * 5.0
+                    manual_yaw_us = yaw_cmd * 5.0
+                    
+                    # Manual komutları dağıt
+                    roll_left_cmd += manual_roll_us
+                    roll_right_cmd += manual_roll_us
+                    pitch_right_cmd += manual_pitch_us
+                    pitch_left_cmd += manual_pitch_us
+                    yaw_up_cmd += manual_yaw_us
+                    yaw_down_cmd += manual_yaw_us
+                    yaw_right_cmd += manual_yaw_us
+                    yaw_left_cmd += manual_yaw_us
+                
+                # Komutları birleştir
+                final_up, final_down, final_right, final_left = combine_commands(
+                    roll_left_cmd, roll_right_cmd,
+                    pitch_right_cmd, pitch_left_cmd,
+                    yaw_up_cmd, yaw_down_cmd, yaw_right_cmd, yaw_left_cmd
+                )
+                
+                # PWM değerlerini hesapla
+                pwm_up = to_pwm(final_up)
+                pwm_down = to_pwm(final_down)
+                pwm_right = to_pwm(final_right)
+                pwm_left = to_pwm(final_left)
+                
+                # Debug çıktısı (periyodik)
+                if int(time.time() * 2) % 10 == 0:  # Her 5 saniyede bir
+                    print(f"🎮 Stabilizasyon: R={math.degrees(roll_rad):+.1f}° P={math.degrees(pitch_rad):+.1f}° Y={math.degrees(yaw_rad):+.1f}°")
+                    print(f"📡 PWM: ÜST={pwm_up} ALT={pwm_down} SAĞ={pwm_right} SOL={pwm_left}")
+                
+            else:
+                # MANUEL MOD - Eski mantık (stabilizasyon yok)
+                roll_cmd = max(-100, min(100, roll_cmd * 2.0))
+                pitch_cmd = max(-100, min(100, pitch_cmd * 2.0))
+                yaw_cmd = max(-100, min(100, yaw_cmd * 2.0))
+                
+                # Plus Wing PWM hesaplama (eski)
+                pwm_values = calculate_plus_wing_pwm(roll_cmd, pitch_cmd, yaw_cmd)
+                
+                pwm_up = pwm_values['up']
+                pwm_down = pwm_values['down']
+                pwm_right = pwm_values['right']
+                pwm_left = pwm_values['left']
+                
+                print(f"🎮 Manuel Mod: R={roll_cmd:+.1f} P={pitch_cmd:+.1f} Y={yaw_cmd:+.1f}")
             
-            # Plus Wing PWM hesaplama
-            pwm_values = calculate_plus_wing_pwm(roll_cmd, pitch_cmd, yaw_cmd)
-            
-            # Debug çıktısı
-            if abs(roll_cmd) > 5 or abs(pitch_cmd) > 5 or abs(yaw_cmd) > 5:
-                print(f"🎮 Servo Komutları: R={roll_cmd:+.1f} P={pitch_cmd:+.1f} Y={yaw_cmd:+.1f}")
-                print(f"📡 PWM Değerleri: {pwm_values}")
-            
-            # Tüm servo komutlarını gönder
+            # Servo komutlarını gönder
             success_count = 0
-            for servo_name, pwm_value in pwm_values.items():
-                channel = SERVO_CHANNELS[servo_name]
-                if self.set_servo_position(channel, int(pwm_value)):
+            servo_commands = [
+                (SERVO_CHANNELS['up'], pwm_up, 'ÜST'),
+                (SERVO_CHANNELS['down'], pwm_down, 'ALT'),
+                (SERVO_CHANNELS['right'], pwm_right, 'SAĞ'),
+                (SERVO_CHANNELS['left'], pwm_left, 'SOL')
+            ]
+            
+            for channel, pwm, name in servo_commands:
+                if self.set_servo_position(channel, int(pwm)):
                     success_count += 1
                 else:
-                    print(f"❌ Servo {servo_name} (kanal {channel}) komutu gönderilemedi")
+                    print(f"❌ Servo {name} (kanal {channel}) komutu gönderilemedi")
             
-            if success_count > 0:
-                print(f"✅ {success_count}/{len(pwm_values)} servo komutu gönderildi")
-            
-            return success_count == len(pwm_values)
+            return success_count == len(servo_commands)
             
         except Exception as e:
             print(f"❌ Plus Wing kontrol hatası: {e}")
@@ -405,20 +597,20 @@ class Mission1Navigator:
         
         for i, val in enumerate(test_values):
             print(f"\n📊 Test {i+1}/4: Roll={val}")
-            self.set_control_surfaces(roll_cmd=val, pitch_cmd=0, yaw_cmd=0)
+            self.set_control_surfaces(roll_cmd=val, pitch_cmd=0, yaw_cmd=0, use_stabilization=False)
             time.sleep(2)
             
             print(f"📊 Test {i+1}/4: Pitch={val}")  
-            self.set_control_surfaces(roll_cmd=0, pitch_cmd=val, yaw_cmd=0)
+            self.set_control_surfaces(roll_cmd=0, pitch_cmd=val, yaw_cmd=0, use_stabilization=False)
             time.sleep(2)
             
             print(f"📊 Test {i+1}/4: Yaw={val}")
-            self.set_control_surfaces(roll_cmd=0, pitch_cmd=0, yaw_cmd=val)
+            self.set_control_surfaces(roll_cmd=0, pitch_cmd=0, yaw_cmd=val, use_stabilization=False)
             time.sleep(2)
         
         # Nötr pozisyon
         print("\n🔄 Servolar nötr pozisyona getiriliyor...")
-        self.set_control_surfaces(roll_cmd=0, pitch_cmd=0, yaw_cmd=0)
+        self.set_control_surfaces(roll_cmd=0, pitch_cmd=0, yaw_cmd=0, use_stabilization=False)
         time.sleep(1)
         print("✅ Servo test tamamlandı!")
 
@@ -677,7 +869,7 @@ class Mission1Navigator:
         """Pozitif sephiye ile yüzeye çıkış ve enerji kesme"""
         # Pozitif sephiye (buoyancy ile yüzeye çık)
         self.set_motor_throttle(PWM_NEUTRAL)  # Motor kapat
-        self.set_control_surfaces(pitch_cmd=-100)  # Nose up (pozitif sephiye)
+        self.set_control_surfaces(pitch_cmd=-100, use_stabilization=False)  # Nose up (pozitif sephiye)
         
         # Yüzeye çıkana kadar bekle
         if self.current_depth > 0.5:
@@ -689,7 +881,7 @@ class Mission1Navigator:
         
         # Tüm sistemleri durdur
         self.set_motor_throttle(PWM_NEUTRAL)
-        self.set_control_surfaces()
+        self.set_control_surfaces(use_stabilization=False)
         
         self.mission_completion_time = time.time()
         self.mission_stage = "MISSION_COMPLETE"
@@ -879,7 +1071,7 @@ class Mission1Navigator:
         
         if self.connected:
             self.set_motor_throttle(PWM_NEUTRAL)
-            self.set_control_surfaces()
+            self.set_control_surfaces(use_stabilization=False)
         
         # D300 sensörünü kapat
         if self.d300_connected and self.d300_sensor:

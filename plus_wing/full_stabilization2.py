@@ -109,18 +109,18 @@ def calculate_pitch_commands(pitch):
     pitch_deg = math.degrees(pitch)
     
     if abs(pitch_deg) < PITCH_DEADBAND_DEG:
-        return 0.0, 0.0  # up_cmd, down_cmd
+        return 0.0, 0.0  # right_cmd, left_cmd
     
-    # +pitch (burun yukarı) -> UP ↑, DOWN ↓
+    # +pitch (burun yukarı) -> RIGHT ↑, LEFT ↓ (manuel_pitch.py'den)
     u = PITCH_SENSE * pitch * PITCH_K_ANG_US_PER_RAD
-    up_cmd_us   = (+u) * PITCH_DIR_UP
-    down_cmd_us = (-u) * PITCH_DIR_DOWN
+    right_cmd_us = (+u) * PITCH_DIR_UP    # SERVO_RIGHT için
+    left_cmd_us  = (-u) * PITCH_DIR_DOWN  # SERVO_LEFT için
     
     # Sınırla
-    up_cmd_us   = max(-PITCH_MAX_DELTA_US, min(PITCH_MAX_DELTA_US, up_cmd_us))
-    down_cmd_us = max(-PITCH_MAX_DELTA_US, min(PITCH_MAX_DELTA_US, down_cmd_us))
+    right_cmd_us = max(-PITCH_MAX_DELTA_US, min(PITCH_MAX_DELTA_US, right_cmd_us))
+    left_cmd_us  = max(-PITCH_MAX_DELTA_US, min(PITCH_MAX_DELTA_US, left_cmd_us))
     
-    return up_cmd_us, down_cmd_us
+    return right_cmd_us, left_cmd_us
 
 def calculate_yaw_commands(yaw):
     """Yaw ekseni için servo komutlarını hesapla"""
@@ -145,13 +145,13 @@ def calculate_yaw_commands(yaw):
     
     return up_cmd_us, down_cmd_us, right_cmd_us, left_cmd_us
 
-def combine_commands(roll_left, roll_right, pitch_up, pitch_down, yaw_up, yaw_down, yaw_right, yaw_left):
+def combine_commands(roll_left, roll_right, pitch_right, pitch_left, yaw_up, yaw_down, yaw_right, yaw_left):
     """Tüm eksenlerin komutlarını birleştir"""
     # Her kanat için komutları topla
-    final_up_cmd    = pitch_up + yaw_up
-    final_down_cmd  = pitch_down + yaw_down  
-    final_right_cmd = roll_right + yaw_right
-    final_left_cmd  = roll_left + yaw_left
+    final_up_cmd    = yaw_up                    # Sadece YAW
+    final_down_cmd  = yaw_down                  # Sadece YAW  
+    final_right_cmd = roll_right + pitch_right + yaw_right  # ROLL + PITCH + YAW
+    final_left_cmd  = roll_left + pitch_left + yaw_left     # ROLL + PITCH + YAW
     
     # Genel güvenlik sınırını uygula
     final_up_cmd    = max(-OVERALL_MAX_DELTA_US, min(OVERALL_MAX_DELTA_US, final_up_cmd))
@@ -218,13 +218,13 @@ def main():
             
             # Her eksen için komutları hesapla
             roll_left_cmd, roll_right_cmd = calculate_roll_commands(roll)
-            pitch_up_cmd, pitch_down_cmd = calculate_pitch_commands(pitch)
+            pitch_right_cmd, pitch_left_cmd = calculate_pitch_commands(pitch)
             yaw_up_cmd, yaw_down_cmd, yaw_right_cmd, yaw_left_cmd = calculate_yaw_commands(yaw)
             
             # Komutları birleştir
             final_up, final_down, final_right, final_left = combine_commands(
                 roll_left_cmd, roll_right_cmd,
-                pitch_up_cmd, pitch_down_cmd,
+                pitch_right_cmd, pitch_left_cmd,
                 yaw_up_cmd, yaw_down_cmd, yaw_right_cmd, yaw_left_cmd
             )
             
