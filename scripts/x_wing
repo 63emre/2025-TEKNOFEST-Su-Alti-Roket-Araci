@@ -1,0 +1,471 @@
+#!/usr/bin/env python3
+# -*- coding: utf-8 -*-
+"""
+TEKNOFEST 2025 - Su Altı Roket Aracı
+X Kanat Konfigürasyonu Gerçek Zamanlı Servo Kontrolü
+
+AUX 1, 3, 4, 5 servo kontrolü ve (varsa) buzzer ile interaktif test
+Klavye ile gerçek zamanlı X kanat kontrolü (Linux/Windows uyumlu, Ctrl+C güvenli)
+
+Hardware:
+- AUX 1: Ön Sol Fin (DS3230MG 30kg)      -> MAVLink CH9
+- AUX 3: Arka Sol Fin (DS3230MG 30kg)    -> MAVLink CH11
+- AUX 4: Arka Sağ Fin (DS3230MG 30kg)    -> MAVLink CH12
+- AUX 5: Ekstra Kontrol Fin              -> MAVLink CH13
+- (opsiyonel) AUX 6: Motor               -> MAVLink CH14
+- GPIO 7: PWM Buzzer (opsiyonel)
+
+Tuşlar:
+  Mod: 1=Tekil, 2=X-pattern, 3=Senkronize, 0=Reset, H=Yardım, ESC/Q=Çıkış
+  Tekil:  Q/A=aux1 +/-, W/S=aux3 +/-, E/D=aux4 +/-, R/F=aux5 +/-
+  X-Pattern: A/D=Roll L/R, W/S=Pitch Up/Down, Q/E=Yaw L/R, O/L=Motor +/-
+  Senkronize: W/S=tüm finler +/-, O/L=Motor +/-
+"""
+
+import os
+import sys
+import time
+import select
+import signal
+from pymavlink import mavutil
+
+# -------- GPIO (opsiyonel) ----------
+HAS_GPIOZERO = False
+HAS_RPI_GPIO = False
+GPIO_BUZZER_PIN = 7
+try:
+    from gpiozero import PWMOutputDevice
+    HAS_GPIOZERO = True
+except Exception:
+    pass
+try:
+    import RPi.GPIO as GPIO
+    HAS_RPI_GPIO = True
+except Exception:
+    pass
+
+# -------- MAVLink uç noktası ----------
+try:
+    from connection_config import get_primary_connection
+    MAV_ADDRESS = get_primary_connection()  # ör: "serial:/dev/ttyACM0:115200" veya "/dev/ttyACM0,115200"
+    print(f"📡 Dynamic connection: {MAV_ADDRESS}")
+except Exception:
+    # ENV ile: MAV_ADDRESS=/dev/ttyACM0 MAV_BAUD=115200
+    port = os.getenv("MAV_ADDRESS", "/dev/ttyACM0")
+    baud = int(os.getenv("MAV_BAUD", "115200"))
+    MAV_ADDRESS = f"{port},{baud}"
+    print(f"⚠️ Fallback connection: {MAV_ADDRESS}")
+
+# -------- Servo/ESC PWM sınırları ----------
+PWM_MIN = 1000
+PWM_MID = 1500
+PWM_MAX = 2000
+PWM_STEP = 50
+SERVO_FREQUENCY = 330  # ArduSub'da AUX rate param ile (uygulamada reboot isteyebilir) – güvenlik için opsiyonel
+
+# -------- X-Wing AUX→CH eşlemesi ----------
+# DO_SET_SERVO 'channel' alanı MAVLink kanal numarasıdır (AUX1..6 = CH9..14)
+SERVO_CHANNELS = {
+    'aux1': 9,   # Ön Sol
+    'aux3': 11,  # Arka Sol
+    'aux4': 12,  # Arka Sağ
+    'aux5': 13,  # Ekstra
+    'aux6': 14,  # Motor (opsiyonel)
+}
+
+# -------- Platform bağımsız klavye --------
+class KeyInput:
+    def __init__(self):
+        self.impl = 'posix'
+        self.fd = None
+        self.old = None
+        if os.name == 'nt':
+            import msvcrt  # noqa: F401
+            self.impl = 'nt'
+        else:
+            import termios, tty  # noqa: F401
+            self.termios = termios
+            self.tty = tty
+            try:
+                self.fd = sys.stdin.fileno()
+                self.old = self.termios.tcgetattr(self.fd)
+                # RAW değil; CBREAK: Ctrl+C sinyali çalışsın
+                self.tty.setcbreak(self.fd)
+            except Exception:
+                self.impl = 'posix-nocbreak'
+
+    def getch(self):
+        if self.impl == 'nt':
+            import msvcrt
+            if msvcrt.kbhit():
+                ch = msvcrt.getwch()
+                return ch
+            return None
+        else:
+            # POSIX
+            r, _, _ = select.select([sys.stdin], [], [], 0)
+            if r:
+                try:
+                    ch = sys.stdin.read(1)
+                    return ch
+                except Exception:
+                    return None
+            return None
+
+    def restore(self):
+        if self.impl == 'posix' and self.fd is not None and self.old is not None:
+            try:
+                self.termios.tcsetattr(self.fd, self.termios.TCSADRAIN, self.old)
+            except Exception:
+                pass
+
+# -------- Ana Controller --------
+class XWingRealtimeController:
+    def __init__(self):
+        self.master = None
+        self.connected = False
+        self.running = False
+        self.control_mode = 'individual'  # 'individual'|'x_pattern'|'synchronized'
+
+        self.servo_positions = {
+            'aux1': PWM_MID,
+            'aux3': PWM_MID,
+            'aux4': PWM_MID,
+            'aux5': PWM_MID,
+            'aux6': PWM_MID,  # motor
+        }
+
+        # Buzzer (opsiyonel)
+        self.gpio_method = 'none'
+        self.buzzer = None
+
+        # Loop oranı
+        self.last_loop = time.time()
+        self.rate_hz = 20.0
+
+    # ------------- GPIO/Buzzer -------------
+    def setup_gpio(self):
+        if HAS_GPIOZERO:
+            try:
+                self.buzzer = PWMOutputDevice(GPIO_BUZZER_PIN, frequency=2000)
+                self.gpio_method = 'gpiozero'
+                print("✅ GPIO (gpiozero) hazır")
+                return
+            except Exception as e:
+                print(f"⚠️ gpiozero başarısız: {e}")
+        if HAS_RPI_GPIO:
+            try:
+                GPIO.setmode(GPIO.BCM)
+                GPIO.setwarnings(False)
+                GPIO.setup(GPIO_BUZZER_PIN, GPIO.OUT)
+                self._buzzer_pwm = GPIO.PWM(GPIO_BUZZER_PIN, 2000)
+                self._buzzer_pwm.start(0)
+                self.gpio_method = 'rpi_gpio'
+                print("✅ GPIO (RPi.GPIO) hazır")
+                return
+            except Exception as e:
+                print(f"⚠️ RPi.GPIO başarısız: {e}")
+        print("ℹ️ Buzzer devre dışı (GPIO bulunamadı)")
+
+    def play_tone(self, duration=0.1, duty=0.3):
+        # Sessiz geç
+        try:
+            if self.gpio_method == 'gpiozero' and self.buzzer:
+                self.buzzer.value = duty
+                time.sleep(duration)
+                self.buzzer.value = 0.0
+            elif self.gpio_method == 'rpi_gpio':
+                self._buzzer_pwm.ChangeDutyCycle(duty * 100)
+                time.sleep(duration)
+                self._buzzer_pwm.ChangeDutyCycle(0)
+        except Exception:
+            pass
+
+    def cleanup_gpio(self):
+        try:
+            if self.gpio_method == 'gpiozero' and self.buzzer:
+                self.buzzer.close()
+            elif self.gpio_method == 'rpi_gpio':
+                self._buzzer_pwm.stop()
+                GPIO.cleanup()
+        except Exception:
+            pass
+        self.gpio_method = 'none'
+        self.buzzer = None
+
+    # ------------- MAVLink -------------
+    def connect_pixhawk(self, endpoint):
+        print(f"🔌 Pixhawk bağlantısı: {endpoint}")
+        try:
+            # endpoint formatları:
+            # 1) "serial:/dev/ttyACM0:115200"
+            # 2) "/dev/ttyACM0,115200"
+            # 3) "udp:0.0.0.0:14550" / "tcp:IP:PORT"
+            if endpoint.startswith("serial:"):
+                _, dev, baud = endpoint.split(":", 2)
+                self.master = mavutil.mavlink_connection(dev, baud=int(baud), autoreconnect=True)
+            elif ',' in endpoint:
+                dev, baud = endpoint.split(',', 1)
+                self.master = mavutil.mavlink_connection(dev, baud=int(baud), autoreconnect=True)
+            else:
+                self.master = mavutil.mavlink_connection(endpoint)
+
+            # Heartbeat bekleme: zamanaşımıyla döngü (donmayı engeller)
+            ok = False
+            for _ in range(6):  # ~6*2s = 12s
+                try:
+                    hb = self.master.wait_heartbeat(timeout=2)
+                    if hb:
+                        ok = True
+                        break
+                except Exception:
+                    pass
+            if not ok:
+                print("❌ Heartbeat alınamadı (timeout)")
+                return False
+
+            self.connected = True
+            print("✅ MAVLink bağlı")
+            # Frekans paramı ayarlamaya zorlamıyoruz (bazı kartlarda reboot ister)
+            return True
+
+        except Exception as e:
+            print(f"❌ MAVLink bağlantı hatası: {e}")
+            return False
+
+    def do_set_servo(self, aux_name, pwm_value):
+        if not self.connected:
+            return False
+        if aux_name not in SERVO_CHANNELS:
+            return False
+        pwm = max(PWM_MIN, min(PWM_MAX, int(pwm_value)))
+        ch = SERVO_CHANNELS[aux_name]
+        try:
+            self.master.mav.command_long_send(
+                self.master.target_system,
+                self.master.target_component,
+                mavutil.mavlink.MAV_CMD_DO_SET_SERVO,
+                0,
+                float(ch), float(pwm),
+                0, 0, 0, 0, 0
+            )
+            self.servo_positions[aux_name] = pwm
+            return True
+        except Exception as e:
+            print(f"⚠️ DO_SET_SERVO hata ({aux_name}): {e}")
+            return False
+
+    # ------------- Yardımcılar -------------
+    def reset_servos(self):
+        print("\n🔄 Servolar orta pozisyona getiriliyor...")
+        for aux in ('aux1', 'aux3', 'aux4', 'aux5'):
+            self.do_set_servo(aux, PWM_MID)
+        self.play_tone(0.15)
+
+    def print_help(self):
+        print("\n" + "="*78)
+        print("🎮 X-WING GERÇEK ZAMANLI KONTROL – Yardım")
+        print("="*78)
+        print("Mod değiştir: 1=Tekil, 2=X-Pattern, 3=Senkronize")
+        print("Reset: 0   | Yardım: H   | Çıkış: ESC veya Q veya Ctrl+C\n")
+        print("Tekil:  Q/A=aux1 +/-,  W/S=aux3 +/-,  E/D=aux4 +/-,  R/F=aux5 +/-")
+        print("X-Pattern: A/D=Roll, W/S=Pitch, Q/E=Yaw,  O/L=Motor +/-")
+        print("Senkronize: W/S=tüm finler +/-, O/L=Motor +/-")
+        print("="*78)
+        self.play_tone(0.12)
+
+    def status_line(self):
+        s = (f"\r[Mode:{self.control_mode}] "
+             f"AUX1:{self.servo_positions['aux1']} "
+             f"AUX3:{self.servo_positions['aux3']} "
+             f"AUX4:{self.servo_positions['aux4']} "
+             f"AUX5:{self.servo_positions['aux5']}   ")
+        print(s, end='', flush=True)
+
+    # ------------- Kontrol Modları -------------
+    def individual_control(self, key):
+        moved = False
+        if key == 'Q':
+            moved |= self.do_set_servo('aux1', self.servo_positions['aux1'] + PWM_STEP)
+        elif key == 'A':
+            moved |= self.do_set_servo('aux1', self.servo_positions['aux1'] - PWM_STEP)
+        elif key == 'W':
+            moved |= self.do_set_servo('aux3', self.servo_positions['aux3'] + PWM_STEP)
+        elif key == 'S':
+            moved |= self.do_set_servo('aux3', self.servo_positions['aux3'] - PWM_STEP)
+        elif key == 'E':
+            moved |= self.do_set_servo('aux4', self.servo_positions['aux4'] + PWM_STEP)
+        elif key == 'D':
+            moved |= self.do_set_servo('aux4', self.servo_positions['aux4'] - PWM_STEP)
+        elif key == 'R':
+            moved |= self.do_set_servo('aux5', self.servo_positions['aux5'] + PWM_STEP)
+        elif key == 'F':
+            moved |= self.do_set_servo('aux5', self.servo_positions['aux5'] - PWM_STEP)
+        if moved:
+            self.play_tone(0.05)
+
+    def x_pattern_control(self, key):
+        moved = False
+        # Roll (A/D): Sol taraf (aux1,aux3) vs Sağ taraf (aux4,aux5)
+        if key == 'A':  # Roll sol: sol +, sağ -
+            moved |= self.do_set_servo('aux1', self.servo_positions['aux1'] + PWM_STEP)
+            moved |= self.do_set_servo('aux3', self.servo_positions['aux3'] + PWM_STEP)
+            moved |= self.do_set_servo('aux4', self.servo_positions['aux4'] - PWM_STEP)
+            moved |= self.do_set_servo('aux5', self.servo_positions['aux5'] - PWM_STEP)
+        elif key == 'D':  # Roll sağ: sağ +, sol -
+            moved |= self.do_set_servo('aux1', self.servo_positions['aux1'] - PWM_STEP)
+            moved |= self.do_set_servo('aux3', self.servo_positions['aux3'] - PWM_STEP)
+            moved |= self.do_set_servo('aux4', self.servo_positions['aux4'] + PWM_STEP)
+            moved |= self.do_set_servo('aux5', self.servo_positions['aux5'] + PWM_STEP)
+
+        # Pitch (W/S): Ön (aux1,aux4?) / Arka (aux3,aux5?) – X yerleşimde ön=aux1+aux4, arka=aux3+aux5
+        elif key == 'W':  # Pitch up: arka +, ön -
+            moved |= self.do_set_servo('aux3', self.servo_positions['aux3'] + PWM_STEP)
+            moved |= self.do_set_servo('aux5', self.servo_positions['aux5'] + PWM_STEP)
+            moved |= self.do_set_servo('aux1', self.servo_positions['aux1'] - PWM_STEP)
+            moved |= self.do_set_servo('aux4', self.servo_positions['aux4'] - PWM_STEP)
+        elif key == 'S':  # Pitch down: ön +, arka -
+            moved |= self.do_set_servo('aux1', self.servo_positions['aux1'] + PWM_STEP)
+            moved |= self.do_set_servo('aux4', self.servo_positions['aux4'] + PWM_STEP)
+            moved |= self.do_set_servo('aux3', self.servo_positions['aux3'] - PWM_STEP)
+            moved |= self.do_set_servo('aux5', self.servo_positions['aux5'] - PWM_STEP)
+
+        # Yaw (Q/E): çaprazlar
+        elif key == 'Q':  # Yaw sol: (aux1+aux5)+, (aux3+aux4)-
+            moved |= self.do_set_servo('aux1', self.servo_positions['aux1'] + PWM_STEP)
+            moved |= self.do_set_servo('aux5', self.servo_positions['aux5'] + PWM_STEP)
+            moved |= self.do_set_servo('aux3', self.servo_positions['aux3'] - PWM_STEP)
+            moved |= self.do_set_servo('aux4', self.servo_positions['aux4'] - PWM_STEP)
+        elif key == 'E':  # Yaw sağ: (aux3+aux4)+, (aux1+aux5)-
+            moved |= self.do_set_servo('aux3', self.servo_positions['aux3'] + PWM_STEP)
+            moved |= self.do_set_servo('aux4', self.servo_positions['aux4'] + PWM_STEP)
+            moved |= self.do_set_servo('aux1', self.servo_positions['aux1'] - PWM_STEP)
+            moved |= self.do_set_servo('aux5', self.servo_positions['aux5'] - PWM_STEP)
+
+        # Motor
+        elif key == 'O':
+            moved |= self.do_set_servo('aux6', self.servo_positions['aux6'] + PWM_STEP)
+        elif key == 'L':
+            moved |= self.do_set_servo('aux6', self.servo_positions['aux6'] - PWM_STEP)
+
+        if moved:
+            self.play_tone(0.05)
+
+    def synchronized_control(self, key):
+        moved = False
+        if key == 'W':
+            for a in ('aux1', 'aux3', 'aux4', 'aux5'):
+                moved |= self.do_set_servo(a, self.servo_positions[a] + PWM_STEP)
+        elif key == 'S':
+            for a in ('aux1', 'aux3', 'aux4', 'aux5'):
+                moved |= self.do_set_servo(a, self.servo_positions[a] - PWM_STEP)
+        elif key == 'O':
+            moved |= self.do_set_servo('aux6', self.servo_positions['aux6'] + PWM_STEP)
+        elif key == 'L':
+            moved |= self.do_set_servo('aux6', self.servo_positions['aux6'] - PWM_STEP)
+        if moved:
+            self.play_tone(0.07)
+
+    # ------------- Ana Döngü -------------
+    def run(self):
+        # Sinyal: Ctrl+C güvenli çıkış
+        def _sigint(_sig, _frm):
+            self.running = False
+        signal.signal(signal.SIGINT, _sigint)
+
+        keys = KeyInput()
+        self.setup_gpio()
+
+        # Bağlan
+        if not self.connect_pixhawk(MAV_ADDRESS):
+            print("❌ Bağlantı yok; ESC/Q veya Ctrl+C ile çıkabilirsiniz (tuş dinleme açık)")
+        else:
+            self.reset_servos()
+
+        self.print_help()
+        self.running = True
+        try:
+            while self.running:
+                # durum satırı
+                self.status_line()
+
+                ch = keys.getch()
+                if ch:
+                    if ch == '\x1b':  # ESC
+                        self.running = False
+                        break
+                    c = ch.upper()
+                    if c in ('Q',) and self.control_mode != 'individual':
+                        # Not: individual modda Q servo arttırma için kullanılıyor
+                        # Çıkış kısayolu olarak SHIFT+Q (:'Q') yine çalışır, ESC de var.
+                        self.running = False
+                        break
+
+                    if c == '1':
+                        self.control_mode = 'individual'
+                        self.play_tone(0.08)
+                        print("\n🔧 Mod: TEKİL")
+                    elif c == '2':
+                        self.control_mode = 'x_pattern'
+                        self.play_tone(0.08)
+                        print("\n✈️ Mod: X-PATTERN")
+                    elif c == '3':
+                        self.control_mode = 'synchronized'
+                        self.play_tone(0.08)
+                        print("\n🔄 Mod: SENKRONİZE")
+                    elif c == '0':
+                        self.reset_servos()
+                    elif c == 'H':
+                        self.print_help()
+                    else:
+                        if not self.connected:
+                            # bağlantı yoksa sadece tuşları yut
+                            pass
+                        else:
+                            if self.control_mode == 'individual':
+                                self.individual_control(c)
+                            elif self.control_mode == 'x_pattern':
+                                self.x_pattern_control(c)
+                            elif self.control_mode == 'synchronized':
+                                self.synchronized_control(c)
+
+                # döngü temposu
+                time.sleep(1.0 / self.rate_hz)
+
+            print("\n✅ Kontrol döngüsü bitti")
+
+        finally:
+            # temizle
+            try:
+                if self.connected:
+                    for a in ('aux1', 'aux3', 'aux4', 'aux5'):
+                        self.do_set_servo(a, PWM_MID)
+                    self.do_set_servo('aux6', PWM_MID)
+                    self.master.close()
+                    print("🔌 MAVLink kapatıldı")
+            except Exception:
+                pass
+            self.cleanup_gpio()
+            keys.restore()
+
+
+def main():
+    print("🎮 TEKNOFEST 2025 – X-Wing Gerçek Zamanlı Kontrol (Ctrl+C güvenli)")
+    print("=" * 70)
+    ctrl = XWingRealtimeController()
+    rc = 0
+    try:
+        ctrl.run()
+    except KeyboardInterrupt:
+        rc = 1
+    except Exception as e:
+        print(f"\n❌ Program hatası: {e}")
+        rc = 1
+    finally:
+        # run() zaten cleanup yapıyor
+        pass
+    return rc
+
+
+if __name__ == "__main__":
+    sys.exit(main())
