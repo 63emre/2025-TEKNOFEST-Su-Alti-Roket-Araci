@@ -236,30 +236,28 @@ class Mission1Navigator:
                 self.current_heading = self.current_yaw
             
             # Derinlik sensörü (D300 öncelikli, yoksa SCALED_PRESSURE)
+            depth_read_success = False
             if self.d300_connected and self.d300_sensor:
                 try:
                     depth_data = self.d300_sensor.read_depth()
                     if depth_data['success']:
                         self.current_depth = max(0.0, depth_data['depth'])
+                        depth_read_success = True
+                        print(f"📡 D300 Derinlik: {self.current_depth:.2f}m")
                     else:
-                        # D300 okuma hatası, SCALED_PRESSURE'a geç
-                        pressure_msg = self.master.recv_match(type='SCALED_PRESSURE', blocking=False)
-                        if pressure_msg:
-                            depth_pressure = pressure_msg.press_abs - 1013.25
-                            self.current_depth = max(0, depth_pressure * 0.10197)
+                        print(f"⚠️ D300 okuma başarısız: {depth_data}")
                 except Exception as e:
                     print(f"⚠️ D300 okuma hatası: {e}")
-                    # Fallback to SCALED_PRESSURE
-                    pressure_msg = self.master.recv_match(type='SCALED_PRESSURE', blocking=False)
-                    if pressure_msg:
-                        depth_pressure = pressure_msg.press_abs - 1013.25
-                        self.current_depth = max(0, depth_pressure * 0.10197)
-            else:
-                # D300 yok, SCALED_PRESSURE kullan
+            
+            if not depth_read_success:
+                # D300 yok veya hatalı, SCALED_PRESSURE kullan
                 pressure_msg = self.master.recv_match(type='SCALED_PRESSURE', blocking=False)
                 if pressure_msg:
                     depth_pressure = pressure_msg.press_abs - 1013.25
                     self.current_depth = max(0, depth_pressure * 0.10197)
+                    print(f"📡 SCALED_PRESSURE Derinlik: {self.current_depth:.2f}m (Basınç: {pressure_msg.press_abs:.1f}hPa)")
+                else:
+                    print("❌ Hiçbir derinlik verisi yok!")
             
             # Hız bilgisi
             vfr_msg = self.master.recv_match(type='VFR_HUD', blocking=False)
@@ -484,20 +482,50 @@ class Mission1Navigator:
         # Derinlik kontrolü
         depth_error = MISSION_PARAMS['target_depth'] - self.current_depth
         
+        # Debug derinlik sensörü
+        print(f"🌊 Derinlik Debug: Mevcut={self.current_depth:.2f}m, Hedef={MISSION_PARAMS['target_depth']:.2f}m, Hata={depth_error:.2f}m")
+        
+        # Derinlik sensörü çalışmıyorsa simüle et (test için)
+        if self.current_depth == 0.0:
+            print("⚠️ Derinlik sensörü çalışmıyor! 10 saniye sonra simüle derinliğe geçiş...")
+            if hasattr(self, '_descent_start_time'):
+                if time.time() - self._descent_start_time > 10:
+                    print("✅ Simüle derinlik ulaşıldı! Düz seyire geçiliyor...")
+                    self.mission_stage = "STRAIGHT_COURSE"
+                    self.straight_course_start_time = time.time()
+                    return
+            else:
+                self._descent_start_time = time.time()
+        
         if abs(depth_error) > MISSION_PARAMS['depth_tolerance']:
             # PID kontrol ile iniş
             depth_output = self.depth_pid.update(MISSION_PARAMS['target_depth'], self.current_depth)
             
             # Motor ve fin kontrolü
             if depth_error > 0:  # Daha derine inmeli
-                motor_throttle = PWM_NEUTRAL - min(100, abs(depth_output) // 3)
-                pitch_cmd = min(150, abs(depth_output) // 2)  # Nose down
+                motor_throttle = PWM_NEUTRAL + 50  # İleri hareket
+                pitch_cmd = 50  # Nose down (daha az agresif)
             else:  # Yükselmeli
-                motor_throttle = PWM_NEUTRAL + min(100, abs(depth_output) // 3)
-                pitch_cmd = -min(150, abs(depth_output) // 2)  # Nose up
+                motor_throttle = PWM_NEUTRAL - 50  # Geri hareket
+                pitch_cmd = -50  # Nose up
+            
+            # Roll stabilizasyonu ekle (test için)
+            roll_error = 0 - self.current_roll  # Sıfır roll hedefi
+            roll_cmd = max(-30, min(30, roll_error * 2))  # Basit P kontrolü
+            
+            # Yaw stabilizasyonu ekle
+            if self.initial_heading is not None:
+                yaw_error = self.initial_heading - self.current_heading
+                if yaw_error > 180: yaw_error -= 360
+                if yaw_error < -180: yaw_error += 360
+                yaw_cmd = max(-30, min(30, yaw_error * 0.5))
+            else:
+                yaw_cmd = 0
+            
+            print(f"🎮 Descent Komutları: Motor={motor_throttle}, P={pitch_cmd}, R={roll_cmd}, Y={yaw_cmd}")
             
             self.set_motor_throttle(motor_throttle)
-            self.set_control_surfaces(pitch_cmd=pitch_cmd)
+            self.set_control_surfaces(roll_cmd=roll_cmd, pitch_cmd=pitch_cmd, yaw_cmd=yaw_cmd)
         else:
             # Hedef derinliğe ulaşıldı
             print("✅ Hedef derinlik ulaşıldı! Düz seyire geçiliyor...")
