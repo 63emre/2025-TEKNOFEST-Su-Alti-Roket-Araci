@@ -828,7 +828,8 @@ class Mission1Navigator:
         pitch_cmd = max(-50, min(50, int(depth_correction // 4)))
         
         self.set_motor_throttle(motor_throttle)
-        self.set_control_surfaces(pitch_cmd=pitch_cmd, yaw_cmd=yaw_cmd)
+        # DÖNÜŞ NAVİGASYONU: Stabilizasyon kapalı (döndürmeye karşı çalışmasın)
+        self.set_control_surfaces(pitch_cmd=pitch_cmd, yaw_cmd=yaw_cmd, use_stabilization=False)
         
         # Başlangıç noktasına yaklaştık mı?
         if distance_from_start <= MISSION_PARAMS['position_tolerance'] * 2:  # 4m tolerance
@@ -857,7 +858,8 @@ class Mission1Navigator:
         pitch_cmd = max(-30, min(30, int(depth_correction // 5)))
         
         self.set_motor_throttle(motor_throttle)
-        self.set_control_surfaces(pitch_cmd=pitch_cmd, yaw_cmd=yaw_cmd)
+        # FINAL YAKLAŞIM: Hassas navigasyon için stabilizasyon kapalı
+        self.set_control_surfaces(pitch_cmd=pitch_cmd, yaw_cmd=yaw_cmd, use_stabilization=False)
         
         # 5 saniye pozisyon tuttuk mu?
         if distance_from_start <= MISSION_PARAMS['position_tolerance']:
