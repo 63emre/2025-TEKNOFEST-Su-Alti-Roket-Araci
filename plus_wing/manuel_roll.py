@@ -88,11 +88,11 @@ def main():
                 right_cmd_us = 0.0
             else:
                 # İstenen davranış: CCW roll -> SOL ↑, SAĞ ↓
-                # Bunu doğrudan açıyla orantılayalım (P kontrol).
+                # Fiziksel olarak sağ ve sol kanatlar karşılıklı, aynı PWM değişimi zıt hareket yaratır
                 u = ROLL_SENSE * roll * K_ANG_US_PER_RAD
-                # Sol yukarı için +u, sağ aşağı için -u
+                # Her iki kanat da aynı yöne döner (fiziksel konumları nedeniyle zıt hareket ederler)
                 left_cmd_us  =  (+u) * DIR_LEFT
-                right_cmd_us =  (-u) * DIR_RIGHT
+                right_cmd_us =  (+u) * DIR_RIGHT  # Artık aynı yön!
 
                 # Sınırla
                 left_cmd_us  = max(-MAX_DELTA_US, min(MAX_DELTA_US, left_cmd_us))

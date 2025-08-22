@@ -101,30 +101,31 @@ def calculate_wing_commands(roll, pitch, yaw):
     
     # ROLL kontrolü (manuel_roll.py'deki mantık)
     # CCW roll -> SOL ↑, SAĞ ↓ (sadece LEFT ve RIGHT servoları kullanılır)
+    # Fiziksel olarak karşılıklı kanatlar, aynı PWM değişimi zıt hareket yaratır
     if abs(roll) > 0:
         roll_signal = ROLL_SENSE * roll * K_ROLL_US_PER_RAD
-        left_cmd  += +roll_signal  # Sol kanat yukarı
-        right_cmd += -roll_signal  # Sağ kanat aşağı
+        left_cmd  += +roll_signal  # Sol kanat
+        right_cmd += -roll_signal  # Sağ kanat (zıt yön)
         # UP ve DOWN bu eksende kullanılmaz
     
     # PITCH kontrolü (manuel_pitch.py'deki mantık)  
     # +pitch -> RIGHT ↑, LEFT ↓ (sadece RIGHT ve LEFT servoları kullanılır)
     if abs(pitch) > 0:
         pitch_signal = PITCH_SENSE * pitch * K_PITCH_US_PER_RAD
-        right_cmd += +pitch_signal  # Sağ kanat yukarı (burun yukarı için)
-        left_cmd  += -pitch_signal  # Sol kanat aşağı (burun yukarı için)
+        right_cmd += -pitch_signal  # Sağ kanat aşağı (burun yukarı için)
+        left_cmd  += +pitch_signal  # Sol kanat yukarı (burun yukarı için)
         # UP ve DOWN bu eksende kullanılmaz
     
     # YAW kontrolü (manuel_yaw.py'deki mantık)
     # CCW yaw -> çapraz koordinasyon (tüm 4 servo kullanılır)
     if abs(yaw) > 0:
         yaw_signal = YAW_SENSE * yaw * K_YAW_US_PER_RAD
-        # Çapraz grup 1: UP + DOWN (aynı yön)
+        # Çapraz grup 1: UP + DOWN (zıt yönler)
         up_cmd   += +yaw_signal
-        down_cmd += +yaw_signal  
+        down_cmd += -yaw_signal  
         # Çapraz grup 2: RIGHT + LEFT (grup 1'in tersi)
         right_cmd += -yaw_signal
-        left_cmd  += -yaw_signal
+        left_cmd  += +yaw_signal
     
     # Mekanik yön düzeltmeleri uygula
     up_cmd    *= DIR_UP
