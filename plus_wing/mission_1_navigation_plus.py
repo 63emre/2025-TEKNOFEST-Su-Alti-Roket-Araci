@@ -1,11 +1,12 @@
 #!/usr/bin/env python3
 """
 TEKNOFEST Su Altı Roket Aracı - Görev 1: Seyir Yapma & Başlangıç Noktasına Geri Dönüş
+PLUS WING (+) KONFİGÜRASYONU - GPS'SİZ DEAD RECKONING
 
 Görev Açıklaması:
 - Başlangıç bölgesinden 2m derinlikte düz istikamette 10m ilerle (süre başlatılır)
-- Kıyıdan en az 50m uzaklaş
-- Başlangıç noktasına otonom geri dön
+- Kıyıdan en az 50m uzaklaş (dead reckoning ile)
+- Başlangıç noktasına otonom geri dön (IMU + zaman bazlı)
 - Pozitif sephiye ile yüzeye çıkıp enerjiyi kes
 
 Puanlama:
@@ -14,6 +15,13 @@ Puanlama:
 - Sızdırmazlık: 60 puan
 - Süre limiti: 5 dakika
 - Toplam: 300 puan
+
+Plus Wing Konfigürasyonu:
+     ÜST (14)
+        |
+SOL (13) + SAĞ (12)
+        |
+     ALT (11)
 """
 
 import time
@@ -23,10 +31,20 @@ import json
 import argparse
 from datetime import datetime
 from pymavlink import mavutil
-import numpy as np
+
+# Plus Wing hardware config import
+try:
+    from hardware_config import (
+        PLUS_WING_SERVO_CHANNELS,
+        PLUS_WING_CONFIG,
+        calculate_plus_wing_pwm,
+        get_plus_wing_config
+    )
+except ImportError:
+    print("❌ hardware_config.py bulunamadı!")
+    exit(1)
 
 # MAVLink bağlantı adresi
-# Serial MAVLink connection with environment variable support
 import os
 MAV_ADDRESS = os.getenv("MAV_ADDRESS", "/dev/ttyACM0") + "," + str(os.getenv("MAV_BAUD", "115200"))
 
@@ -42,26 +60,21 @@ MISSION_PARAMS = {
     'depth_tolerance': 0.2         # Derinlik toleransı (m)
 }
 
-# Kontrol parametreleri
+# Plus Wing kontrol parametreleri
 CONTROL_PARAMS = {
-    'depth_pid': {'kp': 100.0, 'ki': 5.0, 'kd': 30.0},
-    'heading_pid': {'kp': 3.0, 'ki': 0.1, 'kd': 0.5},
-    'position_pid': {'kp': 2.0, 'ki': 0.05, 'kd': 0.3}
+    'depth_pid': {'kp': 80.0, 'ki': 3.0, 'kd': 25.0},
+    'heading_pid': {'kp': 4.0, 'ki': 0.15, 'kd': 0.8},
+    'dead_reckoning_pid': {'kp': 1.5, 'ki': 0.02, 'kd': 0.4}
 }
 
-# Servo ve motor kanalları
-MOTOR_CHANNEL = 8
-SERVO_CHANNELS = {
-    'fin_top': 1,
-    'fin_right': 2,
-    'fin_bottom': 3,
-    'fin_left': 4
-}
+# Plus Wing servo ve motor kanalları
+MOTOR_CHANNEL = PLUS_WING_CONFIG['MOTOR']['ana_motor']['mavlink_channel']
+SERVO_CHANNELS = PLUS_WING_SERVO_CHANNELS
 
 # PWM değerleri
-PWM_NEUTRAL = 1500
-PWM_MIN = 1000
-PWM_MAX = 2000
+PWM_NEUTRAL = PLUS_WING_CONFIG['PWM_LIMITS']['servo_neutral']
+PWM_MIN = PLUS_WING_CONFIG['PWM_LIMITS']['servo_min']
+PWM_MAX = PLUS_WING_CONFIG['PWM_LIMITS']['servo_max']
 
 class PIDController:
     def __init__(self, kp, ki, kd, max_output=500):
@@ -103,22 +116,27 @@ class PIDController:
         self.last_time = time.time()
 
 class Mission1Navigator:
-    def __init__(self, start_lat=None, start_lon=None):
+    def __init__(self, start_heading=0.0):
         self.master = None
         self.connected = False
         self.mission_active = False
         
-        # Navigasyon durumu
-        self.start_position = {'lat': start_lat, 'lon': start_lon, 'alt': 0.0}
-        self.current_position = {'lat': 0.0, 'lon': 0.0, 'alt': 0.0}
+        # Dead Reckoning navigasyon durumu (GPS'siz)
+        self.start_position = {'x': 0.0, 'y': 0.0, 'heading': start_heading}
+        self.current_position = {'x': 0.0, 'y': 0.0}  # Relatif pozisyon (m)
         self.current_depth = 0.0
-        self.current_heading = 0.0
+        self.current_heading = start_heading
         self.current_speed = 0.0
         
-        # Attitude veriler
+        # Attitude veriler (IMU)
         self.current_roll = 0.0
         self.current_pitch = 0.0
-        self.current_yaw = 0.0
+        self.current_yaw = start_heading
+        
+        # Dead reckoning için
+        self.last_position_update = time.time()
+        self.traveled_distance = 0.0
+        self.initial_heading = start_heading
         
         # Görev durumu
         self.mission_stage = "INITIALIZATION"
@@ -135,8 +153,8 @@ class Mission1Navigator:
         # PID kontrolcüler
         self.depth_pid = PIDController(**CONTROL_PARAMS['depth_pid'])
         self.heading_pid = PIDController(**CONTROL_PARAMS['heading_pid'])
-        self.position_pid_lat = PIDController(**CONTROL_PARAMS['position_pid'])
-        self.position_pid_lon = PIDController(**CONTROL_PARAMS['position_pid'])
+        self.position_pid_x = PIDController(**CONTROL_PARAMS['dead_reckoning_pid'])
+        self.position_pid_y = PIDController(**CONTROL_PARAMS['dead_reckoning_pid'])
         
         # Veri kayıt
         self.mission_log = []
@@ -175,19 +193,15 @@ class Mission1Navigator:
             return False
     
     def read_sensors(self):
-        """Tüm sensör verilerini oku"""
+        """Tüm sensör verilerini oku (GPS'siz - IMU + Dead Reckoning)"""
         if not self.connected:
             return False
             
         try:
-            # GPS pozisyon
-            gps_msg = self.master.recv_match(type='GPS_RAW_INT', blocking=False)
-            if gps_msg and gps_msg.fix_type >= 3:  # 3D fix
-                self.current_position['lat'] = gps_msg.lat / 1e7
-                self.current_position['lon'] = gps_msg.lon / 1e7
-                self.current_position['alt'] = gps_msg.alt / 1e3
+            current_time = time.time()
+            dt = current_time - self.last_position_update
             
-            # Attitude (IMU)
+            # Attitude (IMU) - Ana navigasyon kaynağı
             attitude_msg = self.master.recv_match(type='ATTITUDE', blocking=False)
             if attitude_msg:
                 self.current_roll = math.degrees(attitude_msg.roll)
@@ -195,21 +209,35 @@ class Mission1Navigator:
                 self.current_yaw = math.degrees(attitude_msg.yaw)
                 self.current_heading = self.current_yaw
             
-            # Basınç/derinlik
+            # Basınç/derinlik sensörü
             pressure_msg = self.master.recv_match(type='SCALED_PRESSURE', blocking=False)
             if pressure_msg:
                 depth_pressure = pressure_msg.press_abs - 1013.25
                 self.current_depth = max(0, depth_pressure * 0.10197)
             
-            # Hız
+            # Hız bilgisi
             vfr_msg = self.master.recv_match(type='VFR_HUD', blocking=False)
             if vfr_msg:
                 self.current_speed = vfr_msg.groundspeed
             
+            # Dead Reckoning pozisyon güncelleme
+            if dt > 0.1:  # 10Hz'de güncelle
+                distance_traveled = self.current_speed * dt
+                self.traveled_distance += distance_traveled
+                
+                # Heading'e göre X,Y pozisyon hesapla
+                heading_rad = math.radians(self.current_heading)
+                dx = distance_traveled * math.cos(heading_rad)
+                dy = distance_traveled * math.sin(heading_rad)
+                
+                self.current_position['x'] += dx
+                self.current_position['y'] += dy
+                
+                self.last_position_update = current_time
+            
             # Telemetri kaydet
-            timestamp = time.time()
             self.telemetry_data.append({
-                'timestamp': timestamp,
+                'timestamp': current_time,
                 'position': self.current_position.copy(),
                 'depth': self.current_depth,
                 'heading': self.current_heading,
@@ -217,6 +245,7 @@ class Mission1Navigator:
                 'roll': self.current_roll,
                 'pitch': self.current_pitch,
                 'yaw': self.current_yaw,
+                'traveled_distance': self.traveled_distance,
                 'mission_stage': self.mission_stage
             })
             
@@ -226,29 +255,27 @@ class Mission1Navigator:
             print(f"❌ Sensör okuma hatası: {e}")
             return False
     
-    def calculate_distance_bearing(self, lat1, lon1, lat2, lon2):
-        """İki nokta arası mesafe ve bearing hesapla"""
-        # Haversine formula
-        R = 6371000  # Earth radius in meters
+    def calculate_distance_bearing_to_origin(self):
+        """Başlangıç noktasına mesafe ve bearing hesapla (Dead Reckoning)"""
+        # Mevcut pozisyondan başlangıç noktasına (0,0)
+        dx = -self.current_position['x']  # Başlangıca dönmek için negatif
+        dy = -self.current_position['y']
         
-        lat1_rad = math.radians(lat1)
-        lat2_rad = math.radians(lat2)
-        dlat_rad = math.radians(lat2 - lat1)
-        dlon_rad = math.radians(lon2 - lon1)
+        # Mesafe hesaplama
+        distance = math.sqrt(dx*dx + dy*dy)
         
-        a = (math.sin(dlat_rad/2)**2 + 
-             math.cos(lat1_rad) * math.cos(lat2_rad) * math.sin(dlon_rad/2)**2)
-        c = 2 * math.atan2(math.sqrt(a), math.sqrt(1-a))
-        distance = R * c
+        # Bearing hesaplama (matematiksel açıdan navigasyon açısına çevir)
+        bearing_rad = math.atan2(dy, dx)
+        bearing_deg = math.degrees(bearing_rad)
         
-        # Bearing hesaplama
-        y = math.sin(dlon_rad) * math.cos(lat2_rad)
-        x = (math.cos(lat1_rad) * math.sin(lat2_rad) - 
-             math.sin(lat1_rad) * math.cos(lat2_rad) * math.cos(dlon_rad))
-        bearing = math.degrees(math.atan2(y, x))
-        bearing = (bearing + 360) % 360  # 0-360 range
+        # 0-360 derece aralığına çevir
+        bearing_deg = (bearing_deg + 360) % 360
         
-        return distance, bearing
+        return distance, bearing_deg
+    
+    def get_current_distance_from_start(self):
+        """Başlangıç noktasından mevcut uzaklık"""
+        return math.sqrt(self.current_position['x']**2 + self.current_position['y']**2)
     
     def set_motor_throttle(self, throttle_pwm):
         """Motor kontrolü"""
@@ -270,17 +297,26 @@ class Mission1Navigator:
             return False
     
     def set_control_surfaces(self, roll_cmd=0, pitch_cmd=0, yaw_cmd=0):
-        """Kontrol yüzeylerini ayarla"""
-        fin_commands = {
-            'fin_top': PWM_NEUTRAL - pitch_cmd + yaw_cmd,
-            'fin_bottom': PWM_NEUTRAL + pitch_cmd + yaw_cmd,
-            'fin_right': PWM_NEUTRAL + roll_cmd + yaw_cmd,
-            'fin_left': PWM_NEUTRAL - roll_cmd + yaw_cmd
-        }
+        """Plus Wing kontrol yüzeylerini ayarla"""
+        if not self.connected:
+            return False
         
-        for fin_name, pwm_value in fin_commands.items():
-            channel = SERVO_CHANNELS[fin_name]
-            self.set_servo_position(channel, int(pwm_value))
+        try:
+            # Plus Wing PWM hesaplama
+            pwm_values = calculate_plus_wing_pwm(roll_cmd, pitch_cmd, yaw_cmd)
+            
+            # Tüm servo komutlarını gönder
+            success_count = 0
+            for servo_name, pwm_value in pwm_values.items():
+                channel = SERVO_CHANNELS[servo_name]
+                if self.set_servo_position(channel, int(pwm_value)):
+                    success_count += 1
+            
+            return success_count == len(pwm_values)
+            
+        except Exception as e:
+            print(f"❌ Plus Wing kontrol hatası: {e}")
+            return False
     
     def set_servo_position(self, channel, pwm_value):
         """Servo pozisyon kontrolü"""
@@ -314,14 +350,11 @@ class Mission1Navigator:
         print(f"⏰ Zaman: {timestamp} | Görev Süresi: {mission_time:.0f}s | Kalan: {remaining_time:.0f}s")
         print(f"🎯 Görev Aşaması: {self.mission_stage}")
         
-        # Pozisyon bilgisi
-        if self.start_position['lat']:
-            distance_from_start, bearing_to_start = self.calculate_distance_bearing(
-                self.current_position['lat'], self.current_position['lon'],
-                self.start_position['lat'], self.start_position['lon']
-            )
-            print(f"📍 Mevcut Pozisyon: {self.current_position['lat']:.6f}, {self.current_position['lon']:.6f}")
-            print(f"🏠 Başlangıçtan Uzaklık: {distance_from_start:.1f}m | Yön: {bearing_to_start:.0f}°")
+        # Dead Reckoning pozisyon bilgisi
+        distance_from_start, bearing_to_start = self.calculate_distance_bearing_to_origin()
+        print(f"📍 Mevcut Pozisyon (Dead Reckoning): X={self.current_position['x']:.1f}m, Y={self.current_position['y']:.1f}m")
+        print(f"🏠 Başlangıçtan Uzaklık: {distance_from_start:.1f}m | Geri Dönüş Yönü: {bearing_to_start:.0f}°")
+        print(f"📏 Toplam Mesafe: {self.traveled_distance:.1f}m")
         
         print(f"🌊 Derinlik: {self.current_depth:.1f}m | Hedef: {MISSION_PARAMS['target_depth']:.1f}m")
         print(f"🧭 Heading: {self.current_heading:.0f}° | Hız: {self.current_speed:.1f} m/s")
@@ -420,101 +453,97 @@ class Mission1Navigator:
             self.mission_stage = "OFFSHORE_CRUISE"
     
     def execute_offshore_cruise(self):
-        """Kıyıdan 50m uzaklaşma"""
-        if self.start_position['lat']:
-            distance_from_start, _ = self.calculate_distance_bearing(
-                self.current_position['lat'], self.current_position['lon'],
-                self.start_position['lat'], self.start_position['lon']
-            )
-            
-            self.max_offshore_distance = max(self.max_offshore_distance, distance_from_start)
-            
-            # Hızlı ileri hareket
-            motor_throttle = PWM_NEUTRAL + 150
-            
-            # Derinlik tutma
-            depth_correction = self.depth_pid.update(MISSION_PARAMS['target_depth'], self.current_depth)
-            pitch_cmd = max(-150, min(150, int(depth_correction)))
-            
-            self.set_motor_throttle(motor_throttle)
-            self.set_control_surfaces(pitch_cmd=pitch_cmd)
-            
-            # 50m uzaklaştık mı?
-            if distance_from_start >= MISSION_PARAMS['min_offshore_distance']:
-                print("✅ 50m uzaklaşma tamamlandı! Geri dönüş navigasyonu başlıyor...")
-                self.mission_stage = "RETURN_NAVIGATION"
+        """Kıyıdan 50m uzaklaşma (Dead Reckoning)"""
+        distance_from_start = self.get_current_distance_from_start()
+        self.max_offshore_distance = max(self.max_offshore_distance, distance_from_start)
+        
+        # Hızlı ileri hareket
+        motor_throttle = PWM_NEUTRAL + 150
+        
+        # Derinlik tutma
+        depth_correction = self.depth_pid.update(MISSION_PARAMS['target_depth'], self.current_depth)
+        pitch_cmd = max(-50, min(50, int(depth_correction // 4)))
+        
+        # Düz heading tutma (başlangıç yönünde devam)
+        heading_error = self.initial_heading - self.current_heading
+        if heading_error > 180:
+            heading_error -= 360
+        elif heading_error < -180:
+            heading_error += 360
+        
+        heading_correction = self.heading_pid.update(self.initial_heading, self.current_heading)
+        yaw_cmd = max(-30, min(30, int(heading_correction // 3)))
+        
+        self.set_motor_throttle(motor_throttle)
+        self.set_control_surfaces(pitch_cmd=pitch_cmd, yaw_cmd=yaw_cmd)
+        
+        # 50m uzaklaştık mı?
+        if distance_from_start >= MISSION_PARAMS['min_offshore_distance']:
+            print("✅ 50m uzaklaşma tamamlandı! Geri dönüş navigasyonu başlıyor...")
+            self.mission_stage = "RETURN_NAVIGATION"
     
     def execute_return_navigation(self):
-        """Başlangıç noktasına geri dönüş"""
-        if self.start_position['lat']:
-            distance_from_start, bearing_to_start = self.calculate_distance_bearing(
-                self.current_position['lat'], self.current_position['lon'],
-                self.start_position['lat'], self.start_position['lon']
-            )
+        """Başlangıç noktasına geri dönüş (Dead Reckoning)"""
+        distance_from_start, bearing_to_start = self.calculate_distance_bearing_to_origin()
+        
+        # Hedefe yönlenme
+        heading_error = bearing_to_start - self.current_heading
+        if heading_error > 180:
+            heading_error -= 360
+        elif heading_error < -180:
+            heading_error += 360
+        
+        # Hızlı geri dönüş
+        if distance_from_start > 10:  # 10m'den uzaksa hızla git
+            motor_throttle = PWM_NEUTRAL + 180
+        else:  # Yakınsa yavaşla
+            motor_throttle = PWM_NEUTRAL + 100
             
-            # Hedefe yönlenme
-            heading_error = bearing_to_start - self.current_heading
-            if heading_error > 180:
-                heading_error -= 360
-            elif heading_error < -180:
-                heading_error += 360
-            
-            # Hızlı geri dönüş
-            if distance_from_start > 10:  # 10m'den uzaksa hızla git
-                motor_throttle = PWM_NEUTRAL + 180
-            else:  # Yakınsa yavaşla
-                motor_throttle = PWM_NEUTRAL + 100
-                
-            # Navigasyon kontrolü
-            heading_correction = self.heading_pid.update(bearing_to_start, self.current_heading)
-            yaw_cmd = max(-150, min(150, int(heading_correction)))
-            
-            # Derinlik tutma
-            depth_correction = self.depth_pid.update(MISSION_PARAMS['target_depth'], self.current_depth)
-            pitch_cmd = max(-150, min(150, int(depth_correction)))
-            
-            self.set_motor_throttle(motor_throttle)
-            self.set_control_surfaces(pitch_cmd=pitch_cmd, yaw_cmd=yaw_cmd)
-            
-            # Başlangıç noktasına yaklaştık mı?
-            if distance_from_start <= MISSION_PARAMS['position_tolerance'] * 2:  # 4m tolerance
-                print("✅ Başlangıç noktasına yaklaşıldı! Final yaklaşım...")
-                self.mission_stage = "FINAL_APPROACH"
+        # Navigasyon kontrolü
+        heading_correction = self.heading_pid.update(bearing_to_start, self.current_heading)
+        yaw_cmd = max(-50, min(50, int(heading_correction // 2)))
+        
+        # Derinlik tutma
+        depth_correction = self.depth_pid.update(MISSION_PARAMS['target_depth'], self.current_depth)
+        pitch_cmd = max(-50, min(50, int(depth_correction // 4)))
+        
+        self.set_motor_throttle(motor_throttle)
+        self.set_control_surfaces(pitch_cmd=pitch_cmd, yaw_cmd=yaw_cmd)
+        
+        # Başlangıç noktasına yaklaştık mı?
+        if distance_from_start <= MISSION_PARAMS['position_tolerance'] * 2:  # 4m tolerance
+            print("✅ Başlangıç noktasına yaklaşıldı! Final yaklaşım...")
+            self.mission_stage = "FINAL_APPROACH"
     
     def execute_final_approach(self):
-        """Final yaklaşım ve pozisyon tutma"""
-        if self.start_position['lat']:
-            distance_from_start, bearing_to_start = self.calculate_distance_bearing(
-                self.current_position['lat'], self.current_position['lon'],
-                self.start_position['lat'], self.start_position['lon']
-            )
+        """Final yaklaşım ve pozisyon tutma (Dead Reckoning)"""
+        distance_from_start, bearing_to_start = self.calculate_distance_bearing_to_origin()
+        self.final_position_error = distance_from_start
+        
+        # Hassas pozisyon kontrolü
+        if distance_from_start > MISSION_PARAMS['position_tolerance']:
+            # Yavaş yaklaşım
+            motor_throttle = PWM_NEUTRAL + 60
             
-            self.final_position_error = distance_from_start
-            
-            # Hassas poziyon kontrolü
-            if distance_from_start > MISSION_PARAMS['position_tolerance']:
-                # Yavaş yaklaşım
-                motor_throttle = PWM_NEUTRAL + 60
-                
-                heading_correction = self.heading_pid.update(bearing_to_start, self.current_heading)
-                yaw_cmd = max(-100, min(100, int(heading_correction)))
-            else:
-                # Pozisyon tutma
-                motor_throttle = PWM_NEUTRAL + 30
-                yaw_cmd = 0
-            
-            # Derinlik tutma
-            depth_correction = self.depth_pid.update(MISSION_PARAMS['target_depth'], self.current_depth)
-            pitch_cmd = max(-100, min(100, int(depth_correction)))
-            
-            self.set_motor_throttle(motor_throttle)
-            self.set_control_surfaces(pitch_cmd=pitch_cmd, yaw_cmd=yaw_cmd)
-            
-            # 5 saniye pozisyon tuttuk mu?
-            if distance_from_start <= MISSION_PARAMS['position_tolerance']:
-                time.sleep(5)  # 5 saniye bekle
-                print("✅ Final pozisyon tutuldu! Yüzeye çıkış ve enerji kesme...")
-                self.mission_stage = "SURFACE_AND_SHUTDOWN"
+            heading_correction = self.heading_pid.update(bearing_to_start, self.current_heading)
+            yaw_cmd = max(-30, min(30, int(heading_correction // 3)))
+        else:
+            # Pozisyon tutma
+            motor_throttle = PWM_NEUTRAL + 20
+            yaw_cmd = 0
+        
+        # Derinlik tutma
+        depth_correction = self.depth_pid.update(MISSION_PARAMS['target_depth'], self.current_depth)
+        pitch_cmd = max(-30, min(30, int(depth_correction // 5)))
+        
+        self.set_motor_throttle(motor_throttle)
+        self.set_control_surfaces(pitch_cmd=pitch_cmd, yaw_cmd=yaw_cmd)
+        
+        # 5 saniye pozisyon tuttuk mu?
+        if distance_from_start <= MISSION_PARAMS['position_tolerance']:
+            time.sleep(5)  # 5 saniye bekle
+            print("✅ Final pozisyon tutuldu! Yüzeye çıkış ve enerji kesme...")
+            self.mission_stage = "SURFACE_AND_SHUTDOWN"
     
     def execute_surface_shutdown(self):
         """Pozitif sephiye ile yüzeye çıkış ve enerji kesme"""
@@ -647,20 +676,22 @@ class Mission1Navigator:
             print("❌ Pixhawk bağlantısı başarısız!")
             return False
         
-        # Başlangıç pozisyonu ayarla
-        if not self.start_position['lat']:
-            print("📍 Başlangıç pozisyonu GPS'ten alınıyor...")
-            for _ in range(30):  # 30 saniye GPS bekle
-                if self.read_sensors() and self.current_position['lat']:
-                    self.start_position = self.current_position.copy()
-                    break
-                time.sleep(1)
+        # Dead Reckoning başlangıç pozisyonu ayarla
+        print("📍 Dead Reckoning sistemi başlatılıyor...")
+        print("🧭 IMU kalibrasyonu bekleniyor...")
         
-        if not self.start_position['lat']:
-            print("❌ GPS sinyali alınamadı!")
-            return False
+        # IMU stabilizasyonu için bekle
+        for i in range(10):
+            if self.read_sensors():
+                print(f"🔄 IMU okuma {i+1}/10: Heading={self.current_heading:.1f}°")
+            time.sleep(0.5)
         
-        print(f"📍 Başlangıç pozisyonu: {self.start_position['lat']:.6f}, {self.start_position['lon']:.6f}")
+        # Başlangıç heading'ini ayarla
+        self.initial_heading = self.current_heading
+        self.start_position['heading'] = self.current_heading
+        
+        print(f"📍 Başlangıç pozisyonu: X=0.0m, Y=0.0m, Heading={self.initial_heading:.1f}°")
+        print("🎯 Dead Reckoning navigasyon hazır!")
         
         print("\n⚠️ GÖREV HAZIRLIĞI:")
         print("- Tüm sistemler hazır mı?")
@@ -725,13 +756,12 @@ class Mission1Navigator:
 
 def main():
     """Ana fonksiyon"""
-    parser = argparse.ArgumentParser(description='TEKNOFEST Görev 1: Seyir Yapma & Geri Dönüş')
-    parser.add_argument('--start-lat', type=float, help='Başlangıç latitude')
-    parser.add_argument('--start-lon', type=float, help='Başlangıç longitude')
+    parser = argparse.ArgumentParser(description='TEKNOFEST Görev 1: Seyir Yapma & Geri Dönüş (Plus Wing - GPS\'siz)')
+    parser.add_argument('--start-heading', type=float, default=0.0, help='Başlangıç heading (derece)')
     
     args = parser.parse_args()
     
-    mission = Mission1Navigator(start_lat=args.start_lat, start_lon=args.start_lon)
+    mission = Mission1Navigator(start_heading=args.start_heading)
     
     try:
         success = mission.run_mission_1()
