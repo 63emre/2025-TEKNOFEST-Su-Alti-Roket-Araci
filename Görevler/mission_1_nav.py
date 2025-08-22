@@ -27,6 +27,17 @@ from datetime import datetime
 from pymavlink import mavutil
 import os
 
+# D300 derinlik sensörü import
+try:
+    import sys
+    sys.path.append('../App')
+    from depth_sensor import D300DepthSensor
+    D300_AVAILABLE = True
+    print("✅ D300 derinlik sensörü modülü yüklendi")
+except ImportError:
+    print("⚠️ D300 derinlik sensörü modülü bulunamadı, SCALED_PRESSURE kullanılacak")
+    D300_AVAILABLE = False
+
 # MAVLink bağlantı adresi (ENV ile özelleştirilebilir)
 MAV_ADDRESS = os.getenv("MAV_ADDRESS", "/dev/ttyACM0") + "," + str(os.getenv("MAV_BAUD", "115200"))
 
@@ -104,6 +115,21 @@ class Mission1Navigator:
         self.master = None
         self.connected = False
 
+        # D300 derinlik sensörü
+        self.d300_sensor = None
+        self.d300_connected = False
+        if D300_AVAILABLE:
+            try:
+                self.d300_sensor = D300DepthSensor(i2c_address=0x76)
+                self.d300_connected = self.d300_sensor.initialize()
+                if self.d300_connected:
+                    print("✅ D300 derinlik sensörü başlatıldı (0x76)")
+                else:
+                    print("⚠️ D300 sensörü başlatılamadı, SCALED_PRESSURE kullanılacak")
+            except Exception as e:
+                print(f"⚠️ D300 sensörü hatası: {e}, SCALED_PRESSURE kullanılacak")
+                self.d300_connected = False
+
         # Durum
         self.mission_active = False
         self.mission_stage = "INITIALIZATION"
@@ -175,12 +201,32 @@ class Mission1Navigator:
                 self.current_yaw = math.degrees(attitude_msg.yaw)
                 self.current_heading = self.current_yaw
 
-            # Derinlik (basınçtan kaba hesap; kalibrasyon gerekebilir)
-            pressure_msg = self.master.recv_match(type='SCALED_PRESSURE', blocking=False)
-            if pressure_msg:
-                # Basınç [hPa]; referans 1013.25 hPa (deniz seviyesi). Tatlı/salt su farkı ve sıcaklık etkisi yok sayıldı.
-                depth_pressure = pressure_msg.press_abs - 1013.25
-                self.current_depth = max(0.0, depth_pressure * 0.10197)  # ~m su sütunu
+            # Derinlik sensörü (D300 öncelikli, yoksa SCALED_PRESSURE)
+            if self.d300_connected and self.d300_sensor:
+                try:
+                    depth_data = self.d300_sensor.read_depth()
+                    if depth_data['success']:
+                        self.current_depth = max(0.0, depth_data['depth'])
+                    else:
+                        # D300 okuma hatası, SCALED_PRESSURE'a geç
+                        pressure_msg = self.master.recv_match(type='SCALED_PRESSURE', blocking=False)
+                        if pressure_msg:
+                            depth_pressure = pressure_msg.press_abs - 1013.25
+                            self.current_depth = max(0.0, depth_pressure * 0.10197)
+                except Exception as e:
+                    print(f"⚠️ D300 okuma hatası: {e}")
+                    # Fallback to SCALED_PRESSURE
+                    pressure_msg = self.master.recv_match(type='SCALED_PRESSURE', blocking=False)
+                    if pressure_msg:
+                        depth_pressure = pressure_msg.press_abs - 1013.25
+                        self.current_depth = max(0.0, depth_pressure * 0.10197)
+            else:
+                # D300 yok, SCALED_PRESSURE kullan (basınçtan kaba hesap)
+                pressure_msg = self.master.recv_match(type='SCALED_PRESSURE', blocking=False)
+                if pressure_msg:
+                    # Basınç [hPa]; referans 1013.25 hPa (deniz seviyesi). Tatlı/salt su farkı ve sıcaklık etkisi yok sayıldı.
+                    depth_pressure = pressure_msg.press_abs - 1013.25
+                    self.current_depth = max(0.0, depth_pressure * 0.10197)  # ~m su sütunu
 
             # Leak uyarısı (metin üzerinden basit tespit)
             statustext = self.master.recv_match(type='STATUSTEXT', blocking=False)
@@ -571,6 +617,14 @@ class Mission1Navigator:
         if self.connected:
             self.set_motor_throttle_pwm(PWM_NEUTRAL)
             self.set_control_surfaces()
+
+        # D300 sensörünü kapat
+        if self.d300_connected and self.d300_sensor:
+            try:
+                self.d300_sensor.close()
+                print("🔌 D300 derinlik sensörü kapatıldı")
+            except:
+                pass
 
         if self.master:
             self.master.close()

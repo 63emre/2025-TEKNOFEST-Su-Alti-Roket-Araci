@@ -44,6 +44,17 @@ except ImportError:
     print("❌ hardware_config.py bulunamadı!")
     exit(1)
 
+# D300 derinlik sensörü import
+try:
+    import sys
+    sys.path.append('../App')
+    from depth_sensor import D300DepthSensor
+    D300_AVAILABLE = True
+    print("✅ D300 derinlik sensörü modülü yüklendi")
+except ImportError:
+    print("⚠️ D300 derinlik sensörü modülü bulunamadı, SCALED_PRESSURE kullanılacak")
+    D300_AVAILABLE = False
+
 # MAVLink bağlantı adresi
 import os
 MAV_ADDRESS = os.getenv("MAV_ADDRESS", "/dev/ttyACM0") + "," + str(os.getenv("MAV_BAUD", "115200"))
@@ -120,6 +131,21 @@ class Mission1Navigator:
         self.master = None
         self.connected = False
         self.mission_active = False
+        
+        # D300 derinlik sensörü
+        self.d300_sensor = None
+        self.d300_connected = False
+        if D300_AVAILABLE:
+            try:
+                self.d300_sensor = D300DepthSensor(i2c_address=0x76)
+                self.d300_connected = self.d300_sensor.initialize()
+                if self.d300_connected:
+                    print("✅ D300 derinlik sensörü başlatıldı (0x76)")
+                else:
+                    print("⚠️ D300 sensörü başlatılamadı, SCALED_PRESSURE kullanılacak")
+            except Exception as e:
+                print(f"⚠️ D300 sensörü hatası: {e}, SCALED_PRESSURE kullanılacak")
+                self.d300_connected = False
         
         # Dead Reckoning navigasyon durumu (GPS'siz)
         self.start_position = {'x': 0.0, 'y': 0.0, 'heading': start_heading}
@@ -209,11 +235,31 @@ class Mission1Navigator:
                 self.current_yaw = math.degrees(attitude_msg.yaw)
                 self.current_heading = self.current_yaw
             
-            # Basınç/derinlik sensörü
-            pressure_msg = self.master.recv_match(type='SCALED_PRESSURE', blocking=False)
-            if pressure_msg:
-                depth_pressure = pressure_msg.press_abs - 1013.25
-                self.current_depth = max(0, depth_pressure * 0.10197)
+            # Derinlik sensörü (D300 öncelikli, yoksa SCALED_PRESSURE)
+            if self.d300_connected and self.d300_sensor:
+                try:
+                    depth_data = self.d300_sensor.read_depth()
+                    if depth_data['success']:
+                        self.current_depth = max(0.0, depth_data['depth'])
+                    else:
+                        # D300 okuma hatası, SCALED_PRESSURE'a geç
+                        pressure_msg = self.master.recv_match(type='SCALED_PRESSURE', blocking=False)
+                        if pressure_msg:
+                            depth_pressure = pressure_msg.press_abs - 1013.25
+                            self.current_depth = max(0, depth_pressure * 0.10197)
+                except Exception as e:
+                    print(f"⚠️ D300 okuma hatası: {e}")
+                    # Fallback to SCALED_PRESSURE
+                    pressure_msg = self.master.recv_match(type='SCALED_PRESSURE', blocking=False)
+                    if pressure_msg:
+                        depth_pressure = pressure_msg.press_abs - 1013.25
+                        self.current_depth = max(0, depth_pressure * 0.10197)
+            else:
+                # D300 yok, SCALED_PRESSURE kullan
+                pressure_msg = self.master.recv_match(type='SCALED_PRESSURE', blocking=False)
+                if pressure_msg:
+                    depth_pressure = pressure_msg.press_abs - 1013.25
+                    self.current_depth = max(0, depth_pressure * 0.10197)
             
             # Hız bilgisi
             vfr_msg = self.master.recv_match(type='VFR_HUD', blocking=False)
@@ -302,8 +348,18 @@ class Mission1Navigator:
             return False
         
         try:
+            # Komut değerlerini güçlendir (çok küçük değerler servo hareket ettirmez)
+            roll_cmd = max(-100, min(100, roll_cmd * 2.0))  # 2x güçlendir
+            pitch_cmd = max(-100, min(100, pitch_cmd * 2.0))
+            yaw_cmd = max(-100, min(100, yaw_cmd * 2.0))
+            
             # Plus Wing PWM hesaplama
             pwm_values = calculate_plus_wing_pwm(roll_cmd, pitch_cmd, yaw_cmd)
+            
+            # Debug çıktısı
+            if abs(roll_cmd) > 5 or abs(pitch_cmd) > 5 or abs(yaw_cmd) > 5:
+                print(f"🎮 Servo Komutları: R={roll_cmd:+.1f} P={pitch_cmd:+.1f} Y={yaw_cmd:+.1f}")
+                print(f"📡 PWM Değerleri: {pwm_values}")
             
             # Tüm servo komutlarını gönder
             success_count = 0
@@ -311,6 +367,11 @@ class Mission1Navigator:
                 channel = SERVO_CHANNELS[servo_name]
                 if self.set_servo_position(channel, int(pwm_value)):
                     success_count += 1
+                else:
+                    print(f"❌ Servo {servo_name} (kanal {channel}) komutu gönderilemedi")
+            
+            if success_count > 0:
+                print(f"✅ {success_count}/{len(pwm_values)} servo komutu gönderildi")
             
             return success_count == len(pwm_values)
             
@@ -337,6 +398,32 @@ class Mission1Navigator:
         except:
             return False
     
+    def test_servos(self):
+        """Servo test fonksiyonu - hareket edip etmediklerini kontrol et"""
+        print("\n🔧 SERVO TEST BAŞLIYOR...")
+        print("Her eksende servo hareketi test ediliyor...")
+        
+        test_values = [20, -20, 40, -40]  # Test değerleri
+        
+        for i, val in enumerate(test_values):
+            print(f"\n📊 Test {i+1}/4: Roll={val}")
+            self.set_control_surfaces(roll_cmd=val, pitch_cmd=0, yaw_cmd=0)
+            time.sleep(2)
+            
+            print(f"📊 Test {i+1}/4: Pitch={val}")  
+            self.set_control_surfaces(roll_cmd=0, pitch_cmd=val, yaw_cmd=0)
+            time.sleep(2)
+            
+            print(f"📊 Test {i+1}/4: Yaw={val}")
+            self.set_control_surfaces(roll_cmd=0, pitch_cmd=0, yaw_cmd=val)
+            time.sleep(2)
+        
+        # Nötr pozisyon
+        print("\n🔄 Servolar nötr pozisyona getiriliyor...")
+        self.set_control_surfaces(roll_cmd=0, pitch_cmd=0, yaw_cmd=0)
+        time.sleep(1)
+        print("✅ Servo test tamamlandı!")
+
     def display_mission_status(self):
         """Görev durumunu göster"""
         print("\n" + "="*80)
@@ -434,15 +521,21 @@ class Mission1Navigator:
         pitch_cmd = max(-150, min(150, int(depth_correction)))
         
         # Yön stabilizasyonu (başlangıç heading'i tut)
-        initial_heading = 0  # Bu başlangıçta ayarlanmalı
-        heading_error = initial_heading - self.current_heading
-        if heading_error > 180:
-            heading_error -= 360
-        elif heading_error < -180:
-            heading_error += 360
-        
-        heading_correction = self.heading_pid.update(initial_heading, self.current_heading)
-        yaw_cmd = max(-100, min(100, int(heading_correction)))
+        if self.initial_heading is not None:
+            heading_error = self.initial_heading - self.current_heading
+            if heading_error > 180:
+                heading_error -= 360
+            elif heading_error < -180:
+                heading_error += 360
+            
+            heading_correction = self.heading_pid.update(self.initial_heading, self.current_heading)
+            yaw_cmd = max(-50, min(50, int(heading_correction * 2)))  # 2x güçlendir
+            
+            # Debug çıktısı
+            if abs(heading_error) > 5:
+                print(f"🧭 Heading Error: {heading_error:.1f}° → Yaw Cmd: {yaw_cmd}")
+        else:
+            yaw_cmd = 0
         
         self.set_motor_throttle(motor_throttle)
         self.set_control_surfaces(pitch_cmd=pitch_cmd, yaw_cmd=yaw_cmd)
@@ -465,14 +558,21 @@ class Mission1Navigator:
         pitch_cmd = max(-50, min(50, int(depth_correction // 4)))
         
         # Düz heading tutma (başlangıç yönünde devam)
-        heading_error = self.initial_heading - self.current_heading
-        if heading_error > 180:
-            heading_error -= 360
-        elif heading_error < -180:
-            heading_error += 360
-        
-        heading_correction = self.heading_pid.update(self.initial_heading, self.current_heading)
-        yaw_cmd = max(-30, min(30, int(heading_correction // 3)))
+        if self.initial_heading is not None:
+            heading_error = self.initial_heading - self.current_heading
+            if heading_error > 180:
+                heading_error -= 360
+            elif heading_error < -180:
+                heading_error += 360
+            
+            heading_correction = self.heading_pid.update(self.initial_heading, self.current_heading)
+            yaw_cmd = max(-40, min(40, int(heading_correction * 1.5)))  # Güçlendir
+            
+            # Debug çıktısı
+            if abs(heading_error) > 10:
+                print(f"🧭 Offshore Heading Error: {heading_error:.1f}° → Yaw Cmd: {yaw_cmd}")
+        else:
+            yaw_cmd = 0
         
         self.set_motor_throttle(motor_throttle)
         self.set_control_surfaces(pitch_cmd=pitch_cmd, yaw_cmd=yaw_cmd)
@@ -698,6 +798,11 @@ class Mission1Navigator:
         print("- Güvenlik kontrolleri tamamlandı mı?") 
         print("- Şamandıra takıldı mı?")
         
+        # Servo test seçeneği
+        test_servos = input("\n🔧 Servolar test edilsin mi? (y/n): ").lower()
+        if test_servos == 'y':
+            self.test_servos()
+        
         ready = input("\n✅ Görev 1 başlasın mı? (y/n): ").lower()
         if ready != 'y':
             print("❌ Görev iptal edildi")
@@ -747,6 +852,14 @@ class Mission1Navigator:
         if self.connected:
             self.set_motor_throttle(PWM_NEUTRAL)
             self.set_control_surfaces()
+        
+        # D300 sensörünü kapat
+        if self.d300_connected and self.d300_sensor:
+            try:
+                self.d300_sensor.close()
+                print("🔌 D300 derinlik sensörü kapatıldı")
+            except:
+                pass
         
         if self.master:
             self.master.close()
