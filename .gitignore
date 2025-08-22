@@ -1,10 +1,18 @@
-# TEKNOFEST Su Altı Roket Aracı - .gitignore
+# TEKNOFEST 2025 Su Altı Roket Aracı - .gitignore
 
-# Python
+# =============================================================================
+# PYTHON
+# =============================================================================
+
+# Byte-compiled / optimized / DLL files
 __pycache__/
 *.py[cod]
 *$py.class
+
+# C extensions
 *.so
+
+# Distribution / packaging
 .Python
 build/
 develop-eggs/
@@ -18,23 +26,19 @@ parts/
 sdist/
 var/
 wheels/
-pip-wheel-metadata/
 share/python-wheels/
 *.egg-info/
 .installed.cfg
 *.egg
 MANIFEST
 
-# Virtual Environment
-venv/
-env/
-ENV/
-.env
-.venv
-
 # PyInstaller
 *.manifest
 *.spec
+
+# Installer logs
+pip-log.txt
+pip-delete-this-directory.txt
 
 # Unit test / coverage reports
 htmlcov/
@@ -49,16 +53,111 @@ coverage.xml
 *.py,cover
 .hypothesis/
 .pytest_cache/
+cover/
+
+# Virtual environments
+.env
+.venv
+env/
+venv/
+ENV/
+env.bak/
+venv.bak/
+
+# =============================================================================
+# PROJE SPESİFİK
+# =============================================================================
+
+# Log dosyaları
+logs/
+*.log
+*.log.*
+mission_*.log
+test_*.log
+debug_*.log
+
+# Kalibrasyon ve konfigürasyon verileri (local)
+**/calibration_data.json
+**/calibration_*.json
+**/local_config.json
+**/test_config.json
+*_calibration_*.json
+
+# Görev raporları ve telemetri
+**/mission_*_report_*.json
+**/telemetry_*.json
+**/performance_*.json
+**/test_results_*.json
+
+# Geçici veri dosyaları
+temp/
+tmp/
+cache/
+.cache/
+data/temp/
+data/cache/
+
+# Backup dosyaları
+*.bak
+*.backup
+*.old
+*~
+.DS_Store
+
+# =============================================================================
+# RASPBERRY PI SPESİFİK
+# =============================================================================
+
+# GPIO ve hardware test sonuçları
+gpio_test_*.txt
+servo_test_*.txt
+sensor_test_*.txt
+hardware_status_*.txt
+
+# MAVLink bağlantı logları
+mavlink_*.log
+pixhawk_*.log
+connection_*.log
+
+# PID tuning geçici dosyaları
+pid_tuning_*.json
+pid_test_*.json
+stabilization_*.log
+
+# Network konfigürasyon dosyaları (otomatik oluşturulan)
+network_*.json
+ip_config_*.json
+connection_status_*.json
+
+# =============================================================================
+# DEVELOPMENT TOOLS
+# =============================================================================
+
+# IDE dosyaları
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
 
 # Jupyter Notebook
 .ipynb_checkpoints
 
-# IPython
-profile_default/
-ipython_config.py
-
 # pyenv
 .python-version
+
+# pipenv
+Pipfile.lock
+
+# Poetry
+poetry.lock
+
+# Celery
+celerybeat-schedule
+celerybeat.pid
+
+# SageMath parsed files
+*.sage.py
 
 # Spyder project settings
 .spyderproject
@@ -78,102 +177,141 @@ dmypy.json
 # Pyre type checker
 .pyre/
 
-# IDE Files
-.vscode/
-.idea/
-*.swp
-*.swo
-*~
+# pytype static type analyzer
+.pytype/
 
-# OS Files
-.DS_Store
-.DS_Store?
-._*
-.Spotlight-V100
-.Trashes
-ehthumbs.db
-Thumbs.db
+# =============================================================================
+# MISSION SPESİFİK
+# =============================================================================
 
-# Windows
-Desktop.ini
+# Görev execution logları
+x_wing/mission_execution_*.log
++_wing/mission_execution_*.log
 
-# Log files
-*.log
-logs/
-log/
+# Test sonuç dosyaları
+Test/results/
+Test/reports/
+**/test_results/
+**/test_reports/
 
-# Configuration files with sensitive data
-config/local_*.json
-config/secrets.json
-config/passwords.json
+# Profiling data
+*.prof
+*.profile
 
-# MAVLink/ArduPilot specific
-*.tlog
-*.bin
-*.param
-*.pdef
-*.waypoints
-*.fence
-*.rally
+# Debug dumps
+debug_dump_*.txt
+crash_dump_*.txt
+error_dump_*.txt
 
-# Mission files (if they contain sensitive location data)
-# mission_*.txt
-# waypoint_*.txt
+# =============================================================================
+# RASPBERRY PI SYSTEM
+# =============================================================================
 
-# Hardware test results
-test_results/
-calibration_data/
-hardware_logs/
+# System dosyaları
+.raspberry_pi_info
+.cpu_info
+.gpio_status
 
-# Temporary files
-temp/
-tmp/
-*.tmp
-*.temp
+# Otomatik sistem backup
+system_backup_*.tar.gz
+config_backup_*.json
 
-# Backup files
-*.bak
-*.backup
-*.old
+# Cron job logları
+cron_*.log
 
-# Documentation builds
-docs/_build/
-docs/build/
+# =============================================================================
+# GIT VE VCS
+# =============================================================================
 
-# BlueOS specific
-blueos_setup_wizard.json.bak
+# Git hooks
+.git/hooks/
 
-# Video files (usually too large for git)
+# Git submodule
+.gitmodules
+
+# =============================================================================
+# MEDIA VE LARGE FILES
+# =============================================================================
+
+# Video/image test dosyaları
 *.mp4
 *.avi
 *.mov
-*.mkv
-*.flv
-*.wmv
-
-# Image files (if large)
-*.raw
-*.tiff
+*.jpg
+*.jpeg
+*.png
 *.bmp
+*.tiff
+*.gif
 
-# Compressed files
+# Large data files
+*.dat
+*.bin
+*.dump
+
+# Compressed files (eğer test data değilse)
 *.zip
 *.tar.gz
 *.rar
 *.7z
 
-# Database files
-*.db
-*.sqlite
-*.sqlite3
+# =============================================================================
+# SECURITY
+# =============================================================================
 
-# API Keys and secrets
+# Credential dosyaları
+credentials.json
+secrets.json
 .env.local
-.env.production
-secrets/
-api_keys/
+.env.secret
+*.pem
+*.key
+*.crt
 
-# Development tools
-.coverage
-.pytest_cache/
-.mypy_cache/ 
+# MAVLink connection strings (if containing sensitive data)
+mavlink_credentials.json
+
+# =============================================================================
+# OS SPESİFİK
+# =============================================================================
+
+# Windows
+Thumbs.db
+ehthumbs.db
+Desktop.ini
+$RECYCLE.BIN/
+*.cab
+*.msi
+*.msix
+*.msm
+*.msp
+*.lnk
+
+# macOS
+.DS_Store
+.AppleDouble
+.LSOverride
+._*
+
+# Linux
+*~
+.fuse_hidden*
+.directory
+.Trash-*
+.nfs*
+
+# =============================================================================
+# TEMPORARY EXCEPTIONS (sonra kaldırılabilir)
+# =============================================================================
+
+# Mission parameter dosyaları dahil edilsin (versioning için)
+!**/mission_*_params.json
+
+# Default konfigürasyonlar dahil edilsin
+!**/default_config.json
+!**/hardware_config.json
+
+# README ve documentation
+!README*.md
+!CHANGELOG*.md
+!**/docs/
