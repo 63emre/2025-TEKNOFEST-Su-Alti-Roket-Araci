@@ -1,0 +1,12 @@
+{
+  "target_depth": 2.0,
+  "straight_distance": 10.0,
+  "min_offshore_distance": 50.0,
+  "cruise_speed_pwm": 1620,
+  "return_speed_pwm": 1650,
+  "timeout_seconds": 300,
+  "position_tolerance": 2.0,
+  "depth_tolerance": 0.2,
+  "distance_measurement_interval": 0.5,
+  "control_frequency": 10
+}
