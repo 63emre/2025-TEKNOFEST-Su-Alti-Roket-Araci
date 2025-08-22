@@ -36,7 +36,7 @@ ROLL_SENSE = +1.0
 
 # Mekanik yön: PWM artınca fiziksel "yukarı" olmuyorsa ilgili DIR'ü -1 yapın.
 DIR_LEFT  = +1.0
-DIR_RIGHT = -1.0
+DIR_RIGHT = +1.0  # Aynı yön!
 
 # Kazanç ve sınırlar
 K_ANG_US_PER_RAD = 500.0   # roll (rad) -> mikro-saniye; sahada 300–700 deneyin

@@ -130,7 +130,7 @@ def calculate_plus_wing_pwm(roll, pitch, yaw):
         'on_servo': neutral + int((pitch * pitch_gain) + (yaw * yaw_gain * 0.5)),
         'arka_servo': neutral - int((pitch * pitch_gain) - (yaw * yaw_gain * 0.5)),
         'sol_servo': neutral + int((roll * roll_gain) + (yaw * yaw_gain * 0.7)),
-        'sag_servo': neutral - int((roll * roll_gain) - (yaw * yaw_gain * 0.7))
+        'sag_servo': neutral + int((roll * roll_gain) - (yaw * yaw_gain * 0.7))
     }
 
     # PWM limit kontrolü
