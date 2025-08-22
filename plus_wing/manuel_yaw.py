@@ -114,7 +114,7 @@ def main():
                 # Grup 2 (SAĞ & SOL): -u
                 u = YAW_SENSE * yaw * K_ANG_US_PER_RAD
                 
-                up_cmd_us    = (+u) * DIR_UP     # SERVO_UP (14)
+                up_cmd_us    = (-u) * DIR_UP     # SERVO_UP (14)
                 down_cmd_us  = (+u) * DIR_DOWN   # SERVO_DOWN (11)
                 right_cmd_us = (-u) * DIR_RIGHT  # SERVO_RIGHT (12)
                 left_cmd_us  = (-u) * DIR_LEFT   # SERVO_LEFT (13)
