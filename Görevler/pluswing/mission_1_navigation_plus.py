@@ -118,14 +118,60 @@ YAW_DIR_LEFT  = -1.0
 # ---- Genel Sınırlar ----
 OVERALL_MAX_DELTA_US = 400.0  # Tüm eksenlerin toplamı için güvenlik sınırı
 
-# Plus Wing servo ve motor kanalları
-MOTOR_CHANNEL = PLUS_WING_CONFIG['MOTOR']['ana_motor']['mavlink_channel']
-SERVO_CHANNELS = PLUS_WING_SERVO_CHANNELS
+# TEKNOFEST Standart Pin Mapping
+MOTOR_CHANNEL = 1  # AUX 1
+SERVO_CHANNELS = {
+    'right': 3,  # AUX 3 - Sağ Kanat
+    'down': 4,   # AUX 4 - Alt Kanat
+    'left': 5,   # AUX 5 - Sol Kanat
+    'up': 6      # AUX 6 - Üst Kanat
+}
 
-# PWM değerleri
-PWM_NEUTRAL = PLUS_WING_CONFIG['PWM_LIMITS']['servo_neutral']
-PWM_MIN = PLUS_WING_CONFIG['PWM_LIMITS']['servo_min']
-PWM_MAX = PLUS_WING_CONFIG['PWM_LIMITS']['servo_max']
+# Plus-Konfigürasyon Kontrol Matrisi
+PLUS_WING_MATRIX = {
+    'roll_positive': [5],       # Sol kanat (AUX5)
+    'roll_negative': [3],       # Sağ kanat (AUX3)
+    'pitch_positive': [6],      # Üst kanat (AUX6)
+    'pitch_negative': [4],      # Alt kanat (AUX4)
+    'yaw_ccw': [3, 4, 5, 6],   # Tüm kanatlar CCW
+    'yaw_cw': [3, 4, 5, 6]     # Tüm kanatlar CW
+}
+
+# Kalibrasyon dosyası yükle
+def load_speed_calibration():
+    """PWM→hız kalibrasyon parametrelerini yükle"""
+    try:
+        with open('config/cal_speed.json', 'r') as f:
+            cal_data = json.load(f)
+            plus_wing_cal = cal_data['pwm_speed_calibration']['plus_wing']
+            return {
+                'a': plus_wing_cal['a'],
+                'b': plus_wing_cal['b'], 
+                'neutral_pwm': plus_wing_cal['neutral_pwm'],
+                'lpf_alpha': cal_data['distance_tracking']['lpf_alpha']
+            }
+    except Exception as e:
+        print(f"⚠️ Kalibrasyon dosyası yüklenemedi: {e}")
+        return {
+            'a': 0.012,  # Plus-Wing default
+            'b': 0.0,
+            'neutral_pwm': 1500,
+            'lpf_alpha': 0.3
+        }
+
+SPEED_CAL = load_speed_calibration()
+
+# PWM değerleri ve güvenlik sınırları
+PWM_NEUTRAL = 1500
+PWM_MIN = 1000
+PWM_MAX = 2000
+
+# Güvenlik sınırları (mekanik koruma)
+PWM_SAFE_MIN = 1300  # Mekanik güvenli minimum
+PWM_SAFE_MAX = 1700  # Mekanik güvenli maksimum
+SERVO_MAX_DELTA = 300  # Maksimum PWM değişimi (±300µs)
+# OVERALL_MAX_DELTA_US zaten tanımlanmış (350µs'ye indiriyoruz)
+OVERALL_MAX_DELTA_US = 350.0  # Güvenlik için 400'den 350'ye
 
 class PIDController:
     def __init__(self, kp, ki, kd, max_output=500):
@@ -284,11 +330,22 @@ class Mission1Navigator:
         
         # Stabilizasyon için yaw offset (full_stabilization2.py'den)
         self.yaw_offset = None
+        self.initial_heading_samples = []  # İlk heading örnekleri
+        self.heading_calibration_complete = False
         
         # Dead reckoning için
         self.last_position_update = time.time()
         self.traveled_distance = 0.0
         self.initial_heading = start_heading
+        
+        # PWM tabanlı odometri
+        self.current_pwm = PWM_NEUTRAL
+        self.estimated_speed = 0.0
+        self.filtered_speed = 0.0
+        
+        # Stage referansları (PWM odometri için)
+        self.distance_at_straight_start = 0.0
+        self.distance_at_offshore_start = 0.0
         
         # Görev durumu
         self.mission_stage = "INITIALIZATION"
@@ -299,6 +356,18 @@ class Mission1Navigator:
         # Görev başarı metrikleri
         self.max_offshore_distance = 0.0
         self.straight_distance_completed = 0.0
+        
+        # Sensor zaman damgaları ve kaynak takibi
+        self._last_depth_ts = time.time()
+        self._last_attitude_ts = time.time()
+        self.depth_source = "unknown"  # "d300" veya "scaled_pressure"
+        self._latched_fault = None  # Kalıcı hata durumu
+        
+        # 90 saniye arming interlock sistemi
+        self._arming_start_time = None
+        self._arming_done = False
+        self.ARMING_DURATION = 90.0  # 90 saniye
+        self._arming_countdown_displayed = set()  # Gösterilen countdown'ları takip et
         self.final_position_error = float('inf')
         self.leak_detected = False
         
@@ -338,15 +407,49 @@ class Mission1Navigator:
             
             self.connected = True
             print("✅ MAVLink bağlantısı başarılı!")
+            print(f"   System ID: {self.master.target_system}")
+            print(f"   Component ID: {self.master.target_component}")
+            
+            # Stream rate istekleri
+            self._request_data_streams()
             return True
             
         except Exception as e:
             print(f"❌ Bağlantı hatası: {e}")
             return False
     
+    def _request_data_streams(self):
+        """MAVLink data stream hızlarını ayarla"""
+        try:
+            # ATTITUDE ≥20 Hz
+            self.master.mav.request_data_stream_send(
+                self.master.target_system,
+                self.master.target_component,
+                mavutil.mavlink.MAV_DATA_STREAM_EXTRA1,  # ATTITUDE
+                20,  # 20 Hz
+                1    # Enable
+            )
+            
+            # SCALED_PRESSURE ≥10 Hz  
+            self.master.mav.request_data_stream_send(
+                self.master.target_system,
+                self.master.target_component,
+                mavutil.mavlink.MAV_DATA_STREAM_EXTRA2,  # SCALED_PRESSURE
+                10,  # 10 Hz
+                1    # Enable
+            )
+            
+            print("📊 Stream rate istekleri gönderildi: ATTITUDE@20Hz, PRESSURE@10Hz")
+        except Exception as e:
+            print(f"⚠️ Stream rate ayarlama hatası: {e}")
+    
     def read_sensors(self):
         """Tüm sensör verilerini oku (GPS'siz - IMU + Dead Reckoning)"""
         if not self.connected:
+            return False
+        
+        # Latched fault kontrolü
+        if self._latched_fault:
             return False
             
         try:
@@ -360,11 +463,24 @@ class Mission1Navigator:
                 self.current_pitch = math.degrees(attitude_msg.pitch)
                 self.current_yaw = math.degrees(attitude_msg.yaw)
                 self.current_heading = self.current_yaw
+                self._last_attitude_ts = current_time
                 
-                # Yaw offset ayarla (ilk okumada) - full_stabilization2.py'den
-                if self.yaw_offset is None:
-                    self.yaw_offset = attitude_msg.yaw  # Radyan olarak sakla
-                    print(f"🧭 Yaw referans noktası ayarlandı: {math.degrees(self.yaw_offset):.1f}°")
+                # Yaw offset ayarla (ilk 2-3 saniye boyunca 20 örnek median)
+                if not self.heading_calibration_complete:
+                    self.initial_heading_samples.append(attitude_msg.yaw)
+                    
+                    if len(self.initial_heading_samples) >= 20:
+                        # 20 örnek toplandı, median hesapla
+                        import statistics
+                        self.yaw_offset = statistics.median(self.initial_heading_samples)
+                        self.initial_heading = math.degrees(self.yaw_offset)
+                        self.heading_calibration_complete = True
+                        print(f"🧭 Yaw referans noktası kalibre edildi: {math.degrees(self.yaw_offset):.1f}° (20 örnek median)")
+                        print(f"📊 Heading varyasyonu: ±{(max(self.initial_heading_samples) - min(self.initial_heading_samples)) * 57.3 / 2:.2f}°")
+                    else:
+                        remaining = 20 - len(self.initial_heading_samples)
+                        if remaining % 5 == 0:  # Her 5 örnekte bir göster
+                            print(f"🧭 Heading kalibrasyonu: {len(self.initial_heading_samples)}/20 örnek ({remaining} kaldı)")
             
             # Derinlik sensörü (D300 öncelikli, yoksa SCALED_PRESSURE)
             depth_read_success = False
@@ -373,6 +489,8 @@ class Mission1Navigator:
                     depth_data = self.d300_sensor.read_depth()
                     if depth_data['success']:
                         self.current_depth = max(0.0, depth_data['depth'])
+                        self.depth_source = "d300"
+                        self._last_depth_ts = current_time
                         depth_read_success = True
                         print(f"📡 D300 Derinlik: {self.current_depth:.2f}m")
                     else:
@@ -385,10 +503,20 @@ class Mission1Navigator:
                 pressure_msg = self.master.recv_match(type='SCALED_PRESSURE', blocking=False)
                 if pressure_msg:
                     depth_pressure = pressure_msg.press_abs - 1013.25
-                    self.current_depth = max(0, depth_pressure * 0.10197)
+                    self.current_depth = max(0, depth_pressure * 0.0102)
+                    self.depth_source = "scaled_pressure"
+                    self._last_depth_ts = current_time
                     print(f"📡 SCALED_PRESSURE Derinlik: {self.current_depth:.2f}m (Basınç: {pressure_msg.press_abs:.1f}hPa)")
                 else:
                     print("❌ Hiçbir derinlik verisi yok!")
+            
+            # Watchdog kontrolü - sensör zaman aşımı
+            if current_time - self._last_depth_ts > 0.5:
+                self._trigger_latched_fault("DEPTH_SENSOR_TIMEOUT")
+                return False
+            if current_time - self._last_attitude_ts > 0.5:
+                self._trigger_latched_fault("ATTITUDE_SENSOR_TIMEOUT")
+                return False
             
             # Hız bilgisi
             vfr_msg = self.master.recv_match(type='VFR_HUD', blocking=False)
@@ -428,7 +556,99 @@ class Mission1Navigator:
             
         except Exception as e:
             print(f"❌ Sensör okuma hatası: {e}")
+            self._trigger_latched_fault(f"SENSOR_READ_ERROR: {e}")
             return False
+    
+    def _trigger_latched_fault(self, fault_reason):
+        """Kalıcı hata durumu tetikle"""
+        if not self._latched_fault:  # Sadece ilk hata için
+            self._latched_fault = fault_reason
+            print(f"🚨 LATCHED FAULT: {fault_reason}")
+            print("🚨 Sistem güvenli duruma geçiyor...")
+            self._emergency_neutral()
+            
+    def _emergency_neutral(self):
+        """Acil durum - motor ve servoları nötr konuma getir"""
+        try:
+            if self.connected:
+                # Motor NEUTRAL
+                self.set_motor_throttle(PWM_NEUTRAL)
+                # Servolar nötr
+                for channel in SERVO_CHANNELS.values():
+                    self._set_servo_pwm(channel, PWM_NEUTRAL)
+        except Exception as e:
+            print(f"❌ Emergency neutral hatası: {e}")
+    
+    def cleanup(self):
+        """Güvenli kapanış sırası"""
+        if hasattr(self, '_cleanup_done') and self._cleanup_done:
+            return  # Idempotent - birden çok çağrı güvenli
+        
+        print("🧹 Sistem temizleniyor...")
+        
+        try:
+            # 1. Motor NEUTRAL
+            if self.connected:
+                self.set_motor_throttle(PWM_NEUTRAL)
+                print("   ✅ Motor nötr")
+                
+                # 2. Servolar nötr
+                for channel in SERVO_CHANNELS.values():
+                    self._set_servo_pwm(channel, PWM_NEUTRAL)
+                print("   ✅ Servolar nötr")
+            
+            # 3. Mission durumunu sonlandır
+            self.running = False
+            self.mission_active = False
+            
+            # 4. Thread'leri güvenli kapatma
+            if hasattr(self, 'control_thread') and self.control_thread and self.control_thread.is_alive():
+                self.control_thread.join(timeout=2.0)
+                print("   ✅ Control thread sonlandırıldı")
+            
+            if hasattr(self, 'monitoring_thread') and self.monitoring_thread and self.monitoring_thread.is_alive():
+                self.monitoring_thread.join(timeout=2.0)
+                print("   ✅ Monitoring thread sonlandırıldı")
+            
+            # 5. Telemetri flush
+            if hasattr(self, 'telemetry_data') and len(self.telemetry_data) > 0:
+                print(f"   📊 Telemetri kayıtları: {len(self.telemetry_data)} örnek")
+            
+            # 6. MAVLink bağlantısı kapat
+            if self.connected and self.master:
+                try:
+                    self.master.close()
+                    print("   ✅ MAVLink bağlantısı kapatıldı")
+                except:
+                    pass
+                self.connected = False
+            
+            self._cleanup_done = True
+            print("🧹 Sistem temizleme tamamlandı")
+            
+        except Exception as e:
+            print(f"❌ Cleanup hatası: {e}")
+    
+    def update_pwm_based_odometry(self):
+        """PWM tabanlı hız kestirimi ve mesafe güncelleme"""
+        current_time = time.time()
+        dt = current_time - self.last_position_update
+        
+        if dt > 0.05:  # 20 Hz güncelleme
+            # PWM'den hız kestir
+            pwm_delta = self.current_pwm - SPEED_CAL['neutral_pwm']
+            self.estimated_speed = SPEED_CAL['a'] * pwm_delta + SPEED_CAL['b']
+            self.estimated_speed = max(0.0, self.estimated_speed)  # Negatif hız yok
+            
+            # LPF uygula
+            alpha = SPEED_CAL['lpf_alpha']
+            self.filtered_speed = alpha * self.estimated_speed + (1 - alpha) * self.filtered_speed
+            
+            # Mesafe entegrasyonu (traveled_distance ana kaynak)
+            distance_increment = self.filtered_speed * dt
+            self.traveled_distance += distance_increment
+            
+            self.last_position_update = current_time
     
     def calculate_distance_bearing_to_origin(self):
         """Başlangıç noktasına mesafe ve bearing hesapla (Dead Reckoning)"""
@@ -452,12 +672,46 @@ class Mission1Navigator:
         """Başlangıç noktasından mevcut uzaklık"""
         return math.sqrt(self.current_position['x']**2 + self.current_position['y']**2)
     
+    def _check_arming_interlock(self):
+        """90 saniye arming interlock kontrolü"""
+        if self._arming_start_time is None:
+            self._arming_start_time = time.time()
+            print("🔒 ARMİNG INTERLOCK başlatıldı - 90 saniye güvenlik süresi")
+            return False
+        
+        elapsed = time.time() - self._arming_start_time
+        remaining = self.ARMING_DURATION - elapsed
+        
+        # Countdown gösterimi (10'ar saniyelik aralıklarla)
+        countdown_intervals = [90, 80, 70, 60, 50, 40, 30, 20, 10, 5, 4, 3, 2, 1]
+        for interval in countdown_intervals:
+            if remaining <= interval and interval not in self._arming_countdown_displayed:
+                self._arming_countdown_displayed.add(interval)
+                if interval <= 10:
+                    print(f"⏰ ARMİNG COUNTDOWN: {interval} saniye")
+                else:
+                    print(f"🔒 ARMİNG INTERLOCK: {remaining:.0f} saniye kaldı")
+        
+        if elapsed >= self.ARMING_DURATION:
+            if not self._arming_done:
+                self._arming_done = True
+                print("✅ ARMİNG INTERLOCK tamamlandı - Motor kontrolü serbest!")
+            return True
+        
+        return False
+
     def set_motor_throttle(self, throttle_pwm):
         """Motor kontrolü"""
         if not self.connected:
             return False
             
+        # Arming interlock kontrolü
+        if not self._check_arming_interlock():
+            # Arming süresi dolmadıysa motor NEUTRAL'de tut
+            throttle_pwm = PWM_NEUTRAL
+            
         throttle_pwm = max(PWM_MIN, min(PWM_MAX, throttle_pwm))
+        self.current_pwm = throttle_pwm  # PWM tracking için
         
         try:
             self.master.mav.command_long_send(
@@ -648,9 +902,15 @@ class Mission1Navigator:
         print("="*80)
     
     def control_loop(self):
-        """Ana kontrol döngüsü"""
+        """Ana kontrol döngüsü - 20-30 Hz efektif kontrol frekansı"""
+        loop_start_time = time.time()
+        loop_count = 0
+        
         while self.running and self.mission_active:
+            cycle_start = time.time()
+            
             self.read_sensors()
+            self.update_pwm_based_odometry()  # PWM tabanlı odometri
             
             if self.mission_stage == "DESCENT":
                 self.execute_descent()
@@ -667,7 +927,18 @@ class Mission1Navigator:
             elif self.mission_stage == "MISSION_COMPLETE":
                 break
             
-            time.sleep(0.1)  # 10Hz kontrol
+            # 20-30 Hz kontrol frekansı (0.033-0.05s) 
+            cycle_time = time.time() - cycle_start
+            target_cycle_time = 0.04  # 25 Hz hedef
+            sleep_time = max(0.01, target_cycle_time - cycle_time)  # Min 10ms sleep
+            time.sleep(sleep_time)
+            
+            # Performans izleme (her 100 döngüde bir)
+            loop_count += 1
+            if loop_count % 100 == 0:
+                avg_freq = loop_count / (time.time() - loop_start_time)
+                if avg_freq < 15:  # 15 Hz altına düşerse uyarı
+                    print(f"⚠️ Kontrol frekansı düşük: {avg_freq:.1f} Hz")
     
     def execute_descent(self):
         """2m derinliğe iniş"""
@@ -723,6 +994,14 @@ class Mission1Navigator:
             print("✅ Hedef derinlik ulaşıldı! Düz seyire geçiliyor...")
             self.mission_stage = "STRAIGHT_COURSE"
             self.straight_course_start_time = time.time()
+            
+            # Stage geçişinde PID resetleri
+            self.depth_pid.reset()
+            self.heading_pid.reset()
+            
+            # Mesafe referansları set et
+            self.distance_at_straight_start = self.traveled_distance
+            print(f"📏 STRAIGHT_COURSE başlangıç mesafesi: {self.distance_at_straight_start:.1f}m")
     
     def execute_straight_course(self):
         """10m düz seyir (süre başlatma)"""
@@ -1057,11 +1336,16 @@ class Mission1Navigator:
             
         except KeyboardInterrupt:
             print("\n⚠️ Görev kullanıcı tarafından durduruldu")
+            self.mission_active = False
+            self.running = False
             return False
         except Exception as e:
             print(f"\n❌ Görev hatası: {e}")
+            self.mission_active = False
+            self.running = False
             return False
         finally:
+            # Her durumda güvenli kapanış
             self.cleanup()
     
     def cleanup(self):

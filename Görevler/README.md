@@ -36,9 +36,19 @@ Bu klasör, TEKNOFEST Su Altı Roket Aracı Yarışması'nın ana görevlerini g
 ## 📁 Script Yapısı
 
 ### 🎯 Ana Görev Scriptleri
-- `mission_1_navigation.py` - Görev 1: Seyir & Geri Dönüş
-- `mission_2_rocket_launch.py` - Görev 2: Roket Ateşleme
-- `mission_manager.py` - Ana görev yöneticisi (her iki görevi sıralı çalıştırır)
+
+#### **X-Wing Konfigürasyonu (AUX 3,4,5,6)**
+- `xwing/mission_1_nav.py` - Görev 1: Seyir & Geri Dönüş (X-konfigürasyon)
+- `xwing/mission_2_rocket_launch.py` - Görev 2: Roket Ateşleme 
+- `xwing/mission_manager.py` - Ana görev yöneticisi
+
+#### **Plus-Wing Konfigürasyonu (AUX 3,4,5,6)**
+- `pluswing/mission_1_navigation_plus.py` - Görev 1: Seyir & Geri Dönüş (Plus-konfigürasyon)
+
+#### **Ortak Konfigürasyon**
+- **Motor**: AUX 1 (DEGZ M5)
+- **4 Servo**: AUX 3,4,5,6 (DS3230MG)
+- **AUX 2**: BOZUK - Kullanılmaz
 
 ### 🧠 Navigasyon Sistemi
 - `navigation_controller.py` - Otonom navigasyon kontrol sistemi
@@ -57,16 +67,16 @@ Bu klasör, TEKNOFEST Su Altı Roket Aracı Yarışması'nın ana görevlerini g
 
 ## 🛠️ Sistem Gereksinimleri
 
-### Donanım - Pin Mapping Standardı (HARDWARE_PIN_MAPPING.md)
-- **Raspberry Pi 4B** (BlueOS) - GPIO kontrol sistemi
-- **Pixhawk PX4 PIX 2.4.8** (MAVLink tcp:127.0.0.1:5777)
-- **GPS modülü** (Pixhawk entegre) - konumlandırma için
-- **D300 Derinlik/Sıcaklık Sensörü** (I2C 0x77, GPIO 2,3) - derinlik ölçümü
+### Donanım - TEKNOFEST Standart (HARDWARE_PIN_MAPPING.md)
+- **Raspberry Pi 4B** - GPIO kontrol sistemi
+- **Pixhawk PX4 PIX 2.4.8** - MAVLink Serial (115200 baud)
+- **D300 Derinlik Sensörü** (I2C 0x76, GPIO 2,3) - derinlik ölçümü
 - **IMU sensörleri** (Pixhawk entegre MPU6000) - attitude kontrolü
-- **4x DS3230MG Servo** (X-konfigürasyon, AUX 1-4) - fin kontrolü
-- **DEGZ M5 Motor + DEGZ BLU 30A ESC** (MAIN 1) - itki sistemi
-- **40A Güç Röle Sistemi** (GPIO 21) - acil kesme kontrol
-- **LED/Buzzer Sistemi** (GPIO 4,5,6,13,16,20,24,25) - durum gösterimi
+- **4x DS3230MG Servo** (AUX 3,4,5,6) - kanat kontrolü
+- **DEGZ M5 Motor + ESC** (AUX 1) - itki sistemi
+- **Status LED** (GPIO 4) - durum gösterimi
+- **Buzzer** (GPIO 13) - sesli uyarı
+- **Power/Emergency Buttons** (GPIO 18,19) - güvenlik kontrolleri
 
 ### Yazılım Bağımlılıkları
 ```bash
@@ -92,13 +102,23 @@ pip install plotly           # İnteraktif grafikler
 ### Tek Görev Çalıştırma
 
 #### Görev 1 - Seyir Yapma
+
+**X-Wing Konfigürasyonu:**
 ```bash
-python mission_1_navigation.py --start-lat 40.123456 --start-lon 29.123456
+cd Görevler/xwing
+python mission_1_nav.py
 ```
 
-#### Görev 2 - Roket Ateşleme
+**Plus-Wing Konfigürasyonu:**
 ```bash
-python mission_2_rocket_launch.py --launch-zone-lat 40.123456 --launch-zone-lon 29.123456
+cd Görevler/pluswing
+python mission_1_navigation_plus.py --start-heading 0.0
+```
+
+#### Görev 2 - Roket Ateşleme (X-Wing)
+```bash
+cd Görevler/xwing
+python mission_2_rocket_launch.py --launch-lat 40.123456 --launch-lon 29.123456
 ```
 
 ### Tam Görev Sırası
