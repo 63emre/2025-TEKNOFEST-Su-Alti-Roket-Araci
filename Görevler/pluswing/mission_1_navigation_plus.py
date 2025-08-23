@@ -42,16 +42,24 @@ except ImportError:
     GPIO_AVAILABLE = False
 
 # Plus Wing hardware config import
-try:
-    from hardware_config import (
-        PLUS_WING_SERVO_CHANNELS,
-        PLUS_WING_CONFIG,
-        calculate_plus_wing_pwm,
-        get_plus_wing_config
-    )
-except ImportError:
-    print("❌ hardware_config.py bulunamadı!")
-    exit(1)
+# Plus-Wing Hardware Konfigürasyonu (artık hardware_config.py'ye gerek yok)
+SERVO_CHANNELS = {
+    'fin_1': 3,  # AUX 3 - Sol Kanat (Port)
+    'fin_2': 4,  # AUX 4 - Sağ Kanat (Starboard)  
+    'fin_3': 5,  # AUX 5 - Üst Kanat (Top)
+    'fin_4': 6   # AUX 6 - Alt Kanat (Bottom)
+}
+
+MOTOR_CHANNEL = 1  # AUX 1 - Ana Motor
+
+# Plus-Wing Kontrol Matrisi
+PLUS_WING_MATRIX = {
+    'roll':  [0, 0, 1, -1],   # Üst kanat (+), Alt kanat (-)
+    'pitch': [1, -1, 0, 0],   # Sol kanat (+), Sağ kanat (-)
+    'yaw':   [1, 1, 1, 1]     # Tüm kanatlar aynı yönde
+}
+
+print("✅ Plus-Wing hardware konfigürasyonu yüklendi")
 
 # D300 derinlik sensörü import
 try:

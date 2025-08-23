@@ -2,6 +2,8 @@
 
 # Python
 __pycache__/
+*/__pycache__/
+**/__pycache__/
 *.py[cod]
 *$py.class
 *.so
@@ -119,6 +121,15 @@ config/passwords.json
 # Mission files (if they contain sensitive location data)
 # mission_*.txt
 # waypoint_*.txt
+
+# Mission telemetry and test reports
+mission_*_report_*.json
+mission_*_telemetry_*.csv
+*_test_report_*.json
+physical_hardware_test_*.json
+mission_integration_test_*.json
+wing_comparison_report_*.json
+plus_wing_test_report_*.json
 
 # Hardware test results
 test_results/

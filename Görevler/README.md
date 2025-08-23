@@ -61,9 +61,7 @@ Bu klasör, TEKNOFEST Su Altı Roket Aracı Yarışması'nın ana görevlerini g
 - `motor_controller.py` - Motor kontrolü ve hız yönetimi
 
 ### 🛡️ Güvenlik Sistemleri
-- `safety_monitor.py` - Güvenlik izleme ve acil durdurma
-- `leak_detection.py` - Sızıntı tespit sistemi
-- `battery_monitor.py` - Batarya durumu ve enerji yönetimi
+yok
 
 ## 🛠️ Sistem Gereksinimleri
 
