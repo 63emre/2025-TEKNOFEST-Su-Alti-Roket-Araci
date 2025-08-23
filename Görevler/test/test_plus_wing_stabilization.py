@@ -22,8 +22,21 @@ from datetime import datetime
 
 # Mission kodlarından import
 sys.path.append('../pluswing')
-from mission_1_navigation_plus import Mission1NavigatorPlus, SERVO_CHANNELS, MOTOR_CHANNEL, PLUS_WING_MATRIX
-from mission_1_navigation_plus import PWM_NEUTRAL, PWM_SAFE_MIN, PWM_SAFE_MAX, SERVO_MAX_DELTA
+try:
+    from mission_1_navigation_plus import Mission1Navigator, SERVO_CHANNELS, MOTOR_CHANNEL
+    from mission_1_navigation_plus import PWM_NEUTRAL, PWM_SAFE_MIN, PWM_SAFE_MAX
+    # Plus-Wing matrix tanımı
+    PLUS_WING_MATRIX = {
+        'roll':  [0, 0, 1, -1],   # AUX3,4,5,6 için roll kontrol
+        'pitch': [1, -1, 0, 0],   # AUX3,4,5,6 için pitch kontrol  
+        'yaw':   [1, 1, 1, 1]     # AUX3,4,5,6 için yaw kontrol
+    }
+    SERVO_MAX_DELTA = 300  # Maksimum servo delta (µs)
+    PLUS_WING_AVAILABLE = True
+    print("✅ Plus-Wing modülü yüklendi")
+except ImportError as e:
+    print(f"❌ Plus-Wing modülü yüklenemedi: {e}")
+    PLUS_WING_AVAILABLE = False
 
 class PlusWingStabilizationTester:
     """Plus-Wing stabilizasyon test sınıfı"""
@@ -33,7 +46,10 @@ class PlusWingStabilizationTester:
         print("="*60)
         
         # Mission navigator'ı test modunda başlat
-        self.navigator = Mission1NavigatorPlus()
+        if not PLUS_WING_AVAILABLE:
+            print("❌ Plus-Wing modülü mevcut değil!")
+            return
+        self.navigator = Mission1Navigator()
         self.test_active = False
         self.test_results = {}
         
@@ -533,7 +549,17 @@ def main():
     print("🚀 TEKNOFEST Plus-Wing Stabilizasyon Test Sistemi")
     print("Bu test Pixhawk'ı manuel hareket ettirerek stabilizasyon tepkilerini ölçer")
     
+    # Plus-Wing modülü kontrolü
+    if not PLUS_WING_AVAILABLE:
+        print("❌ Plus-Wing modülü mevcut değil! Test iptal edildi.")
+        return 1
+    
     tester = PlusWingStabilizationTester()
+    
+    # Tester başlatma kontrolü
+    if not hasattr(tester, 'navigator') or tester.navigator is None:
+        print("❌ Navigator başlatılamadı! Test iptal edildi.")
+        return 1
     
     try:
         ready = input("\n✅ Plus-Wing stabilizasyon testine hazır mısınız? (y/n): ").lower()

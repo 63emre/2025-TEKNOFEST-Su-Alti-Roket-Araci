@@ -12,7 +12,7 @@ from pymavlink import mavutil
 import math
 
 # ---- Bağlantı ----
-PORT = "/dev/ttyACM0"
+PORT = "COM5"
 BAUD  = 115200
 
 # ---- Servo kanalları ----

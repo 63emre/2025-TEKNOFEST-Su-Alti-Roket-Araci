@@ -21,8 +21,19 @@ import json
 from datetime import datetime
 
 # Test modüllerini import et
-from test_x_wing_stabilization import XWingStabilizationTester
-from test_plus_wing_stabilization import PlusWingStabilizationTester
+try:
+    from test_x_wing_stabilization import XWingStabilizationTester, X_WING_AVAILABLE
+    X_WING_TESTER_AVAILABLE = X_WING_AVAILABLE
+except ImportError:
+    print("⚠️ X-Wing test modülü yüklenemedi")
+    X_WING_TESTER_AVAILABLE = False
+
+try:
+    from test_plus_wing_stabilization import PlusWingStabilizationTester, PLUS_WING_AVAILABLE
+    PLUS_WING_TESTER_AVAILABLE = PLUS_WING_AVAILABLE
+except ImportError:
+    print("⚠️ Plus-Wing test modülü yüklenemedi")
+    PLUS_WING_TESTER_AVAILABLE = False
 
 class WingConfigurationComparison:
     """Kanat konfigürasyonu karşılaştırma sınıfı"""
@@ -41,7 +52,16 @@ class WingConfigurationComparison:
         print("🔥 X-WING KONFİGÜRASYONU TESTLERİ")
         print("="*70)
         
+        if not X_WING_TESTER_AVAILABLE:
+            print("❌ X-Wing test sistemi mevcut değil!")
+            return False
+        
         self.x_wing_tester = XWingStabilizationTester()
+        
+        # Navigator kontrolü
+        if not hasattr(self.x_wing_tester, 'navigator') or self.x_wing_tester.navigator is None:
+            print("❌ X-Wing navigator başlatılamadı!")
+            return False
         
         if not self.x_wing_tester.connect_and_initialize():
             print("❌ X-Wing sistemi başlatılamadı!")
@@ -108,7 +128,16 @@ class WingConfigurationComparison:
         print("➕ PLUS-WING KONFİGÜRASYONU TESTLERİ")
         print("="*70)
         
+        if not PLUS_WING_TESTER_AVAILABLE:
+            print("❌ Plus-Wing test sistemi mevcut değil!")
+            return False
+        
         self.plus_wing_tester = PlusWingStabilizationTester()
+        
+        # Navigator kontrolü
+        if not hasattr(self.plus_wing_tester, 'navigator') or self.plus_wing_tester.navigator is None:
+            print("❌ Plus-Wing navigator başlatılamadı!")
+            return False
         
         if not self.plus_wing_tester.connect_and_initialize():
             print("❌ Plus-Wing sistemi başlatılamadı!")
@@ -329,8 +358,26 @@ class WingConfigurationComparison:
 
 def main():
     """Ana fonksiyon"""
+    print("⚖️ TEKNOFEST Kanat Konfigürasyonu Karşılaştırma Sistemi")
+    
+    # Modül kontrolü
+    if not X_WING_TESTER_AVAILABLE:
+        print("❌ X-Wing test modülü mevcut değil!")
+        return 1
+        
+    if not PLUS_WING_TESTER_AVAILABLE:
+        print("❌ Plus-Wing test modülü mevcut değil!")
+        return 1
+    
+    print("✅ Her iki test modülü de mevcut")
+    
     comparison = WingConfigurationComparison()
-    return comparison.run_full_comparison()
+    try:
+        result = comparison.run_full_comparison()
+        return 0 if result else 1
+    except Exception as e:
+        print(f"❌ Karşılaştırma hatası: {e}")
+        return 1
 
 if __name__ == "__main__":
     import sys

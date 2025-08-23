@@ -21,9 +21,22 @@ import threading
 from datetime import datetime
 
 # Mission kodlarından import
-sys.path.append('../Görevler/xwing')
-from mission_1_nav import Mission1Navigator, SERVO_CHANNELS, MOTOR_CHANNEL, X_WING_MATRIX
-from mission_1_nav import PWM_NEUTRAL, PWM_SAFE_MIN, PWM_SAFE_MAX, SERVO_MAX_DELTA
+sys.path.append('../xwing')
+try:
+    from mission_1_nav import Mission1Navigator, SERVO_CHANNELS, MOTOR_CHANNEL
+    from mission_1_nav import PWM_NEUTRAL, PWM_SAFE_MIN, PWM_SAFE_MAX
+    # X-Wing matrix tanımı
+    X_WING_MATRIX = {
+        'roll':  [1, -1, -1, 1],   # Çapraz kontrol
+        'pitch': [1, 1, -1, -1],   # Ön/arka kontrol
+        'yaw':   [1, -1, 1, -1]    # Rotasyon kontrol
+    }
+    SERVO_MAX_DELTA = 300
+    X_WING_AVAILABLE = True
+    print("✅ X-Wing modülü yüklendi")
+except ImportError as e:
+    print(f"❌ X-Wing modülü yüklenemedi: {e}")
+    X_WING_AVAILABLE = False
 
 class XWingStabilizationTester:
     """X-Wing stabilizasyon test sınıfı"""
@@ -32,6 +45,11 @@ class XWingStabilizationTester:
         print("🚀 TEKNOFEST X-Wing Stabilizasyon Test Sistemi")
         print("="*60)
         
+        # X-Wing modülü kontrolü
+        if not X_WING_AVAILABLE:
+            print("❌ X-Wing modülü mevcut değil!")
+            return
+            
         # Mission navigator'ı test modunda başlat
         self.navigator = Mission1Navigator()
         self.test_active = False

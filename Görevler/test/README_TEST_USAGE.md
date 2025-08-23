@@ -102,6 +102,20 @@ Her test sonrası otomatik rapor oluşturulur:
 ```
 **Çözüm**: `sudo apt install python3-rpi.gpio`
 
+### Hardware Config Hatası:
+```
+❌ hardware_config.py bulunamadı!
+```
+**Çözüm**: Otomatik olarak oluşturuldu - `pluswing/hardware_config.py`
+
+### Import Hatası:
+```
+❌ Plus-Wing modülü yüklenemedi
+```
+**Çözüm**: 
+- `cd Görevler/test` klasöründe olduğunuzdan emin olun
+- `../pluswing/mission_1_navigation_plus.py` dosyasının var olduğunu kontrol edin
+
 ### MAVLink Bağlantı Hatası:
 ```
 ❌ Pixhawk bağlantısı başarısız!
