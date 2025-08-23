@@ -105,8 +105,8 @@ class PlusWingStabilizationTester:
             roll_error = self.navigator.current_roll  # Sıfır roll hedefi
             roll_cmd = -roll_error * 5.0  # Basit P kontrolü
             
-            # Plus-Wing roll kontrolü: Sol vs Sağ kanat
-            self.navigator.set_control_surfaces(roll_cmd=roll_cmd)
+            # Plus-Wing roll kontrolü: Sol vs Sağ kanat (manuel mod)
+            self.navigator.set_control_surfaces(roll_cmd=roll_cmd, use_stabilization=False)
             
             # Test verisi kaydet
             test_data.append({
@@ -171,8 +171,8 @@ class PlusWingStabilizationTester:
             pitch_error = self.navigator.current_pitch  # Sıfır pitch hedefi
             pitch_cmd = -pitch_error * 5.0  # Basit P kontrolü
             
-            # Plus-Wing pitch kontrolü: Üst vs Alt kanat
-            self.navigator.set_control_surfaces(pitch_cmd=pitch_cmd)
+            # Plus-Wing pitch kontrolü: Üst vs Alt kanat (manuel mod)
+            self.navigator.set_control_surfaces(pitch_cmd=pitch_cmd, use_stabilization=False)
             
             # Test verisi kaydet
             test_data.append({
@@ -240,8 +240,8 @@ class PlusWingStabilizationTester:
             
             yaw_cmd = heading_error * 3.0  # P kontrolü
             
-            # Plus-Wing yaw kontrolü: Tüm kanatlar koordineli
-            self.navigator.set_control_surfaces(yaw_cmd=yaw_cmd)
+            # Plus-Wing yaw kontrolü: Tüm kanatlar koordineli (manuel mod)
+            self.navigator.set_control_surfaces(yaw_cmd=yaw_cmd, use_stabilization=False)
             
             # Test verisi kaydet
             test_data.append({
@@ -315,11 +315,12 @@ class PlusWingStabilizationTester:
             pitch_cmd = -pitch_error * 5.0
             yaw_cmd = heading_error * 3.0
             
-            # Kombine kontrol
+            # Kombine kontrol (manuel mod)
             self.navigator.set_control_surfaces(
                 roll_cmd=roll_cmd, 
                 pitch_cmd=pitch_cmd, 
-                yaw_cmd=yaw_cmd
+                yaw_cmd=yaw_cmd,
+                use_stabilization=False
             )
             
             # Test verisi kaydet
@@ -431,6 +432,74 @@ class PlusWingStabilizationTester:
         
         return success
     
+    def test_full_stabilization_mode(self):
+        """Full stabilizasyon modu testi (full_stabilization2.py gibi)"""
+        print("\n🎭 FULL STABİLİZASYON MODU TESTİ")
+        print("-" * 40)
+        
+        start_time = time.time()
+        test_data = []
+        
+        print("🎯 Pixhawk'ı tüm eksenlerde hareket ettirin...")
+        print("   Sistem full_stabilization2.py gibi otomatik stabilize edecek")
+        
+        while time.time() - start_time < self.test_duration:
+            # Sensör verilerini oku
+            self.navigator.read_sensors()
+            
+            elapsed = time.time() - start_time
+            
+            # FULL STABİLİZASYON MODU - Otomatik stabilizasyon
+            # Hedef: tüm açıları sıfırda tut
+            self.navigator.set_control_surfaces(
+                roll_cmd=0,      # Stabilizasyon sistemi otomatik ayarlayacak
+                pitch_cmd=0,     # Stabilizasyon sistemi otomatik ayarlayacak  
+                yaw_cmd=0,       # Stabilizasyon sistemi otomatik ayarlayacak
+                use_stabilization=True  # FULL STABİLİZASYON AKTİF
+            )
+            
+            # Test verisi kaydet
+            test_data.append({
+                'time': elapsed,
+                'roll': self.navigator.current_roll,
+                'pitch': self.navigator.current_pitch,
+                'yaw': self.navigator.current_yaw
+            })
+            
+            # Progress göster
+            if int(elapsed) % 5 == 0 and elapsed > 0:
+                remaining = self.test_duration - elapsed
+                print(f"⏱️ Full stabilizasyon: {elapsed:.0f}s / {self.test_duration:.0f}s (kalan: {remaining:.0f}s)")
+                print(f"   R: {self.navigator.current_roll:+.1f}° P: {self.navigator.current_pitch:+.1f}° Y: {self.navigator.current_yaw:+.1f}°")
+            
+            time.sleep(0.1)  # 10Hz
+        
+        # Test sonuçlarını analiz et
+        if test_data:
+            avg_roll_error = sum(abs(d['roll']) for d in test_data) / len(test_data)
+            avg_pitch_error = sum(abs(d['pitch']) for d in test_data) / len(test_data)
+            avg_yaw_error = sum(abs(d['yaw']) for d in test_data) / len(test_data)
+            
+            print(f"\n📊 FULL STABİLİZASYON TEST SONUÇLARI:")
+            print(f"   Ortalama Roll Hatası: {avg_roll_error:.2f}°")
+            print(f"   Ortalama Pitch Hatası: {avg_pitch_error:.2f}°") 
+            print(f"   Ortalama Yaw Hatası: {avg_yaw_error:.2f}°")
+            
+            success = (avg_roll_error < 5.0 and avg_pitch_error < 5.0 and avg_yaw_error < 10.0)
+            print(f"   Sonuç: {'✅ BAŞARILI' if success else '❌ BAŞARISIZ'}")
+            
+            self.test_results['full_stabilization'] = {
+                'success': success,
+                'avg_roll_error': avg_roll_error,
+                'avg_pitch_error': avg_pitch_error,
+                'avg_yaw_error': avg_yaw_error,
+                'data': test_data
+            }
+            
+            return success
+        else:
+            return False
+    
     def run_all_tests(self):
         """Tüm testleri sırayla çalıştır"""
         print("🚀 TÜM TESTLER BAŞLIYOR...")
@@ -444,10 +513,11 @@ class PlusWingStabilizationTester:
         try:
             # Test sırası
             tests = [
-                ("Roll Stabilizasyon", self.test_roll_stabilization),
-                ("Pitch Stabilizasyon", self.test_pitch_stabilization),
-                ("Yaw Stabilizasyon", self.test_yaw_stabilization),
-                ("Kombine Stabilizasyon", self.test_combined_stabilization),
+                ("Roll Stabilizasyon (Manuel)", self.test_roll_stabilization),
+                ("Pitch Stabilizasyon (Manuel)", self.test_pitch_stabilization),
+                ("Yaw Stabilizasyon (Manuel)", self.test_yaw_stabilization),
+                ("Kombine Stabilizasyon (Manuel)", self.test_combined_stabilization),
+                ("Full Stabilizasyon (Otomatik)", self.test_full_stabilization_mode),
                 ("Mesafe Odometri", self.test_distance_odometry)
             ]
             
@@ -459,7 +529,7 @@ class PlusWingStabilizationTester:
                 print(f"{'='*60}")
                 
                 # Test öncesi kanatları nötr yap
-                self.navigator.set_control_surfaces(0, 0, 0)
+                self.navigator.set_control_surfaces(0, 0, 0, use_stabilization=False)
                 time.sleep(2.0)
                 
                 # Testi çalıştır
@@ -467,7 +537,7 @@ class PlusWingStabilizationTester:
                 results.append((test_name, success))
                 
                 # Test sonrası kanatları nötr yap
-                self.navigator.set_control_surfaces(0, 0, 0)
+                self.navigator.set_control_surfaces(0, 0, 0, use_stabilization=False)
                 time.sleep(1.0)
                 
                 if not success:
@@ -536,7 +606,7 @@ class PlusWingStabilizationTester:
         
         # Kanatları nötr yap
         if self.navigator.connected:
-            self.navigator.set_control_surfaces(0, 0, 0)
+            self.navigator.set_control_surfaces(0, 0, 0, use_stabilization=False)
             self.navigator.set_motor_throttle(PWM_NEUTRAL)
         
         # Navigator'ı temizle

@@ -160,6 +160,12 @@ SERVO_CHANNELS = {
     'up': 6      # AUX 6 - Üst Kanat
 }
 
+# full_stabilization2.py'den alınan servo mapping
+SERVO_UP = 6     # ÜST kanat (AUX 6)
+SERVO_DOWN = 4   # ALT kanat (AUX 4)
+SERVO_RIGHT = 3  # SAĞ kanat (AUX 3)
+SERVO_LEFT = 5   # SOL kanat (AUX 5)
+
 # Plus-Konfigürasyon Kontrol Matrisi
 PLUS_WING_MATRIX = {
     'roll_positive': [5],       # Sol kanat (AUX5)
@@ -1055,27 +1061,41 @@ class Mission1Navigator:
                 pitch_cmd = max(-100, min(100, pitch_cmd * 2.0))
                 yaw_cmd = max(-100, min(100, yaw_cmd * 2.0))
                 
-                # Plus Wing PWM hesaplama (eski)
-                pwm_values = calculate_plus_wing_pwm(roll_cmd, pitch_cmd, yaw_cmd)
+                # Plus Wing PWM hesaplama (manuel mod)
+                neutral = PWM_NEUTRAL
                 
-                pwm_up = pwm_values['up']
-                pwm_down = pwm_values['down']
-                pwm_right = pwm_values['right']
-                pwm_left = pwm_values['left']
+                # Plus Wing mixing matrix - manuel kontrol
+                pwm_up = neutral + int(pitch_cmd * 2.0)     # Üst kanat: pitch kontrolü
+                pwm_down = neutral - int(pitch_cmd * 2.0)   # Alt kanat: pitch kontrolü (ters)
+                pwm_right = neutral - int(roll_cmd * 2.0)   # Sağ kanat: roll kontrolü (ters)
+                pwm_left = neutral + int(roll_cmd * 2.0)    # Sol kanat: roll kontrolü
+                
+                # Yaw için tüm kanatlara ekleme
+                yaw_contribution = int(yaw_cmd * 1.0)
+                pwm_up += yaw_contribution
+                pwm_down += yaw_contribution  
+                pwm_right += yaw_contribution
+                pwm_left += yaw_contribution
                 
                 print(f"🎮 Manuel Mod: R={roll_cmd:+.1f} P={pitch_cmd:+.1f} Y={yaw_cmd:+.1f}")
             
-            # Servo komutlarını gönder
+            # PWM güvenlik sınırları uygula
+            pwm_up = max(PWM_SAFE_MIN, min(PWM_SAFE_MAX, pwm_up))
+            pwm_down = max(PWM_SAFE_MIN, min(PWM_SAFE_MAX, pwm_down))
+            pwm_right = max(PWM_SAFE_MIN, min(PWM_SAFE_MAX, pwm_right))
+            pwm_left = max(PWM_SAFE_MIN, min(PWM_SAFE_MAX, pwm_left))
+            
+            # Servo komutlarını gönder - full_stabilization2.py mapping kullan
             success_count = 0
             servo_commands = [
-                (SERVO_CHANNELS['up'], pwm_up, 'ÜST'),
-                (SERVO_CHANNELS['down'], pwm_down, 'ALT'),
-                (SERVO_CHANNELS['right'], pwm_right, 'SAĞ'),
-                (SERVO_CHANNELS['left'], pwm_left, 'SOL')
+                (SERVO_UP, pwm_up, 'ÜST'),
+                (SERVO_DOWN, pwm_down, 'ALT'),
+                (SERVO_RIGHT, pwm_right, 'SAĞ'),
+                (SERVO_LEFT, pwm_left, 'SOL')
             ]
             
             for channel, pwm, name in servo_commands:
-                if self.set_servo_position(channel, int(pwm)):
+                if self._set_servo_pwm(channel, int(pwm)):
                     success_count += 1
                 else:
                     print(f"❌ Servo {name} (kanal {channel}) komutu gönderilemedi")
@@ -1088,6 +1108,25 @@ class Mission1Navigator:
     
     def set_servo_position(self, channel, pwm_value):
         """Servo pozisyon kontrolü"""
+        if not self.connected:
+            return False
+            
+        pwm_value = max(PWM_MIN, min(PWM_MAX, pwm_value))
+        
+        try:
+            self.master.mav.command_long_send(
+                self.master.target_system,
+                self.master.target_component,
+                mavutil.mavlink.MAV_CMD_DO_SET_SERVO,
+                0,
+                channel, pwm_value, 0, 0, 0, 0, 0
+            )
+            return True
+        except:
+            return False
+    
+    def _set_servo_pwm(self, channel, pwm_value):
+        """Servo PWM kontrolü - Plus Wing için"""
         if not self.connected:
             return False
             
