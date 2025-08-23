@@ -32,6 +32,15 @@ import argparse
 from datetime import datetime
 from pymavlink import mavutil
 
+# GPIO kontrol sistemi (LED & Buzzer)
+try:
+    import RPi.GPIO as GPIO
+    GPIO_AVAILABLE = True
+    print("✅ RPi.GPIO modülü yüklendi")
+except ImportError:
+    print("⚠️ RPi.GPIO bulunamadı, LED/Buzzer devre dışı")
+    GPIO_AVAILABLE = False
+
 # Plus Wing hardware config import
 try:
     from hardware_config import (
@@ -59,6 +68,12 @@ except ImportError:
 import os
 MAV_ADDRESS = os.getenv("MAV_ADDRESS", "/dev/ttyACM0") + "," + str(os.getenv("MAV_BAUD", "115200"))
 
+# GPIO Pin tanımları (HARDWARE_PIN_MAPPING.md'den)
+GPIO_STATUS_LED = 4      # Durum LED (Kırmızı/Yeşil/Mavi)
+GPIO_BUZZER_PWM = 13     # Buzzer PWM Output
+GPIO_POWER_BUTTON = 18   # Güç Butonu Input
+GPIO_EMERGENCY_STOP = 19 # Acil Durdurma Input
+
 # Görev parametreleri (şartnameden)
 MISSION_PARAMS = {
     'target_depth': 2.0,           # 2m derinlik
@@ -71,11 +86,21 @@ MISSION_PARAMS = {
     'depth_tolerance': 0.2         # Derinlik toleransı (m)
 }
 
-# Plus Wing kontrol parametreleri
+# Plus Wing kontrol parametreleri - Optimize edilmiş hızlı & stabil sürüş
 CONTROL_PARAMS = {
-    'depth_pid': {'kp': 80.0, 'ki': 3.0, 'kd': 25.0},
-    'heading_pid': {'kp': 4.0, 'ki': 0.15, 'kd': 0.8},
-    'dead_reckoning_pid': {'kp': 1.5, 'ki': 0.02, 'kd': 0.4}
+    # Derinlik PID: Hızlı tepki, az overshoot
+    'depth_pid': {'kp': 120.0, 'ki': 5.0, 'kd': 35.0, 'max_output': 200},
+    
+    # Heading PID: Smooth navigasyon, yeterli otorite
+    'heading_pid': {'kp': 6.0, 'ki': 0.25, 'kd': 1.2, 'max_output': 100},
+    
+    # Dead reckoning PID: Hassas pozisyon kontrolü
+    'dead_reckoning_pid': {'kp': 2.5, 'ki': 0.05, 'kd': 0.8, 'max_output': 150},
+    
+    # Stabilizasyon PID'leri (attitude control)
+    'roll_stabilization': {'kp': 3.0, 'ki': 0.1, 'kd': 0.5, 'max_output': 80},
+    'pitch_stabilization': {'kp': 3.5, 'ki': 0.12, 'kd': 0.6, 'max_output': 80},
+    'yaw_stabilization': {'kp': 2.0, 'ki': 0.08, 'kd': 0.4, 'max_output': 60}
 }
 
 # ---- FULL_STABILIZATION2.PY'DEN ALINAN STABİLİZASYON PARAMETRELERİ ----
@@ -161,6 +186,60 @@ def load_speed_calibration():
 
 SPEED_CAL = load_speed_calibration()
 
+def load_mission_config():
+    """Merkezi mission config dosyasını yükle"""
+    try:
+        with open('config/mission_config.json', 'r') as f:
+            config = json.load(f)
+            print("✅ Mission config yüklendi")
+            return config
+    except Exception as e:
+        print(f"⚠️ Mission config yüklenemedi: {e}, default değerler kullanılacak")
+        return None
+
+def validate_hardware_config(config):
+    """Hardware konfigürasyonunu doğrula"""
+    if not config:
+        return True
+        
+    try:
+        validation = config.get('validation_rules', {})
+        
+        # Required channels kontrolü
+        if validation.get('required_channels'):
+            required = validation['required_channels']
+            print(f"🔍 Hardware validation: Required channels {required}")
+            
+            # Motor channel kontrolü
+            motor_ch = config['hardware_config']['motor_channel']
+            if motor_ch not in required:
+                print(f"⚠️ Motor channel {motor_ch} gerekli kanallar listesinde değil")
+            
+            # Servo channels kontrolü
+            servo_chs = list(config['hardware_config']['servo_channels'].values())
+            for ch in servo_chs:
+                if ch not in required:
+                    print(f"⚠️ Servo channel {ch} gerekli kanallar listesinde değil")
+                    
+        # PWM aralık kontrolü
+        if validation.get('pwm_range_check'):
+            safety = config.get('safety_limits', {})
+            pwm_min = safety.get('servo_pwm_min', 1300)
+            pwm_max = safety.get('servo_pwm_max', 1700)
+            if not (1000 <= pwm_min <= 1500 <= pwm_max <= 2000):
+                print(f"⚠️ PWM aralığı geçersiz: {pwm_min}-{pwm_max}")
+                return False
+                
+        print("✅ Hardware konfigürasyonu doğrulandı")
+        return True
+        
+    except Exception as e:
+        print(f"❌ Hardware validation hatası: {e}")
+        return False
+
+# Mission config yükle
+MISSION_CONFIG = load_mission_config()
+
 # PWM değerleri ve güvenlik sınırları
 PWM_NEUTRAL = 1500
 PWM_MIN = 1000
@@ -174,6 +253,20 @@ SERVO_MAX_DELTA = 300  # Maksimum PWM değişimi (±300µs)
 OVERALL_MAX_DELTA_US = 350.0  # Güvenlik için 400'den 350'ye
 
 class PIDController:
+    """
+    Optimize edilmiş PID Controller - Hızlı ve stabil sürüş için
+    
+    Args:
+        kp: Proportional gain (hızlı tepki)
+        ki: Integral gain (steady-state error eliminasyonu) 
+        kd: Derivative gain (overshoot önleme)
+        max_output: Çıkış sınırı (güvenlik)
+        
+    Features:
+        - Integral windup koruması
+        - Derivative kick önleme
+        - Smooth output limiting
+    """
     def __init__(self, kp, ki, kd, max_output=500):
         self.kp = kp
         self.ki = ki  
@@ -218,7 +311,11 @@ def clamp(v, lo, hi):
     return lo if v < lo else hi if v > hi else v
 
 def to_pwm(delta_us):  
-    return int(clamp(PWM_NEUTRAL + delta_us, PWM_MIN, PWM_MAX))
+    """
+    Delta µs değerini güvenli PWM sinyaline çevir
+    Mekanik güvenlik sınırları: 1300-1700 µs (HARDWARE_PIN_MAPPING.md)
+    """
+    return int(clamp(PWM_NEUTRAL + delta_us, PWM_SAFE_MIN, PWM_SAFE_MAX))
 
 def calculate_roll_commands(roll):
     """Roll ekseni için servo komutlarını hesapla"""
@@ -296,10 +393,27 @@ def combine_commands(roll_left, roll_right, pitch_right, pitch_left, yaw_up, yaw
     return final_up_cmd, final_down_cmd, final_right_cmd, final_left_cmd
 
 class Mission1Navigator:
+    """
+    TEKNOFEST Su Altı Roket Aracı - Görev 1 Navigator
+    Plus-Wing Konfigürasyonu - GPS'siz Dead Reckoning
+    
+    Features:
+        - D300 derinlik sensörü öncelikli sistem
+        - PWM tabanlı odometri ve mesafe hesaplama
+        - 90 saniye arming interlock güvenlik sistemi
+        - Full stabilizasyon sistemi (roll/pitch/yaw)
+        - LED/Buzzer feedback sistemi
+        - Watchdog ve latched fault koruması
+        - Thread-safe kontrol döngüsü
+    """
     def __init__(self, start_heading=0.0):
         self.master = None
         self.connected = False
         self.mission_active = False
+        
+        # GPIO sistemi başlat
+        self.gpio_initialized = False
+        self._init_gpio_system()
         
         # D300 derinlik sensörü
         self.d300_sensor = None
@@ -371,11 +485,16 @@ class Mission1Navigator:
         self.final_position_error = float('inf')
         self.leak_detected = False
         
-        # PID kontrolcüler
+        # PID kontrolcüler - Optimize edilmiş parametrelerle
         self.depth_pid = PIDController(**CONTROL_PARAMS['depth_pid'])
         self.heading_pid = PIDController(**CONTROL_PARAMS['heading_pid'])
         self.position_pid_x = PIDController(**CONTROL_PARAMS['dead_reckoning_pid'])
         self.position_pid_y = PIDController(**CONTROL_PARAMS['dead_reckoning_pid'])
+        
+        # Stabilizasyon PID'leri (attitude control için)
+        self.roll_pid = PIDController(**CONTROL_PARAMS['roll_stabilization'])
+        self.pitch_pid = PIDController(**CONTROL_PARAMS['pitch_stabilization'])
+        self.yaw_pid = PIDController(**CONTROL_PARAMS['yaw_stabilization'])
         
         # Veri kayıt
         self.mission_log = []
@@ -385,6 +504,78 @@ class Mission1Navigator:
         self.control_thread = None
         self.monitoring_thread = None
         self.running = False
+    
+    def _init_gpio_system(self):
+        """GPIO sistemi başlatma (LED & Buzzer)"""
+        if not GPIO_AVAILABLE:
+            return
+            
+        try:
+            GPIO.setmode(GPIO.BCM)
+            GPIO.setwarnings(False)
+            
+            # Output pinleri
+            GPIO.setup(GPIO_STATUS_LED, GPIO.OUT)
+            GPIO.setup(GPIO_BUZZER_PWM, GPIO.OUT)
+            
+            # Input pinleri (pull-up dirençli)
+            GPIO.setup(GPIO_POWER_BUTTON, GPIO.IN, pull_up_down=GPIO.PUD_UP)
+            GPIO.setup(GPIO_EMERGENCY_STOP, GPIO.IN, pull_up_down=GPIO.PUD_UP)
+            
+            # Başlangıçta kapalı
+            GPIO.output(GPIO_STATUS_LED, GPIO.LOW)
+            GPIO.output(GPIO_BUZZER_PWM, GPIO.LOW)
+            
+            self.gpio_initialized = True
+            print("✅ GPIO sistemi başlatıldı (LED: GPIO4, Buzzer: GPIO13)")
+            
+        except Exception as e:
+            print(f"⚠️ GPIO başlatma hatası: {e}")
+            self.gpio_initialized = False
+    
+    def _update_status_indicators(self, stage, arming_remaining=None, fault=None):
+        """Durum göstergelerini güncelle (LED & Buzzer)"""
+        if not self.gpio_initialized:
+            return
+            
+        try:
+            if fault:
+                # FAULT: Hızlı flash LED + uzun bip×3
+                for _ in range(6):
+                    GPIO.output(GPIO_STATUS_LED, GPIO.HIGH)
+                    GPIO.output(GPIO_BUZZER_PWM, GPIO.HIGH)
+                    time.sleep(0.1)
+                    GPIO.output(GPIO_STATUS_LED, GPIO.LOW)
+                    GPIO.output(GPIO_BUZZER_PWM, GPIO.LOW)
+                    time.sleep(0.1)
+                return
+                
+            if arming_remaining and arming_remaining > 0:
+                # ARMING: LED sabit, buzzer aralıklı
+                GPIO.output(GPIO_STATUS_LED, GPIO.HIGH)
+                if int(arming_remaining) % 2 == 0:  # Her 2 saniyede bip
+                    GPIO.output(GPIO_BUZZER_PWM, GPIO.HIGH)
+                    time.sleep(0.1)
+                    GPIO.output(GPIO_BUZZER_PWM, GPIO.LOW)
+            else:
+                # Normal operasyon: Stage'e göre LED
+                if stage in ["DESCENT", "STRAIGHT_COURSE", "OFFSHORE_CRUISE"]:
+                    GPIO.output(GPIO_STATUS_LED, GPIO.HIGH)  # Sabit yanar
+                elif stage in ["RETURN_NAVIGATION", "FINAL_APPROACH"]:
+                    # Yavaş flash (0.5 Hz)
+                    led_state = int(time.time() * 2) % 2
+                    GPIO.output(GPIO_STATUS_LED, led_state)
+                elif stage == "MISSION_COMPLETE":
+                    # Başarı: 3 kısa bip
+                    for _ in range(3):
+                        GPIO.output(GPIO_BUZZER_PWM, GPIO.HIGH)
+                        time.sleep(0.2)
+                        GPIO.output(GPIO_BUZZER_PWM, GPIO.LOW)
+                        time.sleep(0.2)
+                    GPIO.output(GPIO_STATUS_LED, GPIO.HIGH)  # LED sabit yanar
+                    
+        except Exception as e:
+            print(f"⚠️ GPIO güncelleme hatası: {e}")
         
     def connect_pixhawk(self):
         """Pixhawk bağlantısı kur"""
@@ -523,6 +714,16 @@ class Mission1Navigator:
             if vfr_msg:
                 self.current_speed = vfr_msg.groundspeed
             
+            # Leak tespiti (STATUSTEXT mesajlarını izle)
+            statustext = self.master.recv_match(type='STATUSTEXT', blocking=False)
+            if statustext and statustext.text:
+                text_lower = statustext.text.lower()
+                if "leak" in text_lower or "water" in text_lower or "sızıntı" in text_lower:
+                    self.leak_detected = True
+                    self._trigger_latched_fault("LEAK_DETECTED")
+                    print(f"🚨 SIZINTI TESPİT EDİLDİ: {statustext.text}")
+                    return False
+            
             # Dead Reckoning pozisyon güncelleme
             if dt > 0.1:  # 10Hz'de güncelle
                 distance_traveled = self.current_speed * dt
@@ -538,18 +739,25 @@ class Mission1Navigator:
                 
                 self.last_position_update = current_time
             
-            # Telemetri kaydet
+            # Telemetri kaydet - Genişletilmiş veri seti
             self.telemetry_data.append({
                 'timestamp': current_time,
                 'position': self.current_position.copy(),
                 'depth': self.current_depth,
+                'depth_source': self.depth_source,  # "d300" veya "scaled_pressure"
                 'heading': self.current_heading,
                 'speed': self.current_speed,
+                'speed_source': getattr(self, 'speed_source', 'vfr_hud'),  # PWM veya VFR_HUD
+                'estimated_speed': self.estimated_speed,  # PWM'den kestirilen
+                'filtered_speed': self.filtered_speed,    # LPF uygulanmış
                 'roll': self.current_roll,
                 'pitch': self.current_pitch,
                 'yaw': self.current_yaw,
                 'traveled_distance': self.traveled_distance,
-                'mission_stage': self.mission_stage
+                'mission_stage': self.mission_stage,
+                'motor_pwm': self.current_pwm,
+                'leak_detected': self.leak_detected,
+                'latched_fault': self._latched_fault
             })
             
             return True
@@ -560,11 +768,20 @@ class Mission1Navigator:
             return False
     
     def _trigger_latched_fault(self, fault_reason):
-        """Kalıcı hata durumu tetikle"""
+        """Kalıcı hata durumu tetikle - Mission abort"""
         if not self._latched_fault:  # Sadece ilk hata için
             self._latched_fault = fault_reason
             print(f"🚨 LATCHED FAULT: {fault_reason}")
             print("🚨 Sistem güvenli duruma geçiyor...")
+            
+            # Mission'ı abort et
+            self.mission_stage = "MISSION_ABORT"
+            self.mission_active = False
+            
+            # LED/Buzzer uyarısı
+            self._update_status_indicators(self.mission_stage, fault=fault_reason)
+            
+            # Acil nötr
             self._emergency_neutral()
             
     def _emergency_neutral(self):
@@ -601,14 +818,30 @@ class Mission1Navigator:
             self.running = False
             self.mission_active = False
             
-            # 4. Thread'leri güvenli kapatma
-            if hasattr(self, 'control_thread') and self.control_thread and self.control_thread.is_alive():
-                self.control_thread.join(timeout=2.0)
-                print("   ✅ Control thread sonlandırıldı")
+            # 4. Thread'leri güvenli kapatma - Improved termination
+            print("   🔄 Thread'ler sonlandırılıyor...")
             
+            # Önce running flag'i false yap
+            self.running = False
+            self.mission_active = False
+            
+            # Control thread'i bekle
+            if hasattr(self, 'control_thread') and self.control_thread and self.control_thread.is_alive():
+                print("   ⏳ Control thread sonlandırılıyor...")
+                self.control_thread.join(timeout=3.0)
+                if self.control_thread.is_alive():
+                    print("   ⚠️ Control thread 3s içinde sonlanmadı")
+                else:
+                    print("   ✅ Control thread sonlandırıldı")
+            
+            # Monitoring thread'i bekle
             if hasattr(self, 'monitoring_thread') and self.monitoring_thread and self.monitoring_thread.is_alive():
+                print("   ⏳ Monitoring thread sonlandırılıyor...")
                 self.monitoring_thread.join(timeout=2.0)
-                print("   ✅ Monitoring thread sonlandırıldı")
+                if self.monitoring_thread.is_alive():
+                    print("   ⚠️ Monitoring thread 2s içinde sonlanmadı")
+                else:
+                    print("   ✅ Monitoring thread sonlandırıldı")
             
             # 5. Telemetri flush
             if hasattr(self, 'telemetry_data') and len(self.telemetry_data) > 0:
@@ -623,6 +856,16 @@ class Mission1Navigator:
                     pass
                 self.connected = False
             
+            # 7. GPIO temizleme
+            if self.gpio_initialized:
+                try:
+                    GPIO.output(GPIO_STATUS_LED, GPIO.LOW)
+                    GPIO.output(GPIO_BUZZER_PWM, GPIO.LOW)
+                    GPIO.cleanup()
+                    print("   ✅ GPIO temizlendi")
+                except:
+                    pass
+            
             self._cleanup_done = True
             print("🧹 Sistem temizleme tamamlandı")
             
@@ -630,15 +873,26 @@ class Mission1Navigator:
             print(f"❌ Cleanup hatası: {e}")
     
     def update_pwm_based_odometry(self):
-        """PWM tabanlı hız kestirimi ve mesafe güncelleme"""
+        """PWM tabanlı hız kestirimi ve mesafe güncelleme - Kalibrasyon aralığı kontrollü"""
         current_time = time.time()
         dt = current_time - self.last_position_update
         
         if dt > 0.05:  # 20 Hz güncelleme
-            # PWM'den hız kestir
-            pwm_delta = self.current_pwm - SPEED_CAL['neutral_pwm']
-            self.estimated_speed = SPEED_CAL['a'] * pwm_delta + SPEED_CAL['b']
-            self.estimated_speed = max(0.0, self.estimated_speed)  # Negatif hız yok
+            # PWM geçerli aralık kontrolü (cal_speed.json'dan)
+            valid_min, valid_max = SPEED_CAL.get('valid_range', [1400, 1700])
+            
+            if valid_min <= self.current_pwm <= valid_max:
+                # PWM geçerli aralıkta - hız kestir
+                pwm_delta = self.current_pwm - SPEED_CAL['neutral_pwm']
+                self.estimated_speed = SPEED_CAL['a'] * pwm_delta + SPEED_CAL['b']
+                self.estimated_speed = max(0.05, self.estimated_speed)  # Min hız eşiği: 0.05 m/s
+                self.speed_source = "pwm_calibrated"
+            else:
+                # PWM geçersiz aralıkta - hızı sıfırla
+                self.estimated_speed = 0.0
+                self.speed_source = "pwm_invalid"
+                if abs(self.current_pwm - PWM_NEUTRAL) > 10:  # Sadece nötr dışındaysa uyar
+                    print(f"⚠️ PWM aralık dışı: {self.current_pwm} (geçerli: {valid_min}-{valid_max})")
             
             # LPF uygula
             alpha = SPEED_CAL['lpf_alpha']
@@ -710,7 +964,8 @@ class Mission1Navigator:
             # Arming süresi dolmadıysa motor NEUTRAL'de tut
             throttle_pwm = PWM_NEUTRAL
             
-        throttle_pwm = max(PWM_MIN, min(PWM_MAX, throttle_pwm))
+        # Motor için güvenli PWM sınırları (ESC arming ve güvenlik)
+        throttle_pwm = max(PWM_SAFE_MIN, min(PWM_SAFE_MAX, throttle_pwm))
         self.current_pwm = throttle_pwm  # PWM tracking için
         
         try:
@@ -902,43 +1157,77 @@ class Mission1Navigator:
         print("="*80)
     
     def control_loop(self):
-        """Ana kontrol döngüsü - 20-30 Hz efektif kontrol frekansı"""
+        """Ana kontrol döngüsü - Thread-safe, exception handling ile"""
         loop_start_time = time.time()
         loop_count = 0
+        last_heartbeat = time.time()
         
-        while self.running and self.mission_active:
-            cycle_start = time.time()
-            
-            self.read_sensors()
-            self.update_pwm_based_odometry()  # PWM tabanlı odometri
-            
-            if self.mission_stage == "DESCENT":
-                self.execute_descent()
-            elif self.mission_stage == "STRAIGHT_COURSE":
-                self.execute_straight_course()
-            elif self.mission_stage == "OFFSHORE_CRUISE":
-                self.execute_offshore_cruise()
-            elif self.mission_stage == "RETURN_NAVIGATION":
-                self.execute_return_navigation()
-            elif self.mission_stage == "FINAL_APPROACH":
-                self.execute_final_approach()
-            elif self.mission_stage == "SURFACE_AND_SHUTDOWN":
-                self.execute_surface_shutdown()
-            elif self.mission_stage == "MISSION_COMPLETE":
-                break
-            
-            # 20-30 Hz kontrol frekansı (0.033-0.05s) 
-            cycle_time = time.time() - cycle_start
-            target_cycle_time = 0.04  # 25 Hz hedef
-            sleep_time = max(0.01, target_cycle_time - cycle_time)  # Min 10ms sleep
-            time.sleep(sleep_time)
-            
-            # Performans izleme (her 100 döngüde bir)
-            loop_count += 1
-            if loop_count % 100 == 0:
-                avg_freq = loop_count / (time.time() - loop_start_time)
-                if avg_freq < 15:  # 15 Hz altına düşerse uyarı
-                    print(f"⚠️ Kontrol frekansı düşük: {avg_freq:.1f} Hz")
+        print("🎯 Control loop başlatıldı - 25Hz hedef frekans")
+        
+        try:
+            while self.running and self.mission_active:
+                cycle_start = time.time()
+                
+                try:
+                    # Heartbeat kontrolü (her 5 saniyede bir)
+                    if cycle_start - last_heartbeat > 5.0:
+                        print(f"💓 Control loop heartbeat - Stage: {self.mission_stage}")
+                        last_heartbeat = cycle_start
+                    
+                    # Sensör okuma ve odometri
+                    if not self.read_sensors():
+                        print("❌ Sensör okuma başarısız, control loop devam ediyor...")
+                        continue
+                    
+                    self.update_pwm_based_odometry()
+                    
+                    # Mission stage execution with exception handling
+                    stage_handlers = {
+                        "DESCENT": self.execute_descent,
+                        "STRAIGHT_COURSE": self.execute_straight_course,
+                        "OFFSHORE_CRUISE": self.execute_offshore_cruise,
+                        "RETURN_NAVIGATION": self.execute_return_navigation,
+                        "FINAL_APPROACH": self.execute_final_approach,
+                        "SURFACE_AND_SHUTDOWN": self.execute_surface_shutdown
+                    }
+                    
+                    if self.mission_stage in stage_handlers:
+                        stage_handlers[self.mission_stage]()
+                    elif self.mission_stage == "MISSION_COMPLETE":
+                        print("✅ Control loop: Mission complete")
+                        break
+                    elif self.mission_stage == "MISSION_ABORT":
+                        print("🚨 Control loop: Mission aborted")
+                        break
+                    
+                except Exception as stage_error:
+                    print(f"❌ Stage execution error ({self.mission_stage}): {stage_error}")
+                    # Stage hatası mission'ı durdurmasın, sadece bu döngüyü atla
+                    continue
+                
+                # Timing kontrolü
+                cycle_time = time.time() - cycle_start
+                target_cycle_time = 0.04  # 25 Hz hedef
+                sleep_time = max(0.005, target_cycle_time - cycle_time)  # Min 5ms sleep
+                time.sleep(sleep_time)
+                
+                # Performans izleme
+                loop_count += 1
+                if loop_count % 125 == 0:  # Her 5 saniyede bir (25Hz * 5s)
+                    avg_freq = loop_count / (time.time() - loop_start_time)
+                    if avg_freq < 20:  # 20 Hz altına düşerse uyarı
+                        print(f"⚠️ Control loop frekansı düşük: {avg_freq:.1f} Hz")
+                    
+        except Exception as e:
+            print(f"🚨 CRITICAL: Control loop exception: {e}")
+            self._trigger_latched_fault(f"CONTROL_LOOP_EXCEPTION: {e}")
+        finally:
+            print("🔄 Control loop sonlandırılıyor...")
+            # Emergency safety
+            try:
+                self._emergency_neutral()
+            except:
+                pass
     
     def execute_descent(self):
         """2m derinliğe iniş"""
@@ -1004,12 +1293,15 @@ class Mission1Navigator:
             print(f"📏 STRAIGHT_COURSE başlangıç mesafesi: {self.distance_at_straight_start:.1f}m")
     
     def execute_straight_course(self):
-        """10m düz seyir (süre başlatma)"""
+        """10m düz seyir (süre başlatma) - PWM odometri tabanlı"""
         if not self.straight_course_start_time:
             self.straight_course_start_time = time.time()
+            # Stage başlangıç mesafesini kaydet (PWM odometri referansı)
+            self.distance_at_straight_start = self.traveled_distance
+            print(f"📏 STRAIGHT_COURSE başlangıç mesafesi: {self.distance_at_straight_start:.1f}m")
         
-        elapsed_distance = self.current_speed * (time.time() - self.straight_course_start_time)
-        self.straight_distance_completed = elapsed_distance
+        # PWM tabanlı odometri ile gerçek mesafe hesapla
+        self.straight_distance_completed = self.traveled_distance - self.distance_at_straight_start
         
         # Düz seyir kontrolü
         motor_throttle = PWM_NEUTRAL + 120  # Forward thrust
@@ -1039,10 +1331,13 @@ class Mission1Navigator:
         self.set_motor_throttle(motor_throttle)
         self.set_control_surfaces(pitch_cmd=pitch_cmd, yaw_cmd=yaw_cmd)
         
-        # 10m düz seyir tamamlandı mı?
+        # 10m düz seyir tamamlandı mı? (PWM odometri ile kesin ölçüm)
         if self.straight_distance_completed >= MISSION_PARAMS['straight_distance']:
-            print("✅ 10m düz seyir tamamlandı! Kıyıdan uzaklaşmaya başlanıyor...")
+            print(f"✅ 10m düz seyir tamamlandı! PWM odometri: {self.straight_distance_completed:.1f}m")
+            print("🌊 Kıyıdan uzaklaşmaya başlanıyor...")
             self.mission_stage = "OFFSHORE_CRUISE"
+            # Offshore stage referansını set et
+            self.distance_at_offshore_start = self.traveled_distance
     
     def execute_offshore_cruise(self):
         """Kıyıdan 50m uzaklaşma (Dead Reckoning)"""
@@ -1107,8 +1402,9 @@ class Mission1Navigator:
         pitch_cmd = max(-50, min(50, int(depth_correction // 4)))
         
         self.set_motor_throttle(motor_throttle)
-        # DÖNÜŞ NAVİGASYONU: Stabilizasyon kapalı (döndürmeye karşı çalışmasın)
-        self.set_control_surfaces(pitch_cmd=pitch_cmd, yaw_cmd=yaw_cmd, use_stabilization=False)
+        # DÖNÜŞ NAVİGASYONU: Stabilizasyon açık (smooth navigation için)
+        # Roll/pitch stabilize, sadece yaw için manual komut
+        self.set_control_surfaces(pitch_cmd=pitch_cmd, yaw_cmd=yaw_cmd, use_stabilization=True)
         
         # Başlangıç noktasına yaklaştık mı?
         if distance_from_start <= MISSION_PARAMS['position_tolerance'] * 2:  # 4m tolerance
@@ -1137,14 +1433,31 @@ class Mission1Navigator:
         pitch_cmd = max(-30, min(30, int(depth_correction // 5)))
         
         self.set_motor_throttle(motor_throttle)
-        # FINAL YAKLAŞIM: Hassas navigasyon için stabilizasyon kapalı
-        self.set_control_surfaces(pitch_cmd=pitch_cmd, yaw_cmd=yaw_cmd, use_stabilization=False)
+        # FINAL YAKLAŞIM: Hassas navigasyon için stabilizasyon açık (precision control)
+        # Roll/pitch otomatik stabilize, yaw manual control
+        self.set_control_surfaces(pitch_cmd=pitch_cmd, yaw_cmd=yaw_cmd, use_stabilization=True)
         
-        # 5 saniye pozisyon tuttuk mu?
+        # 5 saniye pozisyon tutma sayacı (non-blocking)
         if distance_from_start <= MISSION_PARAMS['position_tolerance']:
-            time.sleep(5)  # 5 saniye bekle
-            print("✅ Final pozisyon tutuldu! Yüzeye çıkış ve enerji kesme...")
-            self.mission_stage = "SURFACE_AND_SHUTDOWN"
+            if not hasattr(self, '_final_hold_start_time'):
+                self._final_hold_start_time = time.time()
+                print("🎯 Pozisyon toleransı içinde! 5 saniye tutma başlatıldı...")
+            
+            hold_duration = time.time() - self._final_hold_start_time
+            remaining = 5.0 - hold_duration
+            
+            if hold_duration >= 5.0:
+                print("✅ Final pozisyon 5 saniye tutuldu! Yüzeye çıkış ve enerji kesme...")
+                self.mission_stage = "SURFACE_AND_SHUTDOWN"
+            else:
+                # Progress göster (her saniyede bir)
+                if int(hold_duration) != int(hold_duration - 0.1):
+                    print(f"⏱️ Pozisyon tutma: {hold_duration:.1f}/5.0s (kalan: {remaining:.1f}s)")
+        else:
+            # Tolerans dışına çıktık, sayacı sıfırla
+            if hasattr(self, '_final_hold_start_time'):
+                delattr(self, '_final_hold_start_time')
+                print("⚠️ Pozisyon toleransı dışına çıkıldı, sayaç sıfırlandı")
     
     def execute_surface_shutdown(self):
         """Pozitif sephiye ile yüzeye çıkış ve enerji kesme"""
@@ -1170,8 +1483,22 @@ class Mission1Navigator:
         print("✅ GÖREV 1 TAMAMLANDI!")
     
     def monitoring_loop(self):
-        """İzleme döngüsü"""
+        """İzleme döngüsü - Fault ve durum kontrolü"""
         while self.running and self.mission_active:
+            # Latched fault kontrolü
+            if self._latched_fault:
+                print(f"🚨 MONITORING: Latched fault aktif - {self._latched_fault}")
+                print("🚨 Mission abort durumunda. Telemetri kaydediliyor...")
+                break
+            
+            # Arming countdown gösterimi
+            if not self._arming_done and self._arming_start_time:
+                remaining = self.ARMING_DURATION - (time.time() - self._arming_start_time)
+                self._update_status_indicators(self.mission_stage, arming_remaining=remaining)
+            else:
+                # Normal durum göstergeleri
+                self._update_status_indicators(self.mission_stage)
+            
             # Her 3 saniyede durum göster
             if len(self.telemetry_data) % 30 == 0:
                 self.display_mission_status()
@@ -1209,17 +1536,26 @@ class Mission1Navigator:
         print(f"\n🏆 PUANLAMA:")
         print("-"*40)
         
-        # Seyir yapma puanı (hız bazlı)
-        time_factor = max(0, (300 - mission_duration) / 300) if mission_duration > 0 else 0
-        cruise_points = int(150 * time_factor) if self.straight_distance_completed >= MISSION_PARAMS['straight_distance'] and self.max_offshore_distance >= MISSION_PARAMS['min_offshore_distance'] else 0
-        print(f"  🚀 Seyir Yapma (hız): {cruise_points}/150 puan")
+        # Seyir yapma puanı (hız bazlı) - Düzeltilmiş formül
+        if mission_duration > 0 and mission_duration <= 300:
+            # Hız puanı: 150 * (300 - süre) / 300
+            time_factor = (300 - mission_duration) / 300
+            cruise_success = (self.straight_distance_completed >= MISSION_PARAMS['straight_distance'] and 
+                            self.max_offshore_distance >= MISSION_PARAMS['min_offshore_distance'])
+            cruise_points = int(150 * time_factor) if cruise_success else 0
+        else:
+            cruise_points = 0
+        print(f"  🚀 Seyir Yapma (hız): {cruise_points}/150 puan (süre faktörü: {time_factor:.3f})")
         
         # Başlangıç noktasında enerji kesme
-        position_points = 90 if self.final_position_error <= MISSION_PARAMS['position_tolerance'] else 0
+        position_success = (self.final_position_error <= MISSION_PARAMS['position_tolerance'] and 
+                           self.mission_stage == "MISSION_COMPLETE")
+        position_points = 90 if position_success else 0
         print(f"  🎯 Başlangıç Noktasında Enerji Kesme: {position_points}/90 puan")
         
-        # Sızdırmazlık
-        waterproof_points = 60 if not self.leak_detected else 0
+        # Sızdırmazlık (fault kontrolü dahil)
+        leak_or_fault = self.leak_detected or self._latched_fault
+        waterproof_points = 60 if not leak_or_fault else 0
         print(f"  💧 Sızdırmazlık: {waterproof_points}/60 puan")
         
         total_points = cruise_points + position_points + waterproof_points
@@ -1235,35 +1571,107 @@ class Mission1Navigator:
         else:
             print("❌ DÜŞÜK PERFORMANS!")
         
-        # Veri kaydet
+        # Veri kaydet - Genişletilmiş rapor
         mission_report = {
             'timestamp': datetime.now().isoformat(),
             'mission_duration': mission_duration,
+            'mission_result': self.mission_stage,
+            'fault_info': {
+                'latched_fault': self._latched_fault,
+                'leak_detected': self.leak_detected,
+                'fault_time': getattr(self, '_fault_time', None)
+            },
             'performance_metrics': {
                 'straight_distance_completed': self.straight_distance_completed,
                 'max_offshore_distance': self.max_offshore_distance,
                 'final_position_error': self.final_position_error,
-                'leak_detected': self.leak_detected
+                'total_traveled_distance': self.traveled_distance
+            },
+            'sensor_info': {
+                'depth_source_primary': self.depth_source,
+                'speed_source_primary': getattr(self, 'speed_source', 'vfr_hud'),
+                'd300_connected': self.d300_connected,
+                'sensor_timeouts': self._latched_fault and 'TIMEOUT' in str(self._latched_fault)
             },
             'scoring': {
                 'cruise_points': cruise_points,
                 'position_points': position_points,
                 'waterproof_points': waterproof_points,
-                'total_points': total_points
+                'total_points': total_points,
+                'time_factor': time_factor if mission_duration > 0 else 0
             },
             'telemetry_summary': {
                 'total_samples': len(self.telemetry_data),
                 'start_position': self.start_position,
-                'mission_stages': list(set([d['mission_stage'] for d in self.telemetry_data]))
+                'mission_stages': list(set([d['mission_stage'] for d in self.telemetry_data])),
+                'pwm_odometry_used': any(d.get('speed_source') == 'pwm_calibrated' for d in self.telemetry_data)
             }
         }
         
-        with open(f'mission_1_report_{datetime.now().strftime("%Y%m%d_%H%M%S")}.json', 'w') as f:
+        # JSON rapor kaydet
+        timestamp_str = datetime.now().strftime("%Y%m%d_%H%M%S")
+        with open(f'mission_1_report_{timestamp_str}.json', 'w') as f:
             json.dump(mission_report, f, indent=2)
         
-        print(f"\n💾 Görev raporu kaydedildi: mission_1_report_*.json")
+        # CSV telemetri kaydet
+        if self.telemetry_data:
+            self._save_csv_telemetry(timestamp_str)
+        
+        print(f"\n💾 Görev raporu kaydedildi: mission_1_report_{timestamp_str}.json")
+        print(f"💾 Telemetri kaydedildi: mission_1_telemetry_{timestamp_str}.csv")
         
         return total_points >= 180  # %60 başarı şartı
+    
+    def _save_csv_telemetry(self, timestamp_str):
+        """Telemetri verilerini CSV formatında kaydet"""
+        try:
+            import csv
+            filename = f'mission_1_telemetry_{timestamp_str}.csv'
+            
+            if not self.telemetry_data:
+                return
+                
+            # CSV başlıkları
+            fieldnames = [
+                'timestamp', 'mission_stage', 'depth', 'depth_source',
+                'heading', 'roll', 'pitch', 'yaw',
+                'speed', 'speed_source', 'estimated_speed', 'filtered_speed',
+                'position_x', 'position_y', 'traveled_distance',
+                'motor_pwm', 'leak_detected', 'latched_fault'
+            ]
+            
+            with open(filename, 'w', newline='') as csvfile:
+                writer = csv.DictWriter(csvfile, fieldnames=fieldnames)
+                writer.writeheader()
+                
+                for data in self.telemetry_data:
+                    # CSV için veriyi düzenle
+                    csv_row = {
+                        'timestamp': data['timestamp'],
+                        'mission_stage': data['mission_stage'],
+                        'depth': data['depth'],
+                        'depth_source': data['depth_source'],
+                        'heading': data['heading'],
+                        'roll': data['roll'],
+                        'pitch': data['pitch'],
+                        'yaw': data['yaw'],
+                        'speed': data['speed'],
+                        'speed_source': data.get('speed_source', 'vfr_hud'),
+                        'estimated_speed': data.get('estimated_speed', 0),
+                        'filtered_speed': data.get('filtered_speed', 0),
+                        'position_x': data['position']['x'],
+                        'position_y': data['position']['y'],
+                        'traveled_distance': data['traveled_distance'],
+                        'motor_pwm': data.get('motor_pwm', 1500),
+                        'leak_detected': data.get('leak_detected', False),
+                        'latched_fault': data.get('latched_fault', '')
+                    }
+                    writer.writerow(csv_row)
+                    
+            print(f"📊 CSV telemetri: {len(self.telemetry_data)} kayıt kaydedildi")
+            
+        except Exception as e:
+            print(f"❌ CSV kayıt hatası: {e}")
     
     def run_mission_1(self):
         """Görev 1'i çalıştır"""
@@ -1275,6 +1683,11 @@ class Mission1Navigator:
         
         if not self.connect_pixhawk():
             print("❌ Pixhawk bağlantısı başarısız!")
+            return False
+        
+        # Hardware konfigürasyonu doğrula
+        if not validate_hardware_config(MISSION_CONFIG):
+            print("❌ Hardware validation başarısız!")
             return False
         
         # Dead Reckoning başlangıç pozisyonu ayarla
@@ -1314,14 +1727,22 @@ class Mission1Navigator:
         self.running = True
         self.mission_stage = "DESCENT"
         
-        # Control ve monitoring thread'leri başlat
-        self.control_thread = threading.Thread(target=self.control_loop)
-        self.control_thread.daemon = True
-        self.control_thread.start()
-        
-        self.monitoring_thread = threading.Thread(target=self.monitoring_loop)
-        self.monitoring_thread.daemon = True
-        self.monitoring_thread.start()
+        # Control ve monitoring thread'leri başlat - Improved thread management
+        try:
+            self.control_thread = threading.Thread(target=self.control_loop, name="ControlLoop")
+            self.control_thread.daemon = False  # Graceful shutdown için daemon=False
+            self.control_thread.start()
+            print("🎯 Control thread başlatıldı")
+            
+            self.monitoring_thread = threading.Thread(target=self.monitoring_loop, name="MonitoringLoop")
+            self.monitoring_thread.daemon = False
+            self.monitoring_thread.start()
+            print("📊 Monitoring thread başlatıldı")
+            
+        except Exception as e:
+            print(f"❌ Thread başlatma hatası: {e}")
+            self.cleanup()
+            return False
         
         try:
             print("\n🚀 GÖREV 1 BAŞLADI!")

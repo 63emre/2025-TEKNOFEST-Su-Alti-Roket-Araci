@@ -27,6 +27,15 @@ from datetime import datetime
 from pymavlink import mavutil
 import os
 
+# GPIO kontrol sistemi (LED & Buzzer)
+try:
+    import RPi.GPIO as GPIO
+    GPIO_AVAILABLE = True
+    print("✅ RPi.GPIO modülü yüklendi")
+except ImportError:
+    print("⚠️ RPi.GPIO bulunamadı, LED/Buzzer devre dışı")
+    GPIO_AVAILABLE = False
+
 # D300 derinlik sensörü import
 try:
     import sys
@@ -41,6 +50,12 @@ except ImportError:
 # MAVLink bağlantı adresi (ENV ile özelleştirilebilir)
 MAV_ADDRESS = os.getenv("MAV_ADDRESS", "/dev/ttyACM0") + "," + str(os.getenv("MAV_BAUD", "115200"))
 
+# GPIO Pin tanımları (HARDWARE_PIN_MAPPING.md'den)
+GPIO_STATUS_LED = 4      # Durum LED (Kırmızı/Yeşil/Mavi)
+GPIO_BUZZER_PWM = 13     # Buzzer PWM Output
+GPIO_POWER_BUTTON = 18   # Güç Butonu Input
+GPIO_EMERGENCY_STOP = 19 # Acil Durdurma Input
+
 # Görev parametreleri
 MISSION_PARAMS = {
     'target_depth': 2.0,            # m
@@ -53,10 +68,11 @@ MISSION_PARAMS = {
     'depth_tolerance': 0.2          # m
 }
 
-# Kontrol parametreleri
+# Kontrol parametreleri - Optimize edilmiş hızlı & stabil sürüş
 CONTROL_PARAMS = {
-    'depth_pid':   {'kp': 100.0, 'ki': 5.0,  'kd': 30.0},
-    'heading_pid': {'kp': 3.0,   'ki': 0.1,  'kd': 0.5}
+    'depth_pid':   {'kp': 120.0, 'ki': 6.0,  'kd': 35.0, 'max_output': 200},
+    'heading_pid': {'kp': 5.0,   'ki': 0.2,  'kd': 1.0, 'max_output': 100},
+    'stabilization_pid': {'kp': 3.0, 'ki': 0.1, 'kd': 0.5, 'max_output': 80}
 }
 
 # TEKNOFEST Standart Pin Mapping
@@ -151,9 +167,26 @@ class PIDController:
         self.last_time = time.time()
 
 class Mission1Navigator:
+    """
+    TEKNOFEST Su Altı Roket Aracı - Görev 1 Navigator
+    X-Wing Konfigürasyonu - GPS'siz Dead Reckoning
+    
+    Features:
+        - D300 derinlik sensörü öncelikli sistem
+        - PWM tabanlı odometri ve mesafe hesaplama
+        - 90 saniye arming interlock güvenlik sistemi
+        - X-Wing stabilizasyon sistemi
+        - LED/Buzzer feedback sistemi
+        - Watchdog ve latched fault koruması
+        - Thread-safe kontrol döngüsü
+    """
     def __init__(self):
         self.master = None
         self.connected = False
+        
+        # GPIO sistemi başlat
+        self.gpio_initialized = False
+        self._init_gpio_system()
 
         # D300 derinlik sensörü
         self.d300_sensor = None
@@ -229,6 +262,78 @@ class Mission1Navigator:
 
         # Telemetri
         self.telemetry_data = []
+    
+    def _init_gpio_system(self):
+        """GPIO sistemi başlatma (LED & Buzzer)"""
+        if not GPIO_AVAILABLE:
+            return
+            
+        try:
+            GPIO.setmode(GPIO.BCM)
+            GPIO.setwarnings(False)
+            
+            # Output pinleri
+            GPIO.setup(GPIO_STATUS_LED, GPIO.OUT)
+            GPIO.setup(GPIO_BUZZER_PWM, GPIO.OUT)
+            
+            # Input pinleri (pull-up dirençli)
+            GPIO.setup(GPIO_POWER_BUTTON, GPIO.IN, pull_up_down=GPIO.PUD_UP)
+            GPIO.setup(GPIO_EMERGENCY_STOP, GPIO.IN, pull_up_down=GPIO.PUD_UP)
+            
+            # Başlangıçta kapalı
+            GPIO.output(GPIO_STATUS_LED, GPIO.LOW)
+            GPIO.output(GPIO_BUZZER_PWM, GPIO.LOW)
+            
+            self.gpio_initialized = True
+            print("✅ GPIO sistemi başlatıldı (LED: GPIO4, Buzzer: GPIO13)")
+            
+        except Exception as e:
+            print(f"⚠️ GPIO başlatma hatası: {e}")
+            self.gpio_initialized = False
+    
+    def _update_status_indicators(self, stage, arming_remaining=None, fault=None):
+        """Durum göstergelerini güncelle (LED & Buzzer)"""
+        if not self.gpio_initialized:
+            return
+            
+        try:
+            if fault:
+                # FAULT: Hızlı flash LED + uzun bip×3
+                for _ in range(6):
+                    GPIO.output(GPIO_STATUS_LED, GPIO.HIGH)
+                    GPIO.output(GPIO_BUZZER_PWM, GPIO.HIGH)
+                    time.sleep(0.1)
+                    GPIO.output(GPIO_STATUS_LED, GPIO.LOW)
+                    GPIO.output(GPIO_BUZZER_PWM, GPIO.LOW)
+                    time.sleep(0.1)
+                return
+                
+            if arming_remaining and arming_remaining > 0:
+                # ARMING: LED sabit, buzzer aralıklı
+                GPIO.output(GPIO_STATUS_LED, GPIO.HIGH)
+                if int(arming_remaining) % 2 == 0:  # Her 2 saniyede bip
+                    GPIO.output(GPIO_BUZZER_PWM, GPIO.HIGH)
+                    time.sleep(0.1)
+                    GPIO.output(GPIO_BUZZER_PWM, GPIO.LOW)
+            else:
+                # Normal operasyon: Stage'e göre LED
+                if stage in ["DESCENT", "STRAIGHT_COURSE", "OFFSHORE_CRUISE"]:
+                    GPIO.output(GPIO_STATUS_LED, GPIO.HIGH)  # Sabit yanar
+                elif stage in ["RETURN_NAVIGATION", "FINAL_APPROACH"]:
+                    # Yavaş flash (0.5 Hz)
+                    led_state = int(time.time() * 2) % 2
+                    GPIO.output(GPIO_STATUS_LED, led_state)
+                elif stage == "MISSION_COMPLETE":
+                    # Başarı: 3 kısa bip
+                    for _ in range(3):
+                        GPIO.output(GPIO_BUZZER_PWM, GPIO.HIGH)
+                        time.sleep(0.2)
+                        GPIO.output(GPIO_BUZZER_PWM, GPIO.LOW)
+                        time.sleep(0.2)
+                    GPIO.output(GPIO_STATUS_LED, GPIO.HIGH)  # LED sabit yanar
+                    
+        except Exception as e:
+            print(f"⚠️ GPIO güncelleme hatası: {e}")
 
     # ---------------- MAVLink ----------------
     def connect_pixhawk(self):
