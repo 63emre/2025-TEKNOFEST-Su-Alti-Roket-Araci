@@ -1,0 +1,187 @@
+{
+  "mission_parameters": {
+    "mission_1": {
+      "target_depth": 2.0,
+      "straight_distance": 10.0,
+      "min_offshore_distance": 50.0,
+      "timeout_seconds": 300,
+      "position_tolerance": 2.0,
+      "depth_tolerance": 0.2,
+      "final_hold_duration": 5.0
+    },
+    "mission_2": {
+      "target_depth": 1.5,
+      "target_launch_angle": 30.0,
+      "surface_depth_threshold": 0.5,
+      "approach_distance": 30.0,
+      "launch_distance": 10.0,
+      "timeout_seconds": 300,
+      "rocket_count": 2
+    }
+  },
+  
+  "control_parameters": {
+    "depth_pid": {
+      "kp": 120.0,
+      "ki": 5.0, 
+      "kd": 35.0,
+      "max_output": 200,
+      "integral_limit": 100
+    },
+    "heading_pid": {
+      "kp": 6.0,
+      "ki": 0.25,
+      "kd": 1.2, 
+      "max_output": 100,
+      "integral_limit": 50
+    },
+    "control_frequency": 20,
+    "overall_max_delta_us": 350
+  },
+
+  "pixhawk_passive_io": {
+    "servo_channels": {
+      "plus_wing": {
+        "right_fin": 1,
+        "left_fin": 2, 
+        "up_fin": 3,
+        "down_fin": 4,
+        "motor": 5
+      },
+      "x_wing": {
+        "fin_1": 1,
+        "fin_2": 2,
+        "fin_3": 3, 
+        "fin_4": 4,
+        "motor": 5
+      }
+    },
+    "pwm_limits": {
+      "servo_neutral": 1500,
+      "servo_min": 1300,
+      "servo_max": 1700,
+      "motor_neutral": 1500,
+      "motor_min": 1100,
+      "motor_max": 1900
+    },
+    "mixing_matrices": {
+      "plus_wing": {
+        "roll": [1, -1, 0, 0],
+        "pitch": [0, 0, 1, -1], 
+        "yaw": [1, 1, 1, 1]
+      },
+      "x_wing": {
+        "roll": [1, -1, -1, 1],
+        "pitch": [1, 1, -1, -1],
+        "yaw": [1, -1, 1, -1]
+      }
+    }
+  },
+
+  "depth_control": {
+    "d300_sensor": {
+      "i2c_address": "0x76",
+      "sample_rate": 10,
+      "filter_alpha": 0.8
+    },
+    "pressure_fallback": {
+      "sea_level_pressure": 1013.25,
+      "pressure_to_depth_factor": 0.0102,
+      "filter_alpha": 0.7
+    },
+    "depth_sources_priority": ["d300", "scaled_pressure"]
+  },
+
+  "odometry": {
+    "speed_calibration_file": "cal_speed.json",
+    "integration_rate": 20,
+    "position_filter_alpha": 0.8,
+    "velocity_filter_alpha": 0.9,
+    "bearing_calculation": "dead_reckoning"
+  },
+
+  "mavlink_config": {
+    "connection": {
+      "port": "/dev/ttyACM0",
+      "baudrate": 115200,
+      "timeout": 15.0,
+      "autoreconnect": true
+    },
+    "stream_rates": {
+      "attitude": 20,
+      "scaled_pressure": 10, 
+      "sys_status": 2,
+      "heartbeat": 1
+    },
+    "command_timeouts": {
+      "do_set_servo": 1.0,
+      "set_mode": 2.0,
+      "arm_disarm": 3.0
+    }
+  },
+
+  "safety_systems": {
+    "arming_duration": 90.0,
+    "watchdog_timeout": 0.5,
+    "max_depth": 5.0,
+    "emergency_surface_depth": 0.5,
+    "min_battery_voltage": 20.0,
+    "latched_faults": [
+      "SENSOR_TIMEOUT",
+      "DEPTH_EXCEEDED", 
+      "BATTERY_LOW",
+      "LEAK_DETECTED",
+      "WATCHDOG_TIMEOUT"
+    ]
+  },
+
+  "gpio_config": {
+    "status_led": 4,
+    "buzzer_pwm": 13,
+    "power_button": 18,
+    "emergency_stop": 19
+  },
+
+  "telemetry_logging": {
+    "csv_enabled": true,
+    "json_enabled": true,
+    "sample_rate": 10,
+    "fields": [
+      "timestamp",
+      "mission_stage", 
+      "depth",
+      "depth_source",
+      "position_estimate",
+      "heading",
+      "attitude",
+      "pwm_outputs",
+      "pid_outputs",
+      "battery_voltage",
+      "faults"
+    ]
+  },
+
+  "mission_scoring": {
+    "mission_1": {
+      "cruise_points_max": 150,
+      "position_points_max": 90,
+      "waterproof_points_max": 60,
+      "time_factor_enabled": true
+    },
+    "mission_2": {
+      "rocket_points_max": 150,
+      "position_points_max": 90, 
+      "waterproof_points_max": 60,
+      "angle_accuracy_bonus": 20
+    }
+  },
+
+  "validation_rules": {
+    "mavlink_connection": true,
+    "manual_mode_only": true,
+    "servo_function_disabled": true,
+    "depth_sensor_available": true,
+    "pwm_limits_correct": true,
+    "telemetry_rates_ok": true
+  }
+}

@@ -221,6 +221,9 @@ class PhysicalHardwareTester:
         servo_results = {}
         
         for name, channel in SERVO_CHANNELS.items():
+            # AUX 3..6 için SERVO11..14'e dönüştürme (HARDWARE_PIN_MAPPING)
+            if channel in (3,4,5,6):
+                channel = channel + 8
             print(f"\n🔧 {name.upper()} Servo Testi (AUX {channel})")
             
             # Neutral pozisyon

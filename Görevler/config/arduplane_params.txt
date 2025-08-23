@@ -1,0 +1,185 @@
+# TEKNOFEST Su Altı Roket Aracı - ArduPlane Pasif I/O Hub Parametreleri
+# Bu parametreler Pixhawk'ı sadece PWM çıkış + telemetri hub olarak kullanır
+# GPS/GUIDED/RTL/LOITER KULLANILMAZ - sadece MANUAL mode
+
+# ============================================================================
+# 1. SERVO FUNCTIONS - TÜM KONTROL ÇIKIŞLARI DEVRE DIŞI (Pasif I/O)
+# ============================================================================
+# Plus-Wing Konfigürasyon (4 fin + motor)
+SERVO1_FUNCTION,0    # RIGHT fin - DISABLED (Pi kontrolünde)
+SERVO2_FUNCTION,0    # LEFT fin - DISABLED (Pi kontrolünde) 
+SERVO3_FUNCTION,0    # UP fin - DISABLED (Pi kontrolünde)
+SERVO4_FUNCTION,0    # DOWN fin - DISABLED (Pi kontrolünde)
+SERVO5_FUNCTION,0    # Motor (ESC) - DISABLED (Pi kontrolünde)
+
+# X-Wing alternatif konfigürasyon (gerekirse)
+# SERVO1_FUNCTION,0    # Fin 1 - DISABLED
+# SERVO2_FUNCTION,0    # Fin 2 - DISABLED  
+# SERVO3_FUNCTION,0    # Fin 3 - DISABLED
+# SERVO4_FUNCTION,0    # Fin 4 - DISABLED
+# SERVO5_FUNCTION,0    # Motor - DISABLED
+
+# ============================================================================
+# 2. PWM LİMİTLERİ (Script ile uyumlu)
+# ============================================================================
+# Fin servolar (DS3230MG) - 1300-1700 range
+SERVO1_MIN,1300
+SERVO1_TRIM,1500
+SERVO1_MAX,1700
+
+SERVO2_MIN,1300
+SERVO2_TRIM,1500
+SERVO2_MAX,1700
+
+SERVO3_MIN,1300
+SERVO3_TRIM,1500
+SERVO3_MAX,1700
+
+SERVO4_MIN,1300
+SERVO4_TRIM,1500
+SERVO4_MAX,1700
+
+# Motor (ESC) - 1100-1900 range
+SERVO5_MIN,1100
+SERVO5_TRIM,1500
+SERVO5_MAX,1900
+
+# ============================================================================
+# 3. PWM ÇIKIŞ AYARLARI
+# ============================================================================
+# MAIN çıkışları PWM (varsayılan)
+# AUX çıkışları kullanıyorsan PWM'e çevir
+BRD_PWM_COUNT,6      # 6 AUX çıkışını PWM yap (gerekirse)
+
+# PWM frekansı (50 Hz - servo uyumlu)
+SERVO_RATE,50
+
+# ============================================================================
+# 4. GPS VE NAVIGASYON - TAMAMEN DEVRE DIŞI
+# ============================================================================
+GPS_TYPE,0           # GPS yok - su altında kullanılmaz
+GPS_TYPE2,0          # İkinci GPS yok
+
+# EKF - GPS olmadan minimal konfigürasyon
+EKF3_ENABLE,1
+EKF3_GPS_TYPE,3      # No GPS (GPS olmadan çalış)
+EKF3_SRC1_POSXY,0    # Pozisyon kaynağı yok
+EKF3_SRC1_VELXY,0    # Hız kaynağı yok
+EKF3_SRC1_POSZ,1     # Sadece barometer yükseklik
+
+# ============================================================================
+# 5. FLIGHT MODE - SADECE MANUAL
+# ============================================================================
+FLTMODE1,0           # MANUAL mode
+FLTMODE2,0           # MANUAL mode  
+FLTMODE3,0           # MANUAL mode
+FLTMODE4,0           # MANUAL mode
+FLTMODE5,0           # MANUAL mode
+FLTMODE6,0           # MANUAL mode
+
+# GUIDED/RTL/LOITER kullanma - GPS gerektiriyorlar
+# Mode değiştirme: Pi scripti sadece MANUAL kullanır
+
+# ============================================================================
+# 6. ARMING VE GÜVENLİK (İlk test için gevşetilmiş)
+# ============================================================================
+# İlk testte minimal kontrol - sonra gerekli bayrakları aç
+ARMING_CHECK,1       # Sadece temel kontroller (GPS yok)
+
+# Safety switch (donanımda varsa)
+BRD_SAFETY_ENABLE,0  # Safety switch devre dışı (hard-kill zaten var)
+
+# Failsafe - GPS olmadan
+FS_SHORT_ACTN,3      # Short failsafe: FBWA (MANUAL benzeri)
+FS_LONG_ACTN,3       # Long failsafe: FBWA
+FS_GCS_ENABL,0       # GCS failsafe devre dışı (Pi kontrol ediyor)
+
+# Battery failsafe
+BATT_MONITOR,4       # Voltage + current monitoring
+BATT_CAPACITY,5000   # 5000 mAh (donanıma göre ayarla)
+BATT_FS_VOLTSRC,0    # Battery failsafe voltage source
+BATT_FS_LOW_ACT,0    # Low battery: continue mission (Pi handle eder)
+
+# ============================================================================
+# 7. IMU VE BARO AYARLARI (Telemetri için)
+# ============================================================================
+# IMU kalibrasyonu (factory default - gerekirse recalibrate)
+INS_ENABLE_MASK,127  # Tüm IMU'lar aktif
+INS_GYRO_FILTER,20   # Gyro filter (Hz)
+INS_ACCEL_FILTER,20  # Accel filter (Hz)
+
+# Barometer (derinlik için kritik)
+BARO_PROBE_EXT,768   # Harici barometer probe
+BARO_PRIMARY,0       # Primary barometer
+
+# ============================================================================
+# 8. TELEMETRY STREAM RATES (Pi'ye gönderilecek)
+# ============================================================================
+# Bu değerler varsayılan - Pi scripti SET_MESSAGE_INTERVAL ile override eder
+SR0_ATTITUDE,20      # ATTITUDE 20 Hz
+SR0_EXT_STAT,2       # Extended status 2 Hz  
+SR0_EXTRA1,20        # Extra1 (ATTITUDE içerir) 20 Hz
+SR0_EXTRA2,10        # Extra2 (SCALED_PRESSURE içerir) 10 Hz
+SR0_POSITION,0       # Position stream devre dışı (GPS yok)
+SR0_RAW_SENS,0       # Raw sensors devre dışı
+SR0_RC_CHAN,0        # RC channels devre dışı
+
+# ============================================================================
+# 9. LOG AYARLARI
+# ============================================================================
+LOG_BACKEND_TYPE,1   # File logging
+LOG_FILE_BUFSIZE,32  # Log buffer size
+LOG_DISARMED,0       # Disarmed durumda log yok
+LOG_REPLAY,0         # Replay devre dışı
+
+# Hangi verileri log et
+LOG_BITMASK,176126   # Attitude, GPS (yok ama), IMU, Baro
+
+# ============================================================================
+# 10. RC VE SERVO AYARLARI
+# ============================================================================
+# RC girişi - Pi MAVLink üzerinden kontrol eder, fiziksel RC yok
+RC_OPTIONS,0         # RC options devre dışı
+
+# Servo reverse (gerekirse - donanım bağlantısına göre)
+SERVO1_REVERSED,0    # Normal direction
+SERVO2_REVERSED,0    # Normal direction  
+SERVO3_REVERSED,0    # Normal direction
+SERVO4_REVERSED,0    # Normal direction
+SERVO5_REVERSED,0    # Motor normal direction
+
+# ============================================================================
+# 11. FRAME CLASS VE TYPE (Fixed wing - su altı)
+# ============================================================================
+FRAME_CLASS,1        # Fixed wing
+FRAME_TYPE,0         # Normal plane (custom su altı mixing Pi'de)
+
+# ============================================================================
+# 12. ÇEŞITLI AYARLAR
+# ============================================================================
+# Airspeed sensor (su altında yok)
+ARSPD_TYPE,0         # Airspeed sensor yok
+ARSPD_USE,0          # Airspeed kullanma
+
+# Compass (su altında GPS yok, sadece IMU yaw)
+COMPASS_USE,1        # Compass kullan (heading için)
+COMPASS_AUTODEC,1    # Auto declination
+
+# Rangefinder (su altında yok)
+RNGFND1_TYPE,0       # Rangefinder yok
+
+# Servo output enable
+SERVO_AUTO_TRIM,0    # Auto trim devre dışı
+SERVO_RATE,50        # 50 Hz PWM rate
+
+# ============================================================================
+# NOTLAR:
+# ============================================================================
+# 1. Bu parametreler Pixhawk'ı tamamen pasif I/O hub yapar
+# 2. Tüm kontrol Pi scripti tarafından DO_SET_SERVO ile yapılır
+# 3. GPS/GUIDED/RTL/LOITER kullanılmaz - su altında çalışmaz
+# 4. MANUAL mode'da Pi scripti tüm PWM'leri kontrol eder
+# 5. Telemetri: ATTITUDE 20Hz, SCALED_PRESSURE 10Hz Pi'ye gönderilir
+# 6. İlk testte ARMING_CHECK gevşetilmiş - stabilize olduktan sonra sıkılaştır
+# 7. Servo functions 0 = ArduPlane mixing yok, Pi tam kontrol
+# 8. PWM limitleri script ile uyumlu (fin: 1300-1700, motor: 1100-1900)
