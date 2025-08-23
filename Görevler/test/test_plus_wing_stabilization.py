@@ -71,9 +71,49 @@ class PlusWingStabilizationTester:
         print("   Plus Konfigürasyonu:")
         print("     AUX 3 (Sağ), AUX 4 (Alt), AUX 5 (Sol), AUX 6 (Üst)")
         
-        # Arming interlock'u atla (test modu)
+        # Arming interlock'u tamamen atla (test modu)
         self.navigator._arming_done = True
-        print("🔓 Test modu: Arming interlock atlandı")
+        self.navigator._arming_start_time = time.time() - 100  # 100 saniye önceymiş gibi yap
+        print("🔓 Test modu: Arming interlock tamamen atlandı")
+        
+        # Arming durumunu test et ve doğrula
+        arming_status = self.navigator._check_arming_interlock()
+        print(f"🔍 Arming durumu: {arming_status}")
+        print(f"🔍 _arming_done: {self.navigator._arming_done}")
+        print(f"🔍 Connected: {self.navigator.connected}")
+        
+        if not arming_status:
+            print("❌ UYARI: Arming interlock hala aktif!")
+        if not self.navigator.connected:
+            print("❌ UYARI: MAVLink bağlantısı yok!")
+        
+        # Basit servo test - servolar hareket ediyor mu kontrol et
+        print("\n🔧 BASİT SERVO TEST:")
+        print("   Her servo tek tek test ediliyor...")
+        
+        servo_info = [
+            (3, "SAĞ kanat (AUX 3)"),
+            (4, "ALT kanat (AUX 4)"), 
+            (5, "SOL kanat (AUX 5)"),
+            (6, "ÜST kanat (AUX 6)")
+        ]
+        
+        for channel, name in servo_info:
+            print(f"\n🎯 {name} testi:")
+            
+            # Nötr pozisyon
+            print(f"   1500µs (nötr) gönderiliyor...")
+            success = self.navigator._set_servo_pwm(channel, 1500)
+            time.sleep(1)
+            
+            # Test pozisyonları
+            test_positions = [1600, 1400, 1500]  # Max, Min, Neutral
+            for pwm in test_positions:
+                print(f"   {pwm}µs gönderiliyor...")
+                success = self.navigator._set_servo_pwm(channel, pwm)
+                if not success:
+                    print(f"   ❌ Servo {channel} komut başarısız!")
+                time.sleep(1)
         
         return True
     
@@ -106,7 +146,11 @@ class PlusWingStabilizationTester:
             roll_cmd = -roll_error * 5.0  # Basit P kontrolü
             
             # Plus-Wing roll kontrolü: Sol vs Sağ kanat (manuel mod)
-            self.navigator.set_control_surfaces(roll_cmd=roll_cmd, use_stabilization=False)
+            success = self.navigator.set_control_surfaces(roll_cmd=roll_cmd, use_stabilization=False)
+            if not success:
+                print(f"❌ Servo komut hatası! Roll_cmd: {roll_cmd}")
+            else:
+                print(f"✅ Servo komutu gönderildi: Roll_cmd: {roll_cmd:+.1f}")
             
             # Test verisi kaydet
             test_data.append({
@@ -432,6 +476,65 @@ class PlusWingStabilizationTester:
         
         return success
     
+    def test_manual_servo_control(self):
+        """Manuel servo kontrol testi - servolar hareket ediyor mu?"""
+        print("\n🎛️ MANUEL SERVO KONTROL TESTİ")
+        print("-" * 40)
+        
+        print("🔧 Her servo tek tek test ediliyor...")
+        servo_info = [
+            (3, "SAĞ kanat (AUX 3)"),
+            (4, "ALT kanat (AUX 4)"), 
+            (5, "SOL kanat (AUX 5)"),
+            (6, "ÜST kanat (AUX 6)")
+        ]
+        
+        success_count = 0
+        
+        for channel, name in servo_info:
+            print(f"\n🎯 {name} testi:")
+            
+            # Nötr pozisyon
+            self.navigator._set_servo_pwm(channel, 1500)
+            time.sleep(1)
+            print(f"   1500µs (nötr) gönderildi")
+            
+            # Maksimum pozisyon
+            self.navigator._set_servo_pwm(channel, 1600)
+            time.sleep(2)
+            print(f"   1600µs (max) gönderildi")
+            
+            # Minimum pozisyon  
+            self.navigator._set_servo_pwm(channel, 1400)
+            time.sleep(2)
+            print(f"   1400µs (min) gönderildi")
+            
+            # Nötr'e dön
+            self.navigator._set_servo_pwm(channel, 1500)
+            time.sleep(1)
+            print(f"   1500µs (nötr) gönderildi")
+            
+            # Kullanıcı onayı
+            response = input(f"   {name} hareket etti mi? (y/n): ").lower()
+            if response == 'y':
+                success_count += 1
+                print(f"   ✅ {name} BAŞARILI")
+            else:
+                print(f"   ❌ {name} BAŞARISIZ")
+        
+        success = success_count == len(servo_info)
+        print(f"\n📊 MANUEL SERVO TEST SONUÇLARI:")
+        print(f"   Başarılı servo: {success_count}/{len(servo_info)}")
+        print(f"   Sonuç: {'✅ BAŞARILI' if success else '❌ BAŞARISIZ'}")
+        
+        self.test_results['manual_servo'] = {
+            'success': success,
+            'success_count': success_count,
+            'total_servos': len(servo_info)
+        }
+        
+        return success
+    
     def test_full_stabilization_mode(self):
         """Full stabilizasyon modu testi (full_stabilization2.py gibi)"""
         print("\n🎭 FULL STABİLİZASYON MODU TESTİ")
@@ -513,6 +616,7 @@ class PlusWingStabilizationTester:
         try:
             # Test sırası
             tests = [
+                ("Manuel Servo Kontrol", self.test_manual_servo_control),
                 ("Roll Stabilizasyon (Manuel)", self.test_roll_stabilization),
                 ("Pitch Stabilizasyon (Manuel)", self.test_pitch_stabilization),
                 ("Yaw Stabilizasyon (Manuel)", self.test_yaw_stabilization),

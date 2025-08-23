@@ -71,9 +71,49 @@ class XWingStabilizationTester:
         print(f"   Motor Kanal: {MOTOR_CHANNEL}")
         print(f"   Servo Kanalları: {SERVO_CHANNELS}")
         
-        # Arming interlock'u atla (test modu)
+        # Arming interlock'u tamamen atla (test modu)
         self.navigator._arming_done = True
-        print("🔓 Test modu: Arming interlock atlandı")
+        self.navigator._arming_start_time = time.time() - 100  # 100 saniye önceymiş gibi yap
+        print("🔓 Test modu: Arming interlock tamamen atlandı")
+        
+        # Arming durumunu test et ve doğrula
+        arming_status = self.navigator._check_arming_interlock()
+        print(f"🔍 Arming durumu: {arming_status}")
+        print(f"🔍 _arming_done: {self.navigator._arming_done}")
+        print(f"🔍 Connected: {self.navigator.connected}")
+        
+        if not arming_status:
+            print("❌ UYARI: Arming interlock hala aktif!")
+        if not self.navigator.connected:
+            print("❌ UYARI: MAVLink bağlantısı yok!")
+        
+        # Basit servo test - servolar hareket ediyor mu kontrol et
+        print("\n🔧 BASİT SERVO TEST:")
+        print("   Her servo tek tek test ediliyor...")
+        
+        servo_info = [
+            (3, "ÖN SAĞ kanat (AUX 3)"),
+            (4, "ARKA SOL kanat (AUX 4)"), 
+            (5, "ARKA SAĞ kanat (AUX 5)"),
+            (6, "ÖN SOL kanat (AUX 6)")
+        ]
+        
+        for channel, name in servo_info:
+            print(f"\n🎯 {name} testi:")
+            
+            # Nötr pozisyon
+            print(f"   1500µs (nötr) gönderiliyor...")
+            success = self.navigator.set_servo_position(channel, 1500)
+            time.sleep(1)
+            
+            # Test pozisyonları
+            test_positions = [1600, 1400, 1500]  # Max, Min, Neutral
+            for pwm in test_positions:
+                print(f"   {pwm}µs gönderiliyor...")
+                success = self.navigator.set_servo_position(channel, pwm)
+                if not success:
+                    print(f"   ❌ Servo {channel} komut başarısız!")
+                time.sleep(1)
         
         return True
     

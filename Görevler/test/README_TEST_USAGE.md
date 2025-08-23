@@ -116,6 +116,16 @@ Her test sonrası otomatik rapor oluşturulur:
 - `cd Görevler/test` klasöründe olduğunuzdan emin olun
 - `../pluswing/mission_1_navigation_plus.py` dosyasının var olduğunu kontrol edin
 
+### Servo Hareket Etmiyor:
+```
+❌ Servo komutları gönderiliyor ama hareket yok
+```
+**Çözüm**: 
+- **Arming interlock**: Test modunda otomatik atlanır
+- **MAVLink bağlantısı**: `/dev/ttyACM0` portunu kontrol edin
+- **Servo güç**: 6.8V servo beslemesini kontrol edin
+- **Debug çıktısı**: Servo komutlarının gönderildiğini konsola bakın
+
 ### MAVLink Bağlantı Hatası:
 ```
 ❌ Pixhawk bağlantısı başarısız!

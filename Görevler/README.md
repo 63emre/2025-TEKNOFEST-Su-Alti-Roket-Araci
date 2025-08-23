@@ -61,7 +61,7 @@ Bu klasör, TEKNOFEST Su Altı Roket Aracı Yarışması'nın ana görevlerini g
 - `motor_controller.py` - Motor kontrolü ve hız yönetimi
 
 ### 🛡️ Güvenlik Sistemleri
-yok
+  Yok
 
 ## 🛠️ Sistem Gereksinimleri
 

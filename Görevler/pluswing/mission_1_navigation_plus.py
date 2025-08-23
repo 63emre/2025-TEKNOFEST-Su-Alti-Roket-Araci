@@ -942,6 +942,10 @@ class Mission1Navigator:
     
     def _check_arming_interlock(self):
         """90 saniye arming interlock kontrolü"""
+        # Test modu kontrolü - eğer _arming_done True ise direk geç
+        if self._arming_done:
+            return True
+            
         if self._arming_start_time is None:
             self._arming_start_time = time.time()
             print("🔒 ARMİNG INTERLOCK başlatıldı - 90 saniye güvenlik süresi")
@@ -1109,6 +1113,7 @@ class Mission1Navigator:
     def set_servo_position(self, channel, pwm_value):
         """Servo pozisyon kontrolü"""
         if not self.connected:
+            print(f"❌ MAVLink bağlantısı yok! Servo {channel} komutu gönderilemedi")
             return False
             
         pwm_value = max(PWM_MIN, min(PWM_MAX, pwm_value))
@@ -1121,13 +1126,16 @@ class Mission1Navigator:
                 0,
                 channel, pwm_value, 0, 0, 0, 0, 0
             )
+            print(f"✅ Servo {channel} → {pwm_value}µs komutu gönderildi")
             return True
-        except:
+        except Exception as e:
+            print(f"❌ Servo {channel} komut hatası: {e}")
             return False
     
     def _set_servo_pwm(self, channel, pwm_value):
         """Servo PWM kontrolü - Plus Wing için"""
         if not self.connected:
+            print(f"❌ MAVLink bağlantısı yok! Servo {channel} komutu gönderilemedi")
             return False
             
         pwm_value = max(PWM_MIN, min(PWM_MAX, pwm_value))
@@ -1140,8 +1148,10 @@ class Mission1Navigator:
                 0,
                 channel, pwm_value, 0, 0, 0, 0, 0
             )
+            print(f"✅ Servo {channel} → {pwm_value}µs komutu gönderildi")
             return True
-        except:
+        except Exception as e:
+            print(f"❌ Servo {channel} komut hatası: {e}")
             return False
     
     def test_servos(self):

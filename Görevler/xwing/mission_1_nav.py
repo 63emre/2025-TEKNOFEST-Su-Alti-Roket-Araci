@@ -630,6 +630,7 @@ class Mission1Navigator:
 
     def _set_servo(self, channel, pwm):
         if not self.connected:
+            print(f"❌ MAVLink bağlantısı yok! Servo {channel} komutu gönderilemedi")
             return False
         pwm = max(PWM_MIN, min(PWM_MAX, int(pwm)))
         try:
@@ -640,9 +641,15 @@ class Mission1Navigator:
                 0,
                 channel, pwm, 0, 0, 0, 0, 0
             )
+            print(f"✅ Servo {channel} → {pwm}µs komutu gönderildi")
             return True
-        except:
+        except Exception as e:
+            print(f"❌ Servo {channel} komut hatası: {e}")
             return False
+    
+    def set_servo_position(self, channel, pwm_value):
+        """Servo pozisyon kontrolü - Test scriptleri için"""
+        return self._set_servo(channel, pwm_value)
 
     # --------------- Yardımcılar ---------------
     def speed_to_pwm(self, spd_mps):

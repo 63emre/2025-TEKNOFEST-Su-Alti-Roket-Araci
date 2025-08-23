@@ -432,8 +432,16 @@ class PhysicalHardwareTester:
             print("❌ Pixhawk bağlantısı başarısız!")
             return False
         
-        # Arming interlock'u atla (test için)
+        # Arming interlock'u tamamen atla (test için)
         self.navigator._arming_done = True
+        self.navigator._arming_start_time = time.time() - 100  # 100 saniye önceymiş gibi yap
+        print("🔓 Test modu: Arming interlock tamamen atlandı")
+        
+        # Arming durumunu doğrula
+        arming_status = self.navigator._check_arming_interlock()
+        print(f"🔍 Arming durumu: {arming_status}")
+        if not arming_status:
+            print("❌ UYARI: Arming interlock hala aktif!")
         
         # Test listesi
         tests = [
