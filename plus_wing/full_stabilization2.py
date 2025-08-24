@@ -16,10 +16,11 @@ PORT = "COM3"
 BAUD = 115200
 
 # ---- Servo kanalları ----
-SERVO_UP    = 14   # ÜST kanat
-SERVO_DOWN  = 11   # ALT kanat  
-SERVO_RIGHT = 12   # SAĞ kanat
-SERVO_LEFT  = 13   # SOL kanat
+# ArduSub'da: MAIN1-8 = kanal 1-8, AUX1 = kanal 9, AUX2 = kanal 10, vs.
+SERVO_RIGHT = 11   # AUX3 → Fin Servo 1 (Plus: Sağ Kanat)  
+SERVO_DOWN  = 12   # AUX4 → Fin Servo 2 (Plus: Alt Kanat)
+SERVO_LEFT  = 13   # AUX5 → Fin Servo 3 (Plus: Sol Kanat)
+SERVO_UP    = 14   # AUX6 → Fin Servo 4 (Plus: Üst Kanat)
 
 # ---- PWM ----
 PWM_MIN = 1100
