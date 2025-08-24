@@ -151,7 +151,126 @@ sudo systemctl start sara.service
 2. **Bekleme**: Kırmızı LED yanıp sönecek
 3. **Görev Başlatma**: GPIO11 butonuna basın
 4. **90s Geri Sayım**: Buzzer 9+1 pattern ile sayacak
-5. **Görev Başlangıcı**: 90s sonra otomatik başlar
+5. **Otomatik Kalibrasyon**: 5. saniyeden itibaren sensör kalibrasyonları
+6. **Görev Başlangıcı**: 90s sonra otomatik başlar
+
+### 🔧 Otomatik Kalibrasyon Sistemi (90 Saniye İçinde)
+
+Görev başlatma butonuna basıldıktan sonra, 90 saniyelik güvenlik geri sayımı sırasında sistem otomatik olarak aşağıdaki kalibrasyonları gerçekleştirir:
+
+#### ⏱️ Kalibrasyon Zamanlaması
+- **0-5 saniye**: Sistem hazırlık (buzzer başlatma, durum ayarlama)
+- **5-15 saniye**: Otomatik kalibrasyon işlemleri
+- **15-90 saniye**: Kalibrasyon tamamlandı, görev bekleme modu
+- **90. saniye**: Görev otomatik başlangıcı
+
+#### 🎯 Yapılan Kalibrasyonlar
+
+##### 1. D300 Derinlik Sensörü Kalibrasyonu
+```
+Süre: 6 saniye
+Amaç: Yüzey basıncını (P₀) belirleme
+İşlem: Su yüzeyinde sürekli basınç ölçümü
+```
+
+**Detaylar:**
+- **Ölçüm Frekansı**: Her 0.1 saniyede bir basınç okuması
+- **Minimum Gereksinim**: En az 10 geçerli ölçüm
+- **Kalibrasyon Süreci**: 60 ölçümün ortalaması alınır
+- **Su Türü Tespiti**: Otomatik olarak tatlı su (ρ=1000 kg/m³) veya deniz suyu (ρ=1025 kg/m³)
+- **Başarısızlık Durumu**: Standart atmosfer basıncı (1013.25 mbar) kullanılır
+
+**Kalibrasyon Seçenekleri**:
+- **Su Yüzeyinde Kalibrasyon**: Geleneksel metod, sensörü su yüzeyinde sabit tutarak
+- **Havada Kalibrasyon**: ✨ **YENİ** - Sensörü su yüzeyinde tutmadan, havada kalibre etme
+
+**Havada Kalibrasyon**: 
+- `config.py`'de `D300_USE_WATER_SURFACE_CALIB = False` ayarı ile aktif edilir
+- Su türü (tatlı/deniz) otomatik tespit edilir ve uygun yoğunluk değeri kullanılır
+- Test edilmiş ve çalışır durumda ✅
+
+##### 2. Attitude (Duruş) Sensörü Kalibrasyonu
+```
+Süre: Anlık
+Amaç: Yaw (sapma) referans noktası belirleme
+İşlem: Mevcut yönelimi sıfır referansı olarak kaydetme
+```
+
+**Detaylar:**
+- **Referans Açısı**: Mevcut yaw açısı sıfır noktası olarak kaydedilir
+- **Sonraki Ölçümler**: Bu referansa göre hesaplanır
+- **Çıktı**: Yaw referansı derece cinsinden loglanır
+- **Kullanım**: 180° dönüş manevraları için kritik
+
+##### 3. Sistem Durumu Kontrolü
+```
+Süre: Anlık
+Amaç: MAVLink bağlantısı ve sistem sağlığı kontrolü
+İşlem: Heartbeat ve sistem mesajları kontrolü
+```
+
+**Kontrol Edilen Parametreler:**
+- **MAVLink Bağlantısı**: Pixhawk ile haberleşme durumu
+- **Heartbeat Mesajları**: Sistem canlılık sinyalleri
+- **Sistem Durumu**: Arming/disarming durumu kontrolü
+
+#### 📊 Kalibrasyon Sonuçları
+
+**Başarı Göstergeleri:**
+```
+✅ Depth: D300 sensör kalibrasyonu başarılı
+✅ Attitude: Yaw referansı ayarlandı  
+✅ System: Sistem durumu alındı
+✅ Genel Durum: 3/3 sensör başarılı
+```
+
+**Sağlık Kontrolü:**
+```python
+health_status = {
+    'depth_connected': True,      # D300 sensörü bağlı ve çalışıyor
+    'attitude_fresh': True,       # Attitude verileri güncel
+    'overall_healthy': True       # Genel sistem sağlıklı
+}
+```
+
+#### 📝 Kalibrasyon Log Örneği
+
+```
+⏱️  90 saniye güvenlik geri sayımı başlıyor...
+🔧 Kalibrasyonlar yapılıyor...
+Sensör kalibrasyonu başlatılıyor...
+Kalibrasyon ortamı: deniz_suyu (ρ=1025 kg/m³)
+D300 yüzey kalibrasyonu: 6 saniye - sensörü su yüzeyinde sabit tutun
+P: 1025.34 mbar (örnek 1)
+P: 1025.28 mbar (örnek 2)
+...
+P: 1025.41 mbar (örnek 60)
+✅ D300 P0 (yüzey basıncı): 1025.33 mbar | Örnek: 60
+Yaw referansı ayarlandı: 45.2°
+Kalibrasyon tamamlandı: 3/3 sensör başarılı
+✅ Sistem sağlık kontrolü: TAMAM
+⏱️  Arming'e 80 saniye...
+⏱️  Arming'e 70 saniye...
+...
+✅ Güvenlik süresi tamamlandı!
+```
+
+#### ⚠️ Kalibrasyon Uyarıları
+
+1. **D300 Sensör Konumu**: Kalibrasyon sırasında sensör su yüzeyinde sabit tutulmalı
+2. **Hareket Yasağı**: Kalibrasyon sırasında aracı hareket ettirmeyin
+3. **Su Türü**: Sistem otomatik olarak su türünü tespit eder (tatlı/deniz)
+4. **İptal Durumu**: 90 saniye içinde buton tekrar basılırsa kalibrasyonlar iptal olur
+5. **Başarısızlık**: Herhangi bir kalibrasyon başarısız olsa bile sistem çalışmaya devam eder
+
+#### 🔄 Kalibrasyon Tekrarı
+
+Kalibrasyon işlemini tekrarlamak için:
+1. GPIO11 butonuna iki kez basarak sistemi durdurun
+2. Tekrar butonuna basarak yeni 90 saniyelik döngü başlatın
+3. Sistem otomatik olarak kalibrasyonları yeniden yapar
+
+**Not**: Kalibrasyon sadece 90 saniyelik geri sayım sırasında yapılır. Görev başladıktan sonra kalibrasyon değiştirilemez.
 
 ### Buton Kontrolleri
 
@@ -278,6 +397,24 @@ tail -f sara_mission.log
 - ✅ Servo PWM kontrolleri (`test_aux*_servo.py`)
 - ✅ D300 derinlik sensörü okuma
 - ✅ MAVLink haberleşme (ArduSub)
+- ✅ **Havada kalibrasyon** - Su yüzeyinde tutmadan D300 kalibrasyonu
+
+### Yeni Test Scriptleri
+
+**Deniz Suyu Testi** (`Test/d300_seawater_test.py`):
+```bash
+# Deniz suyu için havada kalibrasyon (6 saniye)
+python Test/d300_seawater_test.py --calib 6
+
+# Farklı port kullanarak
+python Test/d300_seawater_test.py --calib 6 --port COM3
+```
+
+**Tatlı Su Testi** (`Test/d300_only.py`):
+```bash
+# Tatlı su için havada kalibrasyon
+python Test/d300_only.py --rho 997 --calib 6
+```
 
 ## 📞 İletişim
 

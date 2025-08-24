@@ -41,34 +41,69 @@ class SaraMainController:
         
         self.logger.info("SARA Ana Kontrolcü başlatıldı")
         
-    def setup_mavlink(self):
-        """MAVLink bağlantısını kur"""
+    def setup_mavlink(self, retries=5):
+        """MAVLink bağlantısını güvenilir şekilde kur"""
         self.logger.info("MAVLink bağlantısı kuruluyor...")
         
+        for attempt in range(retries):
+            try:
+                self.logger.info(f"Bağlantı denemesi {attempt+1}/{retries}")
+                
+                # Port seçimi (Linux/Windows uyumlu)
+                port = MAVLINK_PORT
+                if sys.platform.startswith('win'):
+                    port = MAVLINK_PORT_WIN
+                    
+                self.mavlink = mavutil.mavlink_connection(port, baud=MAVLINK_BAUD)
+                
+                # Heartbeat bekle
+                self.logger.info("Heartbeat bekleniyor...")
+                if not self.mavlink.wait_heartbeat(timeout=15):
+                    raise Exception("Pixhawk heartbeat alınamadı!")
+                    
+                self.logger.info("✓ MAVLink bağlantısı başarılı")
+                self.logger.info(f"  Sistem ID: {self.mavlink.target_system}")
+                self.logger.info(f"  Bileşen ID: {self.mavlink.target_component}")
+                
+                # Sensör bağlantısını test et
+                if self._test_sensor_connectivity():
+                    # Veri akışı istekleri
+                    self._request_data_streams()
+                    return True
+                else:
+                    raise Exception("Sensör bağlantı testi başarısız")
+                    
+            except Exception as e:
+                self.logger.warning(f"Bağlantı denemesi {attempt+1} başarısız: {e}")
+                if attempt < retries - 1:
+                    self.logger.info("2 saniye sonra yeniden denenecek...")
+                    time.sleep(2)
+                    
+        self.logger.error("❌ MAVLink bağlantısı kurulamadı!")
+        return False
+        
+    def _test_sensor_connectivity(self):
+        """Sensör bağlantısını test et"""
         try:
-            # Port seçimi (Linux/Windows uyumlu)
-            port = MAVLINK_PORT
-            if sys.platform.startswith('win'):
-                port = MAVLINK_PORT_WIN
-                
-            self.mavlink = mavutil.mavlink_connection(port, baud=MAVLINK_BAUD)
+            # D300 sensörü için hızlı test
+            sensors = SensorManager(self.mavlink, self.logger)
+            time.sleep(1)  # Sensörlerin hazırlanması için bekle
             
-            # Heartbeat bekle
-            if not self.mavlink.wait_heartbeat(timeout=15):
-                self.logger.error("HATA: Pixhawk heartbeat alınamadı!")
-                return False
-                
-            self.logger.info("✓ MAVLink bağlantısı başarılı")
-            self.logger.info(f"  Sistem ID: {self.mavlink.target_system}")
-            self.logger.info(f"  Bileşen ID: {self.mavlink.target_component}")
+            # D300 test
+            depth_data = sensors.depth.read_raw_data()
+            d300_ok = depth_data[0] is not None
             
-            # Veri akışı istekleri
-            self._request_data_streams()
+            # Attitude test
+            attitude_data = sensors.attitude.get_attitude(timeout=2.0)
+            attitude_ok = attitude_data is not None
             
-            return True
+            self.logger.info(f"Sensör testi: D300={d300_ok}, Attitude={attitude_ok}")
+            
+            # En azından D300 çalışmalı
+            return d300_ok
             
         except Exception as e:
-            self.logger.error(f"MAVLink bağlantı hatası: {e}")
+            self.logger.error(f"Sensör bağlantı testi hatası: {e}")
             return False
             
     def _request_data_streams(self):
@@ -129,7 +164,6 @@ class SaraMainController:
         
         countdown_start = time.time()
         last_announce = 0
-        calibration_done = False
         
         while time.time() - countdown_start < ARMING_DELAY_SECONDS:
             if not self.system_running:
@@ -151,11 +185,6 @@ class SaraMainController:
                 self.system_status.buzzer.beep(0.5)
                 time.sleep(2)
                 return False
-                
-            # Kalibrasyon işlemlerini yap (sadece bir kez)
-            if not calibration_done and elapsed > 5:  # 5 saniye sonra başla
-                self._perform_calibrations()
-                calibration_done = True
                 
             time.sleep(0.1)
             
@@ -191,6 +220,97 @@ class SaraMainController:
                 
         except Exception as e:
             self.logger.error(f"Kalibrasyon hatası: {e}")
+            
+    def _perform_startup_calibrations(self):
+        """Sistem başlangıcında yapılacak otomatik kalibrasyonlar (kart kıpırdamaz)"""
+        self.logger.info("🔧 Başlangıç kalibrasyonları başlıyor...")
+        
+        try:
+            # Sensör yöneticisini başlat
+            sensors = SensorManager(self.mavlink, self.logger)
+            
+            # 1. Gyroscope kalibrasyonu (kart hareketsiz)
+            self.logger.info("📐 Gyroscope kalibrasyonu yapılıyor...")
+            self._calibrate_gyroscope()
+            
+            # 2. Barometer kalibrasyonu (kart hareketsiz)  
+            self.logger.info("🌡️ Barometer kalibrasyonu yapılıyor...")
+            self._calibrate_barometer()
+            
+            # 3. D300 derinlik sensörü kalibrasyonu (havada)
+            self.logger.info("🌊 D300 derinlik sensörü kalibrasyonu...")
+            d300_success = sensors.depth.calibrate_surface(
+                duration=D300_CALIB_DURATION_SEAWATER, 
+                use_water_surface=False  # Havada kalibrasyon
+            )
+            
+            if d300_success:
+                self.logger.info("✅ D300 kalibrasyonu tamamlandı")
+            else:
+                self.logger.warning("⚠️ D300 kalibrasyonu başarısız")
+                
+            self.logger.info("✅ Tüm başlangıç kalibrasyonları tamamlandı")
+            
+        except Exception as e:
+            self.logger.error(f"Başlangıç kalibrasyon hatası: {e}")
+            
+    def _calibrate_gyroscope(self):
+        """Gyroscope kalibrasyonu - kart hareketsiz"""
+        try:
+            self.logger.info("Gyroscope kalibrasyonu: 10 saniye hareketsiz bekleyin...")
+            
+            # Gyroscope bias hesaplama
+            gyro_samples = []
+            start_time = time.time()
+            
+            while time.time() - start_time < 10.0:  # 10 saniye
+                # SCALED_IMU mesajından gyroscope verisi al
+                msg = self.mavlink.recv_match(type='SCALED_IMU', blocking=False, timeout=0.1)
+                if msg:
+                    gyro_samples.append({
+                        'x': msg.xgyro,  # mrad/s
+                        'y': msg.ygyro,
+                        'z': msg.zgyro
+                    })
+                time.sleep(0.05)
+                
+            if len(gyro_samples) > 50:
+                # Ortalama bias hesapla
+                gyro_bias_x = sum(s['x'] for s in gyro_samples) / len(gyro_samples)
+                gyro_bias_y = sum(s['y'] for s in gyro_samples) / len(gyro_samples)
+                gyro_bias_z = sum(s['z'] for s in gyro_samples) / len(gyro_samples)
+                
+                self.logger.info(f"✅ Gyroscope bias: X={gyro_bias_x:.2f}, Y={gyro_bias_y:.2f}, Z={gyro_bias_z:.2f} mrad/s")
+            else:
+                self.logger.warning("⚠️ Gyroscope kalibrasyon verisi yetersiz")
+                
+        except Exception as e:
+            self.logger.error(f"Gyroscope kalibrasyon hatası: {e}")
+            
+    def _calibrate_barometer(self):
+        """Barometer kalibrasyonu - kart hareketsiz"""
+        try:
+            self.logger.info("Barometer kalibrasyonu: 5 saniye bekleyin...")
+            
+            pressure_samples = []
+            start_time = time.time()
+            
+            while time.time() - start_time < 5.0:  # 5 saniye
+                # SCALED_PRESSURE mesajından basınç verisi al
+                msg = self.mavlink.recv_match(type='SCALED_PRESSURE', blocking=False, timeout=0.1)
+                if msg:
+                    pressure_samples.append(msg.press_abs)  # hPa/mbar
+                time.sleep(0.1)
+                
+            if len(pressure_samples) > 20:
+                # Ortalama referans basınç
+                ref_pressure = sum(pressure_samples) / len(pressure_samples)
+                self.logger.info(f"✅ Barometer referans basınç: {ref_pressure:.2f} mbar")
+            else:
+                self.logger.warning("⚠️ Barometer kalibrasyon verisi yetersiz")
+                
+        except Exception as e:
+            self.logger.error(f"Barometer kalibrasyon hatası: {e}")
             
     def select_mission(self):
         """Görev seçimi (gelecekte genişletilebilir)"""
@@ -258,6 +378,10 @@ class SaraMainController:
             if not self.setup_mavlink():
                 self.logger.error("❌ MAVLink bağlantısı kurulamadı!")
                 return False
+                
+            # Sistem başlangıç kalibrasyonlarını yap (OTOMATIK)
+            self.logger.info("🔧 Sistem başlangıç kalibrasyonları yapılıyor...")
+            self._perform_startup_calibrations()
                 
             # Ana döngü
             mission_count = 0

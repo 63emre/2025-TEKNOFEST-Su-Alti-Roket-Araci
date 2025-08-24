@@ -7,101 +7,182 @@ D300 derinlik sensörü ve Pixhawk MAVLink telemetri fonksiyonları
 
 import time
 import math
-import smbus2
+import statistics
+from collections import deque
 from pymavlink import mavutil
 from config import *
 from utils import Logger
 
 class DepthSensor:
     """D300 Derinlik Sensörü Sınıfı
-    I2C üzerinden basınç ve sıcaklık okuması yapar
+    MAVLink SCALED_PRESSURE mesajları üzerinden basınç ve sıcaklık okuması yapar
     """
     
-    def __init__(self, logger=None):
-        self.bus = None
-        self.address = D300_I2C_ADDRESS
-        self.pressure_offset = None
-        self.temperature_offset = None
+    # D300 mesaj kaynaklarına göre mesaj tanımları
+    MSG_NAME_BY_SRC = {2: 'SCALED_PRESSURE2', 3: 'SCALED_PRESSURE3'}
+    MSG_ID_BY_SRC = {2: 137, 3: 142}
+    
+    def __init__(self, mavlink_connection, logger=None, src=None):
+        self.mavlink = mavlink_connection
+        self.src = src or D300_SOURCE
+        self.msg_name = self.MSG_NAME_BY_SRC[self.src]
+        self.msg_id = self.MSG_ID_BY_SRC[self.src]
+        
+        self.pressure_offset = None  # Yüzey basıncı (P0)
         self.logger = logger or Logger()
         
-        self._init_i2c()
+        # Derinlik hesaplama parametreleri (DENİZ SUYU - GÖREVLER DENİZDE)
+        self.water_density = D300_SEAWATER_DENSITY  # kg/m³ (deniz suyu)
+        self.gravity = D300_GRAVITY  # m/s²
         
-    def _init_i2c(self):
-        """I2C bağlantısını başlat"""
+        # Medyan filtre için kuyruk
+        self.pressure_queue = deque(maxlen=5)
+        
+        # Veri geçerlilik kontrolleri
+        self.pressure_min = 700.0   # mbar
+        self.pressure_max = 1200.0  # mbar
+        self.temp_min = -5.0        # °C
+        self.temp_max = 60.0        # °C
+        
+        # FALLBACK SİSTEMİ
+        self.last_valid_depth = None
+        self.last_valid_pressure = None
+        self.last_valid_time = None
+        self.connection_lost_time = None
+        self.is_connected = True
+        self.consecutive_failures = 0
+        self.max_failures_before_disconnect = 10  # 10 başarısız okuma sonrası bağlantı kesildi kabul et
+        
+        self._request_data_stream()
+        self.logger.info(f"D300 sensörü MAVLink {self.msg_name} üzerinden başlatıldı")
+        
+    def _request_data_stream(self):
+        """D300 veri akışını iste"""
         try:
-            self.bus = smbus2.SMBus(D300_I2C_BUS)
-            self.logger.info(f"D300 sensörü I2C bus {D300_I2C_BUS} üzerinde başlatıldı")
+            interval_us = int(1_000_000 / D300_DATA_RATE_HZ)
+            self.mavlink.mav.command_long_send(
+                self.mavlink.target_system,
+                self.mavlink.target_component,
+                mavutil.mavlink.MAV_CMD_SET_MESSAGE_INTERVAL,
+                0, self.msg_id, interval_us, 0, 0, 0, 0, 0
+            )
         except Exception as e:
-            self.logger.error(f"I2C başlatma hatası: {e}")
-            self.bus = None
+            self.logger.warning(f"D300 veri akışı isteği başarısız: {e}")
             
     def read_raw_data(self):
-        """Ham sensör verisi oku"""
-        if not self.bus:
-            return None, None
-            
+        """Ham D300 sensör verisi oku"""
         try:
-            # D300 sensörü için basit okuma (sensör protokolüne göre ayarlanabilir)
-            # Bu örnek genel bir I2C okuma, gerçek D300 protokolü farklı olabilir
-            pressure_data = self.bus.read_i2c_block_data(self.address, 0x00, 4)
-            temp_data = self.bus.read_i2c_block_data(self.address, 0x04, 4)
+            msg = self.mavlink.recv_match(type=self.msg_name, blocking=False, timeout=0.1)
+            if msg is None:
+                self.consecutive_failures += 1
+                self._check_connection_status()
+                return None, None
+                
+            # Basınç ve sıcaklık verilerini al
+            pressure_mbar = float(msg.press_abs)  # hPa = mbar
+            temperature_c = float(msg.temperature) / 100.0  # Celsius
             
-            # Big-endian 32-bit değer olarak yorumla
-            pressure_raw = (pressure_data[0] << 24 | pressure_data[1] << 16 | 
-                           pressure_data[2] << 8 | pressure_data[3])
-            temp_raw = (temp_data[0] << 24 | temp_data[1] << 16 | 
-                       temp_data[2] << 8 | temp_data[3])
-            
-            # mbar ve Celsius'a çevir (sensör spesifikasyonuna göre)
-            pressure_mbar = pressure_raw / 100.0
-            temperature_c = temp_raw / 100.0
-            
+            # Veri geçerlilik kontrolü
+            if not (self.pressure_min <= pressure_mbar <= self.pressure_max):
+                self.consecutive_failures += 1
+                self._check_connection_status()
+                return None, None
+            if not (self.temp_min <= temperature_c <= self.temp_max):
+                self.consecutive_failures += 1
+                self._check_connection_status()
+                return None, None
+                
+            # Başarılı okuma
+            self.consecutive_failures = 0
+            self.last_valid_pressure = pressure_mbar
+            self.last_valid_time = time.time()
+            if not self.is_connected:
+                self.is_connected = True
+                self.connection_lost_time = None
+                self.logger.info("✅ D300 sensör bağlantısı yeniden kuruldu")
+                
             return pressure_mbar, temperature_c
             
         except Exception as e:
+            self.consecutive_failures += 1
+            self._check_connection_status()
             self.logger.error(f"D300 sensör okuma hatası: {e}")
             return None, None
-    
-    def calibrate_surface(self, samples=10):
-        """Yüzey basıncını kalibre et"""
-        self.logger.info("D300 yüzey kalibrasyonu başlatılıyor...")
+            
+    def _check_connection_status(self):
+        """Bağlantı durumunu kontrol et ve güncelle"""
+        if self.consecutive_failures >= self.max_failures_before_disconnect:
+            if self.is_connected:
+                self.is_connected = False
+                self.connection_lost_time = time.time()
+                self.logger.error(f"❌ D300 sensör bağlantısı kesildi! ({self.consecutive_failures} başarısız okuma)")
+                
+    def get_depth_safe(self, mission_phase=None):
+        """Güvenli derinlik ölçümü - fallback mekanizmalı
+        Args:
+            mission_phase: Görev fazı ("PHASE_1", "PHASE_2", vb.)
+        Returns:
+            tuple: (depth_meters, connection_status, fallback_used)
+        """
+        pressure, _ = self.read_raw_data()
         
-        pressure_readings = []
-        temp_readings = []
+        if pressure is not None and self.pressure_offset is not None:
+            # Normal derinlik hesaplama
+            self.pressure_queue.append(pressure)
+            if len(self.pressure_queue) >= 3:
+                filtered_pressure = statistics.median(self.pressure_queue)
+            else:
+                filtered_pressure = pressure
+                
+            depth = self._calculate_depth(filtered_pressure)
+            self.last_valid_depth = depth
+            return depth, "CONNECTED", False
+            
+        # D300 verisi yok - fallback durumu
+        if mission_phase == "PHASE_1":
+            # İlk 10m içinde D300 kesilirse emergency
+            self.logger.critical("🚨 FAZ 1'DE D300 SENSÖRü KESTİ - ACİL DURUM PROSEDÜRÜ!")
+            return None, "EMERGENCY_PHASE1", True
+            
+        # Diğer fazlarda fallback ile devam et
+        if self.last_valid_depth is not None:
+            # Son geçerli derinliği kullan
+            connection_lost_duration = time.time() - (self.connection_lost_time or time.time())
+            self.logger.warning(f"⚠️ D300 fallback: Son geçerli derinlik kullanılıyor: {self.last_valid_depth:.2f}m "
+                              f"(Bağlantı kesildi: {connection_lost_duration:.1f}s önce)")
+            return self.last_valid_depth, "FALLBACK", True
+            
+        # Hiç veri yok
+        self.logger.error("❌ D300 fallback başarısız: Hiç geçerli veri yok!")
+        return None, "NO_DATA", True
         
-        for i in range(samples):
-            pressure, temperature = self.read_raw_data()
-            if pressure is not None and temperature is not None:
-                pressure_readings.append(pressure)
-                temp_readings.append(temperature)
-                self.logger.debug(f"Kalibrasyon {i+1}/{samples}: {pressure:.2f} mbar, {temperature:.1f}°C")
-            time.sleep(0.1)
+    def _calculate_depth(self, pressure_mbar):
+        """Basınçtan derinlik hesaplama"""
+        if self.pressure_offset is None:
+            return None
+            
+        # Derinlik hesaplama: h = (P - P0) * 100 / (ρ * g)
+        # P, P0: mbar → Pa için *100, ρ: kg/m³, g: m/s²
+        pressure_diff_pa = (pressure_mbar - self.pressure_offset) * 100.0
+        depth = pressure_diff_pa / (self.water_density * self.gravity)
         
-        if pressure_readings:
-            self.pressure_offset = sum(pressure_readings) / len(pressure_readings)
-            self.temperature_offset = sum(temp_readings) / len(temp_readings)
-            self.logger.info(f"Kalibrasyon tamamlandı - Yüzey basıncı: {self.pressure_offset:.2f} mbar, Sıcaklık: {self.temperature_offset:.1f}°C")
-            return True
-        else:
-            self.pressure_offset = 1013.25  # Standart atmosfer basıncı
-            self.temperature_offset = 20.0   # Varsayılan sıcaklık
-            self.logger.warning("Kalibrasyon başarısız, standart değerler kullanılıyor")
-            return False
+        return max(0.0, depth)  # Negatif derinlik olmasın
     
     def get_depth(self):
-        """Derinlik ölçümü (metre)"""
+        """Derinlik ölçümü (metre) - Standart versiyon"""
         pressure, _ = self.read_raw_data()
         
         if pressure is None or self.pressure_offset is None:
             return None
             
-        # Basınç farkından derinlik hesaplama
-        # 1 mbar ≈ 0.01 m su derinliği (yaklaşık)
-        # Daha hassas: 1 metre su = 98.0665 mbar
-        pressure_diff = pressure - self.pressure_offset
-        depth = pressure_diff * 0.0101972  # mbar to metre çevirme faktörü
-        
-        return max(0, depth)  # Negatif derinlik olmasın
+        # Medyan filtre uygula
+        self.pressure_queue.append(pressure)
+        if len(self.pressure_queue) >= 3:
+            filtered_pressure = statistics.median(self.pressure_queue)
+        else:
+            filtered_pressure = pressure
+            
+        return self._calculate_depth(filtered_pressure)
         
     def get_temperature(self):
         """Sıcaklık ölçümü (Celsius)"""
@@ -121,15 +202,26 @@ class DepthSensor:
         }
         
     def is_connected(self):
-        """Sensör bağlı mı kontrol et"""
+        """D300 sensörü bağlı mı kontrol et"""
         try:
-            if not self.bus:
-                return False
-            # Basit okuma testi
-            self.bus.read_byte(self.address)
-            return True
+            # Son 2 saniye içinde veri alabildiysek bağlı sayılır
+            pressure, temperature = self.read_raw_data()
+            return pressure is not None and temperature is not None
         except:
             return False
+            
+    def set_water_density(self, density):
+        """Su yoğunluğunu ayarla (deniz suyu: 1025, tatlı su: 997 kg/m³)"""
+        self.water_density = density
+        self.logger.info(f"Su yoğunluğu ayarlandı: {density} kg/m³")
+        
+    def get_water_info(self):
+        """Su ortamı bilgilerini döndür"""
+        return {
+            'density': self.water_density,
+            'type': 'deniz suyu' if self.water_density >= 1020 else 'tatlı su',
+            'gravity': self.gravity
+        }
 
 class AttitudeSensor:
     """Pixhawk MAVLink Attitude Sensörü
@@ -253,20 +345,40 @@ class SensorManager:
         self.mavlink = mavlink_connection
         
         # Sensörleri başlat
-        self.depth = DepthSensor(self.logger)
+        self.depth = DepthSensor(mavlink_connection, self.logger)
         self.attitude = AttitudeSensor(mavlink_connection, self.logger)
         self.system = SystemSensor(mavlink_connection, self.logger)
         
         self.logger.info("Sensör yöneticisi başlatıldı")
         
-    def calibrate_all(self):
-        """Tüm sensörleri kalibre et"""
+    def calibrate_all(self, use_water_surface_calib=None):
+        """Tüm sensörleri kalibre et
+        
+        Args:
+            use_water_surface_calib: True=su yüzeyinde, False=havada, None=config'den al
+        """
         self.logger.info("Sensör kalibrasyonu başlatılıyor...")
         
         results = {}
         
-        # Derinlik sensörü kalibrasyonu
-        results['depth'] = self.depth.calibrate_surface()
+        # D300 derinlik sensörü kalibrasyonu
+        water_info = self.depth.get_water_info()
+        self.logger.info(f"Kalibrasyon ortamı: {water_info['type']} (ρ={water_info['density']} kg/m³)")
+        
+        # Su yüzeyinde tutma ayarını belirle
+        if use_water_surface_calib is None:
+            use_water_surface_calib = D300_USE_WATER_SURFACE_CALIB
+            
+        calib_method_str = "su yüzeyinde tutarak" if use_water_surface_calib else "havada"
+        self.logger.info(f"D300 kalibrasyon metodu: {calib_method_str}")
+        
+        # Kalibrasyon süresini su türüne göre ayarla
+        duration = D300_CALIB_DURATION_SEAWATER if water_info['density'] >= 1020 else D300_CALIB_DURATION_FRESHWATER
+        
+        results['depth'] = self.depth.calibrate_surface(
+            duration=duration,
+            use_water_surface=use_water_surface_calib
+        )
         
         # Attitude referans ayarlama
         self.attitude.set_yaw_reference()
@@ -280,6 +392,10 @@ class SensorManager:
         total_count = len(results)
         
         self.logger.info(f"Kalibrasyon tamamlandı: {success_count}/{total_count} sensör başarılı")
+        
+        # Özel durumlar için ek bilgi
+        if results['depth'] and not use_water_surface_calib:
+            self.logger.info(f"ℹ️ D300 havada kalibre edildi - {water_info['type']} derinlik hesaplamaları için hazır")
         
         return results
         
@@ -315,12 +431,13 @@ class SensorManager:
         health = self.check_sensor_health()
         data = self.get_all_sensor_data()
         
-        # Derinlik sensörü
+        # D300 derinlik sensörü
         if data['depth']['is_valid']:
-            self.logger.info(f"Derinlik: {data['depth']['depth_m']:.2f}m, "
-                           f"Basınç: {data['depth']['pressure_mbar']:.1f}mbar")
+            self.logger.info(f"D300 Derinlik: {data['depth']['depth_m']:.3f}m, "
+                           f"Basınç: {data['depth']['pressure_mbar']:.1f}mbar, "
+                           f"Sıcaklık: {data['depth']['temperature_c']:.1f}°C")
         else:
-            self.logger.warning("Derinlik sensörü verisi geçersiz")
+            self.logger.warning("D300 sensörü verisi geçersiz")
             
         # Attitude sensörü
         if data['attitude']:

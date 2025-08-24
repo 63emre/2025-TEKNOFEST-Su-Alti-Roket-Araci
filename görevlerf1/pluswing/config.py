@@ -7,7 +7,7 @@ Deneme.txt belgesine göre hazırlanmıştır.
 
 # ---- MAVLink Bağlantı Ayarları ----
 MAVLINK_PORT = "/dev/ttyACM0"  # Pixhawk USB bağlantısı (Linux)
-MAVLINK_PORT_WIN = "COM3"      # Windows için alternatif
+MAVLINK_PORT_WIN = "COM5"      # Windows için alternatif
 MAVLINK_BAUD = 115200
 
 # ---- Servo ve Motor Kanalları ----
@@ -38,9 +38,19 @@ MOTOR_FORWARD_MAX = 1900
 MOTOR_REVERSE_MIN = 1450
 MOTOR_REVERSE_MAX = 1100
 
-# ---- D300 Derinlik Sensörü ----
-D300_I2C_ADDRESS = 0x76
-D300_I2C_BUS = 1
+# ---- D300 Derinlik Sensörü (MAVLink) ----
+# D300 Pixhawk'a bağlı, MAVLink SCALED_PRESSURE mesajları üzerinden veri alınır
+D300_SOURCE = 2                    # 2=SCALED_PRESSURE2, 3=SCALED_PRESSURE3
+D300_DATA_RATE_HZ = 10            # Veri alma hızı (Hz)
+D300_SEAWATER_DENSITY = 1025.0    # Deniz suyu yoğunluğu (kg/m³) - GÖREVLER DENİZDE
+D300_FRESHWATER_DENSITY = 997.0   # Tatlı su yoğunluğu (kg/m³)
+D300_GRAVITY = 9.81               # Yerçekimi (m/s²)
+
+# ---- D300 Kalibrasyon Ayarları ----
+# Su yüzeyinde tutmadan kalibrasyon için
+D300_CALIB_DURATION_SEAWATER = 6   # Deniz suyu kalibrasyonu süresi (saniye)
+D300_CALIB_DURATION_FRESHWATER = 6 # Tatlı su kalibrasyonu süresi (saniye)
+D300_USE_WATER_SURFACE_CALIB = False  # True: Su yüzeyinde tut, False: Havada kalibre et
 
 # ---- Güvenlik Zamanları ----
 ARMING_DELAY_SECONDS = 90    # 90 saniye arming gecikmesi

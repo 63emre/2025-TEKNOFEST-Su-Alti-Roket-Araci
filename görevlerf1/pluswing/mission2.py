@@ -120,8 +120,8 @@ class Mission2Controller:
         self.logger.info("Görev 2 başlangıç hazırlıkları...")
         
         try:
-            # Sensör kalibrasyonu
-            calibration_results = self.sensors.calibrate_all()
+            # Sensör kalibrasyonu (havada - su yüzeyinde tutmadan)
+            calibration_results = self.sensors.calibrate_all(use_water_surface_calib=False)
             
             if not all(calibration_results.values()):
                 self.logger.warning("Bazı sensörler kalibre edilemedi!")
@@ -221,7 +221,7 @@ class Mission2Controller:
                 approach_distance = estimated_distance
                 self.total_distance_traveled = estimated_distance
                 
-                # Durum raporu
+                # Durum raporu (D300 sensöründen)
                 sensor_data = self.sensors.get_all_sensor_data()
                 current_depth = sensor_data['depth']['depth_m'] if sensor_data['depth']['is_valid'] else None
                 depth_str = f"{current_depth:.1f}m" if current_depth else "N/A"

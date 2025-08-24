@@ -38,6 +38,10 @@ class Mission1Controller:
         self.phase_distance = 0.0
         self.current_speed_pwm = MOTOR_STOP
         
+        # Mesafe düzeltmesi için yeni değişkenler
+        self.phase1_actual_distance = 0.0  # Faz 1'de gerçekte gidilen mesafe
+        self.phase2_actual_distance = 0.0  # Faz 2'de gerçekte gidilen mesafe
+        
         self.logger.info("Görev 1 kontrolcüsü başlatıldı")
         
     def initialize_mission(self):
@@ -45,8 +49,8 @@ class Mission1Controller:
         self.logger.info("Görev 1 başlangıç hazırlıkları...")
         
         try:
-            # Sensör kalibrasyonu
-            calibration_results = self.sensors.calibrate_all()
+            # Sensör kalibrasyonu (havada - su yüzeyinde tutmadan)
+            calibration_results = self.sensors.calibrate_all(use_water_surface_calib=False)
             
             if not all(calibration_results.values()):
                 self.logger.warning("Bazı sensörler kalibre edilemedi!")
@@ -145,19 +149,28 @@ class Mission1Controller:
                 self.phase_distance = estimated_distance
                 self.total_distance_traveled = estimated_distance
                 
-                # Durum raporu
-                sensor_data = self.sensors.get_all_sensor_data()
-                current_depth = sensor_data['depth']['depth_m'] if sensor_data['depth']['is_valid'] else None
+                # Durum raporu (D300 sensöründen güvenli okuma)
+                depth_result = self.sensors.depth.get_depth_safe("PHASE_1")
+                current_depth, connection_status, fallback_used = depth_result
+                
+                # Faz 1'de D300 kesilirse acil durum
+                if connection_status == "EMERGENCY_PHASE1":
+                    self.logger.critical("🚨 FAZ 1'DE D300 KESİNTİSİ - ACİL DURUM!")
+                    self._emergency_phase1_abort()
+                    return False
+                
                 depth_str = f"{current_depth:.1f}m" if current_depth else "N/A"
+                status_indicator = "⚠️" if fallback_used else "✅"
                 
                 self.logger.info(f"Faz 1 - Mesafe: {estimated_distance:.1f}m/{target_distance}m, "
-                               f"Derinlik: {depth_str}/{target_depth}m")
+                               f"Derinlik: {depth_str}/{target_depth}m {status_indicator}")
                 
                 last_distance_check = current_time
                 
             # Hedef mesafeye ulaştık mı?
             if self.phase_distance >= target_distance:
-                self.logger.info(f"✓ Faz 1 tamamlandı: {self.phase_distance:.1f}m")
+                self.phase1_actual_distance = self.phase_distance  # Gerçek mesafeyi kaydet
+                self.logger.info(f"✓ Faz 1 tamamlandı: {self.phase1_actual_distance:.1f}m")
                 break
                 
             # Zaman aşımı kontrolü
@@ -177,8 +190,10 @@ class Mission1Controller:
         
         # Hedef değerleri ayarla
         target_depth = TARGET_DEPTH_MAIN
-        remaining_distance = MISSION_DISTANCE - FIRST_PHASE_DISTANCE
+        remaining_distance = MISSION_DISTANCE - self.phase1_actual_distance  # Gerçek Faz 1 mesafesini çıkar
         speed_pwm = get_speed_for_phase(MissionPhase.PHASE_2)
+        
+        self.logger.info(f"Faz 2 hedefi: {remaining_distance:.1f}m (Faz 1 gerçek: {self.phase1_actual_distance:.1f}m)")
         
         self.stabilizer.set_target_depth(target_depth)
         self.current_speed_pwm = speed_pwm
@@ -206,9 +221,29 @@ class Mission1Controller:
                 phase_time = self.phase_timer.elapsed()
                 estimated_distance = estimate_distance(speed_pwm, phase_time)
                 phase_2_distance = estimated_distance
+                self.total_distance_traveled = self.phase1_actual_distance + phase_2_distance
+                
+                # D300 güvenli okuma (diğer fazlarda fallback devam eder)
+                depth_result = self.sensors.depth.get_depth_safe("PHASE_2")
+                current_depth, connection_status, fallback_used = depth_result
+                
+                depth_str = f"{current_depth:.1f}m" if current_depth else "N/A"
+                status_indicator = "⚠️" if fallback_used else "✅"
+                
+                self.logger.info(f"Faz 2 - Mesafe: {phase_2_distance:.1f}m/{remaining_distance:.1f}m, "
+                               f"Derinlik: {depth_str}/{target_depth}m {status_indicator}")
+                
+                last_distance_check = current_time
+                
+            # Hedef mesafeye ulaştık mı?
+            if phase_2_distance >= remaining_distance:
+                self.phase2_actual_distance = phase_2_distance  # Gerçek mesafeyi kaydet
+                self.logger.info(f"✓ Faz 2 tamamlandı: {self.phase2_actual_distance:.1f}m")
+                break
+                phase_2_distance = estimated_distance
                 self.total_distance_traveled = FIRST_PHASE_DISTANCE + estimated_distance
                 
-                # Durum raporu
+                # Durum raporu (D300 sensöründen)
                 sensor_data = self.sensors.get_all_sensor_data()
                 current_depth = sensor_data['depth']['depth_m'] if sensor_data['depth']['is_valid'] else None
                 depth_str = f"{current_depth:.1f}m" if current_depth else "N/A"
@@ -261,8 +296,11 @@ class Mission1Controller:
         
         # Hedef değerleri ayarla
         target_depth = TARGET_DEPTH_MAIN
-        return_distance = MISSION_DISTANCE  # Aynı mesafeyi geri git
+        # Gerçek gidilen mesafeyi kullan (phase1 + phase2)
+        return_distance = self.phase1_actual_distance + self.phase2_actual_distance
         speed_pwm = get_speed_for_phase(MissionPhase.RETURN)
+        
+        self.logger.info(f"Geri dönüş hedefi: {return_distance:.1f}m (Faz1: {self.phase1_actual_distance:.1f}m + Faz2: {self.phase2_actual_distance:.1f}m)")
         
         self.stabilizer.set_target_depth(target_depth)
         self.current_speed_pwm = speed_pwm
@@ -291,7 +329,7 @@ class Mission1Controller:
                 estimated_distance = estimate_distance(speed_pwm, phase_time)
                 return_distance_traveled = estimated_distance
                 
-                # Durum raporu
+                # Durum raporu (D300 sensöründen)
                 sensor_data = self.sensors.get_all_sensor_data()
                 current_depth = sensor_data['depth']['depth_m'] if sensor_data['depth']['is_valid'] else None
                 depth_str = f"{current_depth:.1f}m" if current_depth else "N/A"
@@ -334,22 +372,61 @@ class Mission1Controller:
             self.logger.warning("Yüzeye çıkış problemi")
             return True  # Kritik hata değil
             
-    def _emergency_abort(self):
-        """Acil durum iptal prosedürü"""
-        self.logger.error("🚨 GÖREV 1 ACİL İPTAL!")
+    def _emergency_phase1_abort(self):
+        """Faz 1'de D300 kesilmesi durumunda acil durum prosedürü"""
+        self.logger.critical("🚨 FAZ 1 ACİL DURUM: D300 sensör kesildi!")
         
         try:
-            # Stabilizasyonu durdur
-            self.stabilizer.emergency_stop()
+            # 1. Motoru durdur
+            self.motion.stop()
+            self.logger.info("✓ Motor durduruldu")
             
-            # Sistem durumunu acil duruma geçir
+            # 2. 180° yaw verip kendini kapat
+            self.logger.info("Acil durum 180° dönüş başlatılıyor...")
+            emergency_turn_success = self.stabilizer.emergency_180_turn(timeout=30)
+            
+            if emergency_turn_success:
+                self.logger.info("✓ Acil durum dönüş tamamlandı")
+            else:
+                self.logger.warning("⚠️ Acil durum dönüş başarısız")
+            
+            # 3. Stabilizasyonu durdur
+            self.stabilizer.disable_stabilization()
+            
+            # 4. Sistemde acil durum işaretle
             self.system_status.emergency_stop()
             
+            # 5. Görev başarısız olarak işaretle
             self.mission_completed = True
             self.mission_success = False
+            self.current_phase = MissionPhase.EMERGENCY
+            
+            self.logger.critical("❌ GÖREV 1 ACİL DURUM NEDENİYLE SONLANDIRILDI")
             
         except Exception as e:
-            self.logger.error(f"Acil iptal prosedürü hatası: {e}")
+            self.logger.error(f"Acil durum prosedürü hatası: {e}")
+            
+    def _emergency_abort(self):
+        """Genel acil durum prosedürü"""
+        self.logger.error("🚨 ACİL DURUM - Görev iptal ediliyor!")
+        
+        try:
+            # Motoru durdur
+            self.motion.stop()
+            
+            # Stabilizasyonu durdur
+            self.stabilizer.disable_stabilization()
+            
+            # Sistem durumunu ayarla
+            self.system_status.emergency_stop()
+            
+            # Görev durumunu ayarla
+            self.mission_completed = True
+            self.mission_success = False
+            self.current_phase = MissionPhase.EMERGENCY
+            
+        except Exception as e:
+            self.logger.error(f"Acil durum prosedürü hatası: {e}")
             
     def get_mission_status(self):
         """Görev durumu raporu"""

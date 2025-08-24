@@ -256,10 +256,34 @@ class Timer:
         return self.start_time is not None and self.pause_time is None
 
 class Logger:
-    """Basit loglama sınıfı"""
+    """Gelişmiş loglama sınıfı - Raspberry Pi bağlantı durumuna göre loglama"""
     
     def __init__(self, log_file=None):
         self.log_file = log_file
+        self.buffer = []  # Bağlantı yokken kritik logları buffer'a ekle
+        self.max_buffer_size = 100
+        self.connected = self._check_pi_connection()
+        
+    def _check_pi_connection(self):
+        """Raspberry Pi bağlantı durumunu kontrol et"""
+        try:
+            # Basit network check - Pi'ye SSH bağlantısı var mı
+            import socket
+            import os
+            # Pi üzerinde çalışıyorsak dosya sistemi kontrolü
+            return os.path.exists('/proc/device-tree/model')
+        except:
+            return False
+            
+    def _add_to_buffer(self, message, level):
+        """Kritik mesajları buffer'a ekle"""
+        if level in ["ERROR", "WARNING", "CRITICAL"]:
+            timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+            self.buffer.append((timestamp, level, message))
+            
+            # Buffer boyutu kontrolü
+            if len(self.buffer) > self.max_buffer_size:
+                self.buffer.pop(0)  # En eski kaydı sil
         
     def log(self, message, level="INFO"):
         """Log mesajı yazdır"""
@@ -268,12 +292,24 @@ class Logger:
         
         print(log_message)
         
-        if self.log_file:
+        if self.connected and self.log_file:
             try:
                 with open(self.log_file, "a", encoding="utf-8") as f:
                     f.write(log_message + "\n")
+                    
+                # Buffer'daki bekleyen logları da yaz
+                if self.buffer:
+                    for buf_time, buf_level, buf_msg in self.buffer:
+                        buf_log = f"[{buf_time}] [BUFFERED-{buf_level}] {buf_msg}"
+                        f.write(buf_log + "\n")
+                    self.buffer.clear()
+                    
             except Exception as e:
                 print(f"Log yazma hatası: {e}")
+                self._add_to_buffer(message, level)
+        else:
+            # Bağlantı yoksa kritik mesajları buffer'a ekle
+            self._add_to_buffer(message, level)
                 
     def info(self, message):
         """Info seviyesi log"""
@@ -290,6 +326,18 @@ class Logger:
     def debug(self, message):
         """Debug seviyesi log"""
         self.log(message, "DEBUG")
+        
+    def critical(self, message):
+        """Critical seviyesi log"""
+        self.log(message, "CRITICAL")
+        
+    def get_buffer_status(self):
+        """Buffer durumunu döndür"""
+        return {
+            'connected': self.connected,
+            'buffer_size': len(self.buffer),
+            'max_buffer_size': self.max_buffer_size
+        }
 
 class SystemStatus:
     """Sistem durumu takip sınıfı"""
@@ -376,6 +424,78 @@ def wait_with_button_check(duration, button_controller, logger=None):
         
     return True
 
+def establish_mavlink_connection(connection_string, retries=5, logger=None):
+    """MAVLink bağlantısını güvenilir şekilde kur"""
+    import sys
+    sys.path.append('/usr/local/lib/python3.11/dist-packages')
+    from pymavlink import mavutil
+    
+    for attempt in range(retries):
+        try:
+            if logger:
+                logger.info(f"MAVLink bağlantı denemesi {attempt+1}/{retries}: {connection_string}")
+                
+            mavlink_connection = mavutil.mavlink_connection(connection_string, baud=57600)
+            
+            # Heartbeat bekle
+            if logger:
+                logger.info("Heartbeat bekleniyor...")
+            heartbeat = mavlink_connection.wait_heartbeat(timeout=10)
+            
+            if heartbeat:
+                if logger:
+                    logger.info(f"MAVLink bağlantısı başarılı! Sistem ID: {mavlink_connection.target_system}")
+                return True, mavlink_connection
+            else:
+                raise Exception("Heartbeat alınamadı")
+                
+        except Exception as e:
+            if logger:
+                logger.warning(f"Bağlantı denemesi {attempt+1}/{retries} başarısız: {e}")
+            if attempt < retries - 1:
+                time.sleep(2)
+                
+    if logger:
+        logger.error("MAVLink bağlantısı kurulamadı!")
+    return False, None
+
+def check_sensor_connectivity(sensors, logger=None):
+    """Sensör bağlantı durumunu kontrol et"""
+    connectivity = {
+        'depth_sensor': False,
+        'attitude_sensor': False,
+        'system_sensor': False,
+        'overall_status': False
+    }
+    
+    try:
+        # D300 derinlik sensörü kontrolü
+        if hasattr(sensors, 'depth') and sensors.depth:
+            depth_data = sensors.depth.read_raw_data()
+            connectivity['depth_sensor'] = depth_data is not None
+            
+        # Attitude sensörü kontrolü (Pixhawk içinde)
+        if hasattr(sensors, 'attitude') and sensors.attitude:
+            attitude_data = sensors.attitude.get_attitude(timeout=2.0)
+            connectivity['attitude_sensor'] = attitude_data is not None
+            
+        # Sistem sensörü kontrolü
+        if hasattr(sensors, 'system') and sensors.system:
+            system_data = sensors.system.get_status()
+            connectivity['system_sensor'] = system_data is not None
+            
+        # Genel durum: En azından derinlik sensörü çalışmalı
+        connectivity['overall_status'] = connectivity['depth_sensor']
+        
+        if logger:
+            logger.info(f"Sensör bağlantı durumu: {connectivity}")
+            
+    except Exception as e:
+        if logger:
+            logger.error(f"Sensör bağlantı kontrolü hatası: {e}")
+            
+    return connectivity
+
 def estimate_distance(speed_pwm, elapsed_time):
     """Hız ve zamandan mesafe tahmini
     Args:
@@ -401,6 +521,16 @@ def format_time(seconds):
     minutes = int(seconds // 60)
     seconds = int(seconds % 60)
     return f"{minutes:02d}:{seconds:02d}"
+
+def calculate_return_distance(phase1_distance, phase2_distance):
+    """Geri dönüş mesafesini hesapla
+    Args:
+        phase1_distance: Faz 1'de gidilen mesafe (metre)
+        phase2_distance: Faz 2'de gidilen mesafe (metre)
+    Returns:
+        Geri dönülecek toplam mesafe (metre)
+    """
+    return phase1_distance + phase2_distance
 
 def safe_gpio_cleanup():
     """Güvenli GPIO temizleme"""

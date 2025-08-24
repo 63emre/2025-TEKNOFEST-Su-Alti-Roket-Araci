@@ -1,408 +1,386 @@
 #!/usr/bin/env python3
+# -*- coding: utf-8 -*-
 """
 TEKNOFEST 2025 - Su Altı Roket Aracı
-D300 Derinlik ve Sıcaklık Sensörü Test Scripti
+Pixhawk (COM5) Üzerinden D300 (MS5837 sınıfı) Basınç/Sıcaklık Okuma ve Test Suite
 
-D300 sensörü I2C protokolü ile haberleşir ve hem derinlik hem de su sıcaklığı ölçümü yapar.
-Bu script sensörün doğru çalıştığını ve kalibrasyonunu test eder.
+Bu sürüm D300'ü doğrudan I2C'den okumaz; Pixhawk'ın yayımladığı MAVLink
+SCALED_PRESSURE(29) / SCALED_PRESSURE2(137) / SCALED_PRESSURE3(142) mesajlarını
+kullanarak basınç (mbar) ve sıcaklığı (°C) alır. Yüzey basıncı kalibre edilip
+derinlik P = P0 + ρ g h bağıntısı ile hesaplanır.
 
-Hardware:
-- D300 Derinlik ve Sıcaklık Sensörü
-- I2C bağlantısı (GPIO 2/3 - Raspberry Pi)
-- 0x77 I2C address (default)
+Bağlantı:
+- Windows: COM5 @ 115200 (gerekirse BAUD’u 57600 yapın)
+- ArduSub/ArduPilot üzerinde MS5837/Bar30/D300 benzeri sensör etkin olmalı.
 
-Referans: https://www.mucif.com/urunler/d300-derinlik-ve-su-sicakligi-sensoru
+Menü:
+1) Yüzey Basıncı Kalibrasyonu
+2) Sıcaklık Offset Kalibrasyonu (referans termometre ile)
+3) Doğruluk Testi
+4) Yanıt Süresi Testi
+5) Kararlılık Testi
+6) Canlı Veri Monitörleme
+7) Test Raporu
+0) Çıkış
 """
 
-import smbus2
 import time
 import json
 import math
 import numpy as np
-from datetime import datetime, timedelta
+from datetime import datetime
 import sys
-import threading
-import signal
+from pymavlink import mavutil
 
-# D300 Sensor Configuration  
-I2C_BUS = 1                    # Raspberry Pi I2C bus
-I2C_D300_ADDRESS = 0x77        # Default D300 address
-SENSOR_DATA_RATE = 10          # Maximum 10Hz sampling rate
+# --------- Kullanıcı Ayarları ----------
+SERIAL_PORT = 'COM5'      # Pixhawk seri portu (Windows)
+BAUD        = 115200      # 57600 da denenebilir
+REQUEST_HZ  = 10          # İstenen yayın hızı (Hz)
 
-# Calibration Constants (D300 specific)
-DEPTH_RESOLUTION = 0.01        # 0.01m resolution
-TEMP_RESOLUTION = 0.01         # 0.01°C resolution
-DEPTH_RANGE_MAX = 300.0        # 300m maximum depth
-TEMP_RANGE_MIN = -20.0         # -20°C minimum 
-TEMP_RANGE_MAX = 85.0          # +85°C maximum
+# Ölçüm/sınır parametreleri
+DEPTH_RESOLUTION = 0.01        # 0.01 m (raporda gösterim amaçlı)
+TEMP_RESOLUTION  = 0.01        # 0.01 °C
+DEPTH_RANGE_MAX  = 300.0       # 300 m (bilgilendirme)
+TEMP_RANGE_MIN   = -20.0
+TEMP_RANGE_MAX   = 85.0
 
-# Test Parameters
-CALIBRATION_SAMPLES = 50       # Surface pressure calibration sample count
-DEPTH_ACCURACY_THRESHOLD = 0.05 # ±5cm accuracy threshold
-TEMP_ACCURACY_THRESHOLD = 0.5  # ±0.5°C accuracy threshold
-SENSOR_TIMEOUT = 5             # Sensor read timeout (seconds)
+CALIBRATION_SAMPLES       = 50
+DEPTH_ACCURACY_THRESHOLD  = 0.05   # ±5 cm
+TEMP_ACCURACY_THRESHOLD   = 0.5    # ±0.5 °C
+SENSOR_TIMEOUT            = 3.0    # s
 
-class D300DepthSensor:
-    """D300 Derinlik ve Sıcaklık Sensörü Sınıfı"""
-    
-    def __init__(self, bus_num=I2C_BUS, address=I2C_D300_ADDRESS):
-        self.bus_num = bus_num
-        self.address = address
-        self.bus = None
+RHO_SEAWATER = 1025.0  # kg/m^3
+G            = 9.81    # m/s^2
+
+# MAVLink mesaj ID'leri (yayın aralığı talebi için)
+MSG_ID_SCALED_PRESSURE  = 29
+MSG_ID_SCALED_PRESSURE2 = 137
+MSG_ID_SCALED_PRESSURE3 = 142
+MSG_ID_VFR_HUD          = 74  # (opsiyonel; vertical speed/altitude için)
+
+class PixhawkDepthSensor:
+    """
+    Pixhawk üstünden MAVLink ile basınç/sıcaklık alır,
+    yüzey basıncını kalibre ederek derinlik hesaplar.
+    """
+    def __init__(self, port=SERIAL_PORT, baud=BAUD):
+        self.port = port
+        self.baud = baud
+        self.master = None
         self.connected = False
-        
-        # Sensor data
-        self.current_depth = 0.0
-        self.current_temperature = 0.0
+
+        # Durum
         self.current_pressure = 1013.25  # mbar
-        self.surface_pressure = 1013.25  # mbar (calibrated)
-        
-        # Calibration data
+        self.current_temperature = 0.0   # °C
+        self.current_depth = 0.0         # m
+
+        # Kalibrasyon
+        self.surface_pressure = 1013.25  # mbar
+        self.temperature_offset = 0.0    # °C
         self.calibrated = False
-        self.calibration_offset = 0.0
-        self.temperature_offset = 0.0
-        
-        # Statistics
+        self.calibration_offset = 0.0    # m (gerekirse küçük düzeltme)
+
+        # İstatistik
         self.total_readings = 0
         self.failed_readings = 0
         self.last_reading_time = None
-        
-    def connect_sensor(self):
-        """D300 sensörüne bağlan"""
+
+    # ---------- Bağlantı ----------
+    def connect(self):
+        print(f"🔌 Pixhawk'a bağlanılıyor: {self.port} @ {self.baud}...")
         try:
-            print(f"🔌 D300 sensörüne bağlanılıyor (I2C: {self.address:#04x})")
-            self.bus = smbus2.SMBus(self.bus_num)
-            
-            # Sensor presence test
-            if self.test_sensor_presence():
-                self.connected = True
-                print("✅ D300 sensörü başarıyla bağlandı!")
-                return True
-            else:
-                print("❌ D300 sensörü bulunamadı!")
-                return False
-                
-        except Exception as e:
-            print(f"❌ D300 bağlantı hatası: {e}")
-            return False
-    
-    def disconnect_sensor(self):
-        """Sensör bağlantısını kapat"""
-        if self.bus:
-            self.bus.close()
-            self.connected = False
-            print("🔌 D300 sensörü bağlantısı kapatıldı")
-    
-    def test_sensor_presence(self):
-        """Sensörün varlığını test et"""
-        try:
-            # D300 için basit read test
-            data = self.bus.read_i2c_block_data(self.address, 0x00, 1)
+            self.master = mavutil.mavlink_connection(self.port, baud=self.baud)
+            self.master.wait_heartbeat(timeout=5)
+            print(f"✅ Heartbeat alındı: SYS={self.master.target_system}, COMP={self.master.target_component}")
+
+            # Yayın hızlarını talep et (destekliyorsa)
+            self._request_message_interval(MSG_ID_SCALED_PRESSURE,  REQUEST_HZ)
+            self._request_message_interval(MSG_ID_SCALED_PRESSURE2, REQUEST_HZ)
+            self._request_message_interval(MSG_ID_SCALED_PRESSURE3, REQUEST_HZ)
+            self._request_message_interval(MSG_ID_VFR_HUD,          REQUEST_HZ)
+
+            self.connected = True
             return True
         except Exception as e:
-            print(f"⚠️ Sensör presence test hatası: {e}")
+            print(f"❌ Bağlantı hatası: {e}")
+            self.connected = False
             return False
-    
+
+    def disconnect(self):
+        if self.master:
+            try:
+                self.master.close()
+            except Exception:
+                pass
+        self.connected = False
+        print("🔌 Bağlantı kapatıldı.")
+
+    def _request_message_interval(self, msg_id, hz):
+        try:
+            interval_us = int(1_000_000 / max(1, hz))
+            self.master.mav.command_long_send(
+                self.master.target_system,
+                self.master.target_component,
+                mavutil.mavlink.MAV_CMD_SET_MESSAGE_INTERVAL,
+                0,
+                msg_id,
+                interval_us,
+                0, 0, 0, 0, 0
+            )
+        except Exception as e:
+            # Desteklenmeyebilir; kritik değil
+            print(f"⚠️ Mesaj {msg_id} yayın aralığı talebi başarısız: {e}")
+
+    # ---------- Okuma & Dönüşümler ----------
     def read_raw_data(self):
-        """D300'den raw data oku"""
+        """
+        MAVLink'ten SCALED_PRESSURE*/VFR_HUD bekler.
+        Basınç: mbar (hPa), Sıcaklık: °C, Derinlik: kalibreye göre hesap.
+        """
         if not self.connected:
             return None, None, None
-        
-        try:
-            # D300 specific read sequence
-            # Register 0x00: Trigger measurement
-            self.bus.write_byte(self.address, 0x00)
-            time.sleep(0.1)  # Conversion time
-            
-            # Register 0x01-0x06: Read pressure and temperature data
-            data = self.bus.read_i2c_block_data(self.address, 0x01, 6)
-            
-            # Parse pressure data (24-bit)
-            pressure_raw = (data[0] << 16) | (data[1] << 8) | data[2]
-            
-            # Parse temperature data (24-bit)  
-            temperature_raw = (data[3] << 16) | (data[4] << 8) | data[5]
-            
-            # Convert to actual values (D300 specific conversion)
-            pressure_mbar = self.convert_pressure(pressure_raw)
-            temperature_celsius = self.convert_temperature(temperature_raw)
-            
-            # Calculate depth from pressure
-            depth_meters = self.calculate_depth(pressure_mbar)
-            
-            self.current_pressure = pressure_mbar
-            self.current_temperature = temperature_celsius
-            self.current_depth = depth_meters
-            self.last_reading_time = time.time()
-            self.total_readings += 1
-            
-            return depth_meters, temperature_celsius, pressure_mbar
-            
-        except Exception as e:
-            print(f"❌ D300 veri okuma hatası: {e}")
+
+        deadline = time.time() + SENSOR_TIMEOUT
+        press_abs = None
+        temp_c = None
+
+        while time.time() < deadline:
+            msg = self.master.recv_match(type=[
+                'SCALED_PRESSURE', 'SCALED_PRESSURE2', 'SCALED_PRESSURE3'
+            ], blocking=False)
+
+            if msg is None:
+                # VFR_HUD vs. dinleyip geçelim (kullanmasak da buffer boşalır)
+                _ = self.master.recv_match(type=['VFR_HUD'], blocking=False)
+                time.sleep(0.01)
+                continue
+
+            # SCALED_PRESSURE*: press_abs (hPa), temperature (cdegC)
+            try:
+                if hasattr(msg, 'press_abs'):
+                    press_abs = float(msg.press_abs)  # hPa = mbar
+                if hasattr(msg, 'temperature'):
+                    temp_c = float(msg.temperature) / 100.0  # cdegC -> °C
+                break
+            except Exception:
+                # Beklenmedik alan/format
+                pass
+
+        if press_abs is None:
             self.failed_readings += 1
             return None, None, None
-    
-    def convert_pressure(self, raw_value):
-        """Raw pressure değerini mbar'a çevir"""
-        # D300 specific conversion formula
-        # This would need to be adjusted based on actual D300 datasheet
-        pressure_mbar = (raw_value / 16384.0) + 1000.0  # Example conversion
-        return pressure_mbar
-    
-    def convert_temperature(self, raw_value):
-        """Raw temperature değerini Celsius'a çevir"""
-        # D300 specific conversion formula
-        # This would need to be adjusted based on actual D300 datasheet
-        temperature_celsius = (raw_value / 256.0) - 40.0  # Example conversion
-        return temperature_celsius + self.temperature_offset
-    
-    def calculate_depth(self, pressure_mbar):
-        """Basınçtan derinlik hesapla"""
-        if not self.calibrated:
-            return 0.0
-        
-        # Hydrostatic pressure formula: P = P0 + ρgh
-        # Where: ρ = 1025 kg/m³ (seawater density)
-        #        g = 9.81 m/s²
-        #        h = depth in meters
-        pressure_diff = pressure_mbar - self.surface_pressure
-        depth = (pressure_diff * 100) / (1025 * 9.81)  # Convert mbar to Pa and calculate
-        
-        return max(0.0, depth + self.calibration_offset)
-    
+
+        # Varsayılan: press_abs mbar, temp °C (offset uygulanacak)
+        pressure_mbar = press_abs
+        temperature_c = (temp_c if temp_c is not None else self.current_temperature) + self.temperature_offset
+
+        depth_m = self._pressure_to_depth(pressure_mbar) if self.calibrated else 0.0
+
+        self.current_pressure = pressure_mbar
+        self.current_temperature = temperature_c
+        self.current_depth = max(0.0, depth_m + self.calibration_offset)
+        self.last_reading_time = time.time()
+        self.total_readings += 1
+
+        return self.current_depth, self.current_temperature, self.current_pressure
+
+    def _pressure_to_depth(self, pressure_mbar: float) -> float:
+        """P = P0 + ρ g h  =>  h = (P - P0) / (ρ g) ; mbar->Pa için ×100"""
+        dp = (pressure_mbar - self.surface_pressure) * 100.0  # Pa
+        h = dp / (RHO_SEAWATER * G)
+        return h
+
+    # ---------- Kalibrasyon ----------
     def calibrate_surface_pressure(self, sample_count=CALIBRATION_SAMPLES):
-        """Yüzey basıncı kalibrasyonu"""
-        print(f"🔧 Yüzey basıncı kalibrasyonu başlatılıyor ({sample_count} örnek)...")
-        
         if not self.connected:
-            print("❌ Sensör bağlı değil!")
+            print("❌ Pixhawk bağlı değil!")
             return False
-        
-        pressure_samples = []
-        
+
+        print(f"🔧 Yüzey basıncı kalibrasyonu başlıyor ({sample_count} örnek)...")
+        samples = []
+
         for i in range(sample_count):
-            depth, temp, pressure = self.read_raw_data()
-            
-            if pressure is not None:
-                pressure_samples.append(pressure)
-                print(f"   Örnek {i+1}/{sample_count}: {pressure:.2f} mbar")
+            d, t, p = self.read_raw_data()
+            if p is not None:
+                samples.append(p)
+                print(f"  Örnek {i+1:02d}/{sample_count}: {p:.2f} mbar")
             else:
-                print(f"   Örnek {i+1}/{sample_count}: Hata!")
-            
+                print(f"  Örnek {i+1:02d}/{sample_count}: Hata!")
             time.sleep(0.1)
-        
-        if len(pressure_samples) < sample_count * 0.8:  # En az %80 başarı
-            print("❌ Kalibrasyon başarısız - yetersiz örnek!")
+
+        if len(samples) < sample_count * 0.8:
+            print("❌ Yetersiz örnek; kalibrasyon başarısız.")
             return False
-        
-        # İstatistiksel analiz
-        self.surface_pressure = np.mean(pressure_samples)
-        pressure_std = np.std(pressure_samples)
-        
-        print(f"✅ Yüzey basıncı kalibrasyonu tamamlandı!")
-        print(f"   Ortalama basınç: {self.surface_pressure:.2f} mbar")
-        print(f"   Standart sapma: {pressure_std:.2f} mbar")
-        print(f"   Min: {min(pressure_samples):.2f} mbar")
-        print(f"   Max: {max(pressure_samples):.2f} mbar")
-        
+
+        self.surface_pressure = float(np.mean(samples))
+        std = float(np.std(samples))
+        print("✅ Yüzey basıncı kalibrasyonu tamam.")
+        print(f"   Ortalama: {self.surface_pressure:.2f} mbar | Std: {std:.2f} mbar")
+        print(f"   Min: {min(samples):.2f} | Max: {max(samples):.2f}")
         self.calibrated = True
         return True
-    
-    def calibrate_temperature_offset(self, reference_temp):
-        """Sıcaklık offset kalibrasyonu"""
-        print(f"🌡️ Sıcaklık kalibrasyonu (Referans: {reference_temp}°C)")
-        
-        temp_samples = []
-        
-        for i in range(20):
-            depth, temp, pressure = self.read_raw_data()
-            if temp is not None:
-                temp_samples.append(temp)
+
+    def calibrate_temperature_offset(self, reference_temp_c: float):
+        print(f"🌡️ Sıcaklık offset kalibrasyonu (Referans: {reference_temp_c:.2f} °C)")
+        vals = []
+        for _ in range(20):
+            d, t, p = self.read_raw_data()
+            if t is not None:
+                vals.append(t)
             time.sleep(0.5)
-        
-        if len(temp_samples) < 15:
-            print("❌ Sıcaklık kalibrasyonu başarısız!")
+
+        if len(vals) < 15:
+            print("❌ Sıcaklık kalibrasyonu başarısız (yetersiz veri).")
             return False
-        
-        measured_avg = np.mean(temp_samples)
-        self.temperature_offset = reference_temp - measured_avg
-        
-        print(f"✅ Sıcaklık offset: {self.temperature_offset:.2f}°C")
+
+        measured_avg = float(np.mean(vals))
+        self.temperature_offset = reference_temp_c - measured_avg
+        print(f"✅ Sıcaklık offset: {self.temperature_offset:+.2f} °C (ölçülen ort: {measured_avg:.2f} °C)")
         return True
-    
+
+    # ---------- Testler ----------
     def run_accuracy_test(self, known_depth=0.0, duration=30):
-        """Doğruluk testi"""
-        print(f"📏 Doğruluk testi başlatılıyor (Bilinen derinlik: {known_depth}m)")
-        
         if not self.calibrated:
-            print("❌ Sensör kalibre edilmemiş!")
+            print("❌ Önce yüzey basıncı kalibrasyonu yapın.")
             return False
-        
-        depth_readings = []
-        temp_readings = []
-        start_time = time.time()
-        
-        print("📊 Veri toplama başladı...")
-        
-        while time.time() - start_time < duration:
-            depth, temp, pressure = self.read_raw_data()
-            
-            if depth is not None and temp is not None:
-                depth_readings.append(depth)
-                temp_readings.append(temp)
-                
-                print(f"   Derinlik: {depth:.3f}m, Sıcaklık: {temp:.2f}°C, Basınç: {pressure:.1f}mbar")
-            
+
+        print(f"📏 Doğruluk testi: hedef {known_depth:.3f} m, süre {duration}s")
+        depth_vals, temp_vals = [], []
+        t0 = time.time()
+        print("📊 Veri toplanıyor...")
+
+        while time.time() - t0 < duration:
+            d, t, p = self.read_raw_data()
+            if d is not None and t is not None:
+                depth_vals.append(d)
+                temp_vals.append(t)
+                print(f"  d={d:.3f} m | T={t:.2f} °C | P={p:.1f} mbar")
             time.sleep(1.0)
-        
-        if len(depth_readings) < 10:
-            print("❌ Yetersiz veri!")
+
+        if len(depth_vals) < 10:
+            print("❌ Yetersiz veri.")
             return False
-        
-        # İstatistiksel analiz
-        depth_mean = np.mean(depth_readings)
-        depth_std = np.std(depth_readings)
-        depth_error = abs(depth_mean - known_depth)
-        
-        temp_mean = np.mean(temp_readings)
-        temp_std = np.std(temp_readings)
-        
+
+        d_mean = float(np.mean(depth_vals))
+        d_std  = float(np.std(depth_vals))
+        d_err  = abs(d_mean - known_depth)
+
+        t_mean = float(np.mean(temp_vals))
+        t_std  = float(np.std(temp_vals))
+
         print("\n📊 DOĞRULUK TESTİ SONUÇLARI")
-        print("=" * 50)
-        print(f"Derinlik Ortalaması: {depth_mean:.3f} ± {depth_std:.3f}m")
-        print(f"Bilinen Derinlik:    {known_depth:.3f}m")
-        print(f"Mutlak Hata:         {depth_error:.3f}m")
-        print(f"Sıcaklık Ortalaması: {temp_mean:.2f} ± {temp_std:.2f}°C")
-        print(f"Toplam Okuma:        {len(depth_readings)} adet")
-        
-        # Doğruluk değerlendirmesi
-        depth_accurate = depth_error <= DEPTH_ACCURACY_THRESHOLD
-        temp_stable = temp_std <= TEMP_ACCURACY_THRESHOLD
-        
-        print(f"\n✅ Derinlik Doğruluğu: {'GEÇTİ' if depth_accurate else 'BAŞARISIZ'}")
-        print(f"✅ Sıcaklık Kararlılığı: {'GEÇTİ' if temp_stable else 'BAŞARISIZ'}")
-        
-        return depth_accurate and temp_stable
-    
+        print("=" * 48)
+        print(f"Derinlik Ort.: {d_mean:.3f} ± {d_std:.3f} m")
+        print(f"Bilinen Der.:  {known_depth:.3f} m")
+        print(f"Mutlak Hata:   {d_err:.3f} m")
+        print(f"Sıcaklık Ort.: {t_mean:.2f} ± {t_std:.2f} °C")
+        print(f"Toplam Okuma:  {len(depth_vals)}")
+
+        ok_depth = d_err <= DEPTH_ACCURACY_THRESHOLD
+        ok_temp  = t_std <= TEMP_ACCURACY_THRESHOLD
+        print(f"\n✅ Derinlik Doğruluğu: {'GEÇTİ' if ok_depth else 'BAŞARISIZ'}")
+        print(f"✅ Sıcaklık Kararlılığı: {'GEÇTİ' if ok_temp else 'BAŞARISIZ'}")
+        return ok_depth and ok_temp
+
     def run_response_time_test(self):
-        """Yanıt süresi testi"""
-        print("⏱️ Yanıt süresi testi başlatılıyor...")
-        
-        response_times = []
-        
+        print("⏱️ Yanıt süresi testi başlıyor...")
+        times_ms = []
         for i in range(20):
-            start_time = time.time()
-            depth, temp, pressure = self.read_raw_data()
-            end_time = time.time()
-            
-            if depth is not None:
-                response_time = (end_time - start_time) * 1000  # ms
-                response_times.append(response_time)
-                print(f"   Okuma {i+1}: {response_time:.1f}ms")
-            
+            t_start = time.time()
+            d, t, p = self.read_raw_data()
+            t_end = time.time()
+            if d is not None:
+                dt_ms = (t_end - t_start) * 1000.0
+                times_ms.append(dt_ms)
+                print(f"  Okuma {i+1:02d}: {dt_ms:.1f} ms")
             time.sleep(0.5)
-        
-        if len(response_times) < 15:
-            print("❌ Yanıt süresi testi başarısız!")
+
+        if len(times_ms) < 15:
+            print("❌ Yetersiz örnek.")
             return False
-        
-        avg_response = np.mean(response_times)
-        max_response = max(response_times)
-        min_response = min(response_times)
-        
-        print(f"\n📊 YANITLAMA SÜRESİ ANALİZİ")
-        print(f"Ortalama: {avg_response:.1f}ms")
-        print(f"Minimum:  {min_response:.1f}ms")  
-        print(f"Maksimum: {max_response:.1f}ms")
-        
-        # 100ms altında olmalı (10Hz için)
-        response_good = avg_response < 100.0
-        print(f"✅ Yanıt Süresi: {'GEÇTİ' if response_good else 'BAŞARISIZ'}")
-        
-        return response_good
-    
+
+        avg = float(np.mean(times_ms))
+        mn  = float(np.min(times_ms))
+        mx  = float(np.max(times_ms))
+        print("\n📊 YANIT SÜRESİ")
+        print(f"Ortalama: {avg:.1f} ms | Min: {mn:.1f} ms | Max: {mx:.1f} ms")
+        ok = avg < 100.0
+        print(f"✅ Sonuç: {'GEÇTİ' if ok else 'BAŞARISIZ'} (hedef <100 ms)")
+        return ok
+
     def run_stability_test(self, duration=60):
-        """Kararlılık testi"""
-        print(f"🔄 Kararlılık testi başlatılıyor ({duration}s)...")
-        
-        depth_readings = []
-        temp_readings = []
-        timestamps = []
-        start_time = time.time()
-        
-        while time.time() - start_time < duration:
-            depth, temp, pressure = self.read_raw_data()
-            
-            if depth is not None and temp is not None:
-                depth_readings.append(depth)
-                temp_readings.append(temp)
-                timestamps.append(time.time() - start_time)
-                
-                if len(depth_readings) % 10 == 0:
-                    print(f"   {len(depth_readings)} okuma tamamlandı...")
-            
+        print(f"🔄 Kararlılık testi ({duration}s)...")
+        depth_vals, temp_vals = [], []
+        t0 = time.time()
+
+        while time.time() - t0 < duration:
+            d, t, p = self.read_raw_data()
+            if d is not None and t is not None:
+                depth_vals.append(d)
+                temp_vals.append(t)
+                if len(depth_vals) % 10 == 0:
+                    print(f"  {len(depth_vals)} okuma...")
             time.sleep(1.0)
-        
-        if len(depth_readings) < 30:
-            print("❌ Kararlılık testi için yetersiz veri!")
+
+        if len(depth_vals) < 30:
+            print("❌ Yetersiz veri.")
             return False
-        
-        # Drift analizi
-        depth_drift = abs(depth_readings[-1] - depth_readings[0])
-        temp_drift = abs(temp_readings[-1] - temp_readings[0])
-        
-        depth_noise = np.std(depth_readings)
-        temp_noise = np.std(temp_readings)
-        
-        print(f"\n📊 KARARLILIK ANALİZİ")
-        print(f"Derinlik Drift:  {depth_drift:.3f}m")
-        print(f"Sıcaklık Drift:  {temp_drift:.2f}°C")
-        print(f"Derinlik Gürültü: {depth_noise:.3f}m")
-        print(f"Sıcaklık Gürültü: {temp_noise:.2f}°C")
-        
-        stability_good = depth_drift < 0.1 and temp_drift < 1.0
-        print(f"✅ Kararlılık: {'GEÇTİ' if stability_good else 'BAŞARISIZ'}")
-        
-        return stability_good
-    
+
+        d_drift = abs(depth_vals[-1] - depth_vals[0])
+        t_drift = abs(temp_vals[-1] - temp_vals[0])
+        d_noise = float(np.std(depth_vals))
+        t_noise = float(np.std(temp_vals))
+
+        print("\n📊 KARARLILIK")
+        print(f"Derinlik Drift:  {d_drift:.3f} m")
+        print(f"Sıcaklık Drift:  {t_drift:.2f} °C")
+        print(f"Derinlik Gürültü:{d_noise:.3f} m")
+        print(f"Sıcaklık Gürültü:{t_noise:.2f} °C")
+
+        ok = (d_drift < 0.10) and (t_drift < 1.0)
+        print(f"✅ Sonuç: {'GEÇTİ' if ok else 'BAŞARISIZ'}")
+        return ok
+
+    # ---------- Rapor ----------
     def generate_test_report(self):
-        """Test raporu oluştur"""
-        report = {
-            'sensor_type': 'D300 Derinlik ve Sıcaklık Sensörü',
-            'test_timestamp': datetime.now().isoformat(),
-            'connection_status': self.connected,
-            'calibration_status': self.calibrated,
-            'surface_pressure': self.surface_pressure,
-            'temperature_offset': self.temperature_offset,
-            'statistics': {
-                'total_readings': self.total_readings,
-                'failed_readings': self.failed_readings,
-                'success_rate': (self.total_readings - self.failed_readings) / max(1, self.total_readings) * 100
+        return {
+            "sensor_source": "Pixhawk MAVLink (SCALED_PRESSURE*)",
+            "serial_port": self.port,
+            "baud": self.baud,
+            "test_timestamp": datetime.now().isoformat(),
+            "connection_status": self.connected,
+            "calibration_status": self.calibrated,
+            "surface_pressure_mbar": self.surface_pressure,
+            "temperature_offset_c": self.temperature_offset,
+            "statistics": {
+                "total_readings": self.total_readings,
+                "failed_readings": self.failed_readings,
+                "success_rate": (self.total_readings - self.failed_readings) / max(1, self.total_readings) * 100.0
             },
-            'current_values': {
-                'depth': self.current_depth,
-                'temperature': self.current_temperature,
-                'pressure': self.current_pressure
+            "current_values": {
+                "depth_m": round(self.current_depth, 3),
+                "temperature_c": round(self.current_temperature, 2),
+                "pressure_mbar": round(self.current_pressure, 2),
+            },
+            "assumptions": {
+                "rho_seawater": RHO_SEAWATER,
+                "gravity": G,
+                "pressure_units": "mbar (hPa)",
+                "temperature_units": "Celsius",
             }
         }
-        
-        return report
 
+# ----------------- CLI -----------------
 def main():
-    print("🔬 TEKNOFEST 2025 - D300 Derinlik Sensörü Test Suite")
+    print("🔬 TEKNOFEST 2025 - Pixhawk COM5 D300 Test Suite")
     print("=" * 60)
-    
-    # D300 sensör instance
-    sensor = D300DepthSensor()
-    
+    sensor = PixhawkDepthSensor()
+
     try:
-        # Sensöre bağlan
-        if not sensor.connect_sensor():
-            print("❌ Sensör bağlantısı başarısız!")
+        if not sensor.connect():
+            print("❌ Bağlantı sağlanamadı.")
             return 1
-        
-        # Test menüsü
+
         while True:
             print("\n🔧 TEST MENÜSÜ")
             print("1. Yüzey Basıncı Kalibrasyonu")
@@ -413,66 +391,78 @@ def main():
             print("6. Canlı Veri Monitörleme")
             print("7. Test Raporu Oluştur")
             print("0. Çıkış")
-            
+
             choice = input("\nSeçiminiz (0-7): ").strip()
-            
+
             if choice == '1':
                 sensor.calibrate_surface_pressure()
-            
+
             elif choice == '2':
-                ref_temp = float(input("Referans sıcaklık (°C): "))
+                try:
+                    ref_temp = float(input("Referans sıcaklık (°C): "))
+                except Exception:
+                    print("Geçersiz değer.")
+                    continue
                 sensor.calibrate_temperature_offset(ref_temp)
-            
+
             elif choice == '3':
-                known_depth = float(input("Bilinen derinlik (m, yüzey için 0): "))
-                duration = int(input("Test süresi (saniye): "))
+                try:
+                    known_depth = float(input("Bilinen derinlik (m, yüzey için 0): "))
+                    duration = int(input("Test süresi (sn): "))
+                except Exception:
+                    print("Geçersiz değer.")
+                    continue
                 sensor.run_accuracy_test(known_depth, duration)
-            
+
             elif choice == '4':
                 sensor.run_response_time_test()
-            
+
             elif choice == '5':
-                duration = int(input("Test süresi (saniye): "))
-                sensor.run_stability_test(duration)
-            
-            elif choice == '6':
-                print("📡 Canlı veri monitörleme (Ctrl+C ile durdurun)")
                 try:
-                    while True:
-                        depth, temp, pressure = sensor.read_raw_data()
-                        if depth is not None:
-                            print(f"Derinlik: {depth:.3f}m | Sıcaklık: {temp:.2f}°C | Basınç: {pressure:.1f}mbar")
+                    duration = int(input("Test süresi (sn): "))
+                except Exception:
+                    print("Geçersiz değer.")
+                    continue
+                sensor.run_stability_test(duration)
+
+            elif choice == '6':
+                print("📡 Canlı veri (Ctrl+C ile durdur)")
+                try:
+                    i=0
+                    while i<1000:
+                        d, t, p = sensor.read_raw_data()
+                        if d is not None:
+                            print(f"Derinlik: {d:.3f} m | Sıcaklık: {t:.2f} °C | Basınç: {p:.1f} mbar")
                         time.sleep(1.0)
+                        i=i+2
                 except KeyboardInterrupt:
                     print("\n⚠️ Monitörleme durduruldu")
-            
+
             elif choice == '7':
                 report = sensor.generate_test_report()
-                timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-                filename = f"d300_test_report_{timestamp}.json"
-                
-                with open(filename, 'w', encoding='utf-8') as f:
+                ts = datetime.now().strftime("%Y%m%d_%H%M%S")
+                fn = f"d300_pixhawk_report_{ts}.json"
+                with open(fn, "w", encoding="utf-8") as f:
                     json.dump(report, f, ensure_ascii=False, indent=2)
-                
-                print(f"📊 Test raporu kaydedildi: {filename}")
+                print(f"📊 Rapor kaydedildi: {fn}")
                 print(json.dumps(report, ensure_ascii=False, indent=2))
-            
+
             elif choice == '0':
                 break
-            
+
             else:
-                print("❌ Geçersiz seçim!")
-        
+                print("❌ Geçersiz seçim.")
+
         return 0
-        
+
     except KeyboardInterrupt:
-        print("\n⚠️ Test kullanıcı tarafından durduruldu")
+        print("\n⚠️ Kullanıcı tarafından durduruldu.")
         return 1
     except Exception as e:
-        print(f"❌ Test hatası: {e}")
+        print(f"❌ Hata: {e}")
         return 1
     finally:
-        sensor.disconnect_sensor()
+        sensor.disconnect()
 
 if __name__ == "__main__":
-    sys.exit(main()) 
+    sys.exit(main())
