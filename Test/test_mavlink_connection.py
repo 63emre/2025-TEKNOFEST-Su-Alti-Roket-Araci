@@ -1,280 +1,221 @@
-#!/usr/bin/env python3
 """
-TEKNOFEST Su Altı ROV - Serial MAVLink Connection Test
-Pixhawk PX4 PIX 2.4.8 Serial Communication Test
-Environment Variable Support: MAV_ADDRESS, MAV_BAUD
+TEKNOFEST 2025 Su Altı Roket Aracı
+MAVLink Bağlantı Test Scripti
+
+Bu script Pixhawk ile MAVLink bağlantısını test eder ve 
+roll, pitch, yaw verilerini okur.
 """
 
 import os
 import sys
 import time
-import math
-from pymavlink import mavutil
+import signal
 
-# Environment variables for serial connection
-MAV_ADDRESS = os.getenv("MAV_ADDRESS", "/dev/ttyACM0")
-MAV_BAUD = int(os.getenv("MAV_BAUD", "115200"))
+# Proje dizinini path'e ekle
+sys.path.append(os.path.join(os.path.dirname(__file__), '..'))
 
-print(f"🔧 Serial Configuration:")
-print(f"   Port: {MAV_ADDRESS}")
-print(f"   Baud: {MAV_BAUD}")
-print(f"   Environment: MAV_ADDRESS={MAV_ADDRESS}, MAV_BAUD={MAV_BAUD}")
+from common.mavlink_helper import MAVLinkController
 
 class MAVLinkTester:
-    """Serial MAVLink bağlantı test sınıfı"""
+    """MAVLink bağlantı test sınıfı"""
     
     def __init__(self):
-        """Test sınıfını başlat"""
-        self.master = None
-        self.connected = False
+        self.running = True
+        self.mav = None
         
-        # Test counters
-        self.heartbeat_count = 0
-        self.imu_count = 0
-        self.attitude_count = 0
+        # Bağlantı ayarları
+        self.connection_string = os.getenv("MAV_ADDRESS", "/dev/ttyACM0")
+        self.baud_rate = int(os.getenv("MAV_BAUD", "115200"))
         
-        print(f"🔧 MAVLink Tester initialized for serial: {MAV_ADDRESS}@{MAV_BAUD}")
+        # Signal handler ayarla
+        signal.signal(signal.SIGINT, self.signal_handler)
     
-    def connect(self):
-        """Serial MAVLink bağlantısı kur"""
+    def signal_handler(self, sig, frame):
+        """Ctrl+C ile çıkış"""
+        print("\n\nTest durduruluyor...")
+        self.running = False
+        if self.mav:
+            self.mav.disconnect()
+        sys.exit(0)
+    
+    def test_connection(self):
+        """MAVLink bağlantısını test et"""
+        print("="*60)
+        print("MAVLink BAĞLANTI TESİ")
+        print("="*60)
+        print(f"Bağlantı: {self.connection_string}")
+        print(f"Baud Rate: {self.baud_rate}")
+        print("-"*60)
+        
+        # MAVLink controller oluştur
+        self.mav = MAVLinkController(self.connection_string, self.baud_rate)
+        
+        # Bağlantıyı dene
+        print("Pixhawk'a bağlanılıyor...")
+        if not self.mav.connect():
+            print("❌ BAĞLANTI BAŞARISIZ!")
+            print("Kontrol edilecekler:")
+            print("- Pixhawk bağlı mı?")
+            print("- USB kablo çalışıyor mu?")
+            print("- Port adresi doğru mu? (/dev/ttyACM0)")
+            print("- Pixhawk açık mı?")
+            return False
+        
+        print("✅ BAĞLANTI BAŞARILI!")
+        print("-"*60)
+        return True
+    
+    def test_data_reading(self):
+        """Veri okuma testini yap"""
+        print("\nVERİ OKUMA TESİ BAŞLATIYOR...")
+        print("30 saniye boyunca veri okunacak. Ctrl+C ile durdurun.")
+        print("-"*60)
+        
+        start_time = time.time()
+        data_count = 0
+        
         try:
-            print(f"📡 Connecting to Pixhawk serial...")
-            print(f"   Port: {MAV_ADDRESS}")
-            print(f"   Baud: {MAV_BAUD}")
-            
-            # Serial MAVLink connection
-            self.master = mavutil.mavlink_connection(
-                MAV_ADDRESS,
-                baud=MAV_BAUD,
-                autoreconnect=True
-            )
-            
-            print("💓 Waiting for heartbeat...")
-            heartbeat = self.master.wait_heartbeat(timeout=15)
-            
-            if heartbeat:
-                self.connected = True
-                print("✅ Serial MAVLink connection established!")
-                print(f"   System ID: {self.master.target_system}")
-                print(f"   Component ID: {self.master.target_component}")
-                print(f"   Vehicle Type: {heartbeat.type}")
-                print(f"   Base Mode: {heartbeat.base_mode}")
-                return True
-            else:
-                print("❌ No heartbeat received!")
-                return False
+            while self.running and (time.time() - start_time) < 30:
+                # Durum verilerini al
+                status = self.mav.get_status_summary()
                 
-        except Exception as e:
-            print(f"❌ Serial connection failed: {e}")
-            print("💡 Check:")
-            print(f"   • Pixhawk connected to {MAV_ADDRESS}")
-            print(f"   • Correct baud rate: {MAV_BAUD}")
-            print("   • ArduSub firmware running")
-            return False
-    
-    def test_heartbeat(self, duration=10):
-        """Heartbeat mesajlarını test et"""
-        if not self.connected:
-            return False
-        
-        print(f"\n🔍 Testing heartbeat messages ({duration}s)...")
-        
-        start_time = time.time()
-        heartbeat_count = 0
-        
-        while time.time() - start_time < duration:
-            msg = self.master.recv_match(type='HEARTBEAT', blocking=False, timeout=1.0)
-            if msg:
-                heartbeat_count += 1
-                if heartbeat_count <= 3:  # İlk 3 heartbeat'i göster
-                    print(f"   💓 Heartbeat #{heartbeat_count}: "
-                          f"Type={msg.type}, Mode={msg.base_mode}, "
-                          f"Armed={bool(msg.base_mode & mavutil.mavlink.MAV_MODE_FLAG_SAFETY_ARMED)}")
-        
-        rate = heartbeat_count / duration
-        print(f"📊 Heartbeat test results:")
-        print(f"   • Received: {heartbeat_count} messages")
-        print(f"   • Rate: {rate:.1f} Hz")
-        print(f"   • Status: {'✅ GOOD' if rate > 0.5 else '❌ LOW'}")
-        
-        self.heartbeat_count = heartbeat_count
-        return heartbeat_count > 0
-    
-    def test_imu_data(self, duration=10):
-        """IMU data mesajlarını test et"""
-        if not self.connected:
-            return False
-        
-        print(f"\n🧭 Testing IMU data ({duration}s)...")
-        
-        start_time = time.time()
-        imu_count = 0
-        attitude_count = 0
-        
-        while time.time() - start_time < duration:
-            # RAW_IMU mesajı
-            imu_msg = self.master.recv_match(type='RAW_IMU', blocking=False, timeout=0.1)
-            if imu_msg:
-                imu_count += 1
-                if imu_count <= 2:  # İlk 2 IMU mesajını göster
-                    print(f"   📊 RAW_IMU #{imu_count}: "
-                          f"Accel=({imu_msg.xacc/1000:.2f}, {imu_msg.yacc/1000:.2f}, {imu_msg.zacc/1000:.2f}), "
-                          f"Gyro=({math.degrees(imu_msg.xgyro/1000):.1f}°, {math.degrees(imu_msg.ygyro/1000):.1f}°, {math.degrees(imu_msg.zgyro/1000):.1f}°)")
+                if not status["connected"]:
+                    print("❌ Bağlantı koptu!")
+                    break
+                
+                # Attitude verileri
+                attitude = status["attitude"]
+                roll = attitude["roll"]
+                pitch = attitude["pitch"] 
+                yaw = attitude["yaw"]
+                
+                # Distance verisi
+                distance = status["distance"]
+                
+                # Battery verisi
+                battery = status["battery"]
+                voltage = battery["voltage"]
+                current = battery["current"]
+                remaining = battery["remaining"]
+                
+                # Ekrana yazdır
+                print(f"📊 Veri #{data_count + 1:3d} | "
+                      f"Roll: {roll:6.1f}° | "
+                      f"Pitch: {pitch:6.1f}° | "
+                      f"Yaw: {yaw:6.1f}° | "
+                      f"Mesafe: {distance:5.2f}m | "
+                      f"Batarya: {voltage:4.1f}V ({remaining:3d}%)")
+                
+                data_count += 1
+                time.sleep(1)  # 1 Hz veri gösterimi
+                
+        except KeyboardInterrupt:
+            print("\n\nTest kullanıcı tarafından durduruldu")
             
-            # ATTITUDE mesajı
-            att_msg = self.master.recv_match(type='ATTITUDE', blocking=False, timeout=0.1)
-            if att_msg:
-                attitude_count += 1
-                if attitude_count <= 2:  # İlk 2 attitude mesajını göster
-                    print(f"   🎯 ATTITUDE #{attitude_count}: "
-                          f"Roll={math.degrees(att_msg.roll):.1f}°, "
-                          f"Pitch={math.degrees(att_msg.pitch):.1f}°, "
-                          f"Yaw={math.degrees(att_msg.yaw):.1f}°")
-        
-        imu_rate = imu_count / duration
-        att_rate = attitude_count / duration
-        
-        print(f"📊 IMU test results:")
-        print(f"   • RAW_IMU: {imu_count} messages ({imu_rate:.1f} Hz)")
-        print(f"   • ATTITUDE: {attitude_count} messages ({att_rate:.1f} Hz)")
-        print(f"   • Status: {'✅ GOOD' if (imu_rate > 5 or att_rate > 5) else '❌ LOW'}")
-        
-        self.imu_count = imu_count
-        self.attitude_count = attitude_count
-        return (imu_count > 0 or attitude_count > 0)
+        print("-"*60)
+        print(f"✅ TEST TAMAMLANDI!")
+        print(f"Toplam {data_count} veri paketi alındı")
     
-    def test_system_status(self):
-        """Sistem durumu test et"""
-        if not self.connected:
-            return False
+    def test_servo_commands(self):
+        """Servo komutlarını test et"""
+        print("\nSERVO KOMUT TESİ")
+        print("Servo komutları Pixhawk'a gönderiliyor...")
+        print("Gerçek servolar bağlı değilse hareket göremezsiniz.")
+        print("-"*60)
         
-        print(f"\n🔍 Testing system status...")
-        
-        # SYS_STATUS mesajı bekle
-        sys_msg = self.master.recv_match(type='SYS_STATUS', blocking=True, timeout=5.0)
-        if sys_msg:
-            voltage = sys_msg.voltage_battery / 1000.0  # mV to V
-            current = sys_msg.current_battery / 100.0   # cA to A
-            battery = sys_msg.battery_remaining         # %
-            
-            print(f"⚡ System Status:")
-            print(f"   • Battery: {voltage:.1f}V, {current:.1f}A, {battery}%")
-            print(f"   • Load: {sys_msg.load/10:.1f}%")
-            print(f"   • Status: {'✅ HEALTHY' if voltage > 10.0 else '⚠️ LOW BATTERY'}")
-            return True
-        else:
-            print("❌ No system status received")
-            return False
-    
-    def test_servo_output(self):
-        """Servo komut test et (test amaçlı)"""
-        if not self.connected:
-            return False
-        
-        print(f"\n🎮 Testing servo command capability...")
-        
-        try:
-            # Test servo command (neutral position)
-            self.master.mav.command_long_send(
-                self.master.target_system,
-                self.master.target_component,
-                mavutil.mavlink.MAV_CMD_DO_SET_SERVO,
-                0,  # confirmation
-                9,  # servo number (AUX1)
-                1500,  # PWM value (neutral)
-                0, 0, 0, 0, 0  # unused parameters
-            )
-            
-            print("✅ Servo command sent successfully")
-            print("   • Command: AUX1 → 1500µs (neutral)")
-            print("   • Note: Check AUX1 output for PWM signal")
-            return True
-            
-        except Exception as e:
-            print(f"❌ Servo command failed: {e}")
-            return False
-    
-    def run_full_test(self):
-        """Tam test paketi çalıştır"""
-        print("🚀 TEKNOFEST ROV - Full Serial MAVLink Test")
-        print("=" * 60)
-        
-        # Bağlantı testi
-        if not self.connect():
-            print("❌ Connection test failed!")
-            return False
-        
-        # Test suite
-        tests = [
-            ("Heartbeat Test", lambda: self.test_heartbeat(10)),
-            ("IMU Data Test", lambda: self.test_imu_data(10)),
-            ("System Status Test", lambda: self.test_system_status()),
-            ("Servo Command Test", lambda: self.test_servo_output())
+        servo_tests = [
+            (3, 1500, "AUX 3 - Nötr"),
+            (3, 1000, "AUX 3 - Minimum"), 
+            (3, 2000, "AUX 3 - Maksimum"),
+            (3, 1500, "AUX 3 - Nötr"),
+            (4, 1500, "AUX 4 - Test"),
+            (5, 1500, "AUX 5 - Test"),
+            (6, 1500, "AUX 6 - Test")
         ]
         
-        results = []
-        for test_name, test_func in tests:
-            try:
-                result = test_func()
-                results.append((test_name, result))
-                print(f"{'✅' if result else '❌'} {test_name}: {'PASSED' if result else 'FAILED'}")
-            except Exception as e:
-                print(f"❌ {test_name}: ERROR - {e}")
-                results.append((test_name, False))
+        for servo_num, pwm_value, description in servo_tests:
+            print(f"📤 {description} - PWM: {pwm_value}")
+            self.mav.set_servo_pwm(servo_num, pwm_value)
+            time.sleep(1)
         
-        # Test özeti
-        print(f"\n📋 TEST SUMMARY")
-        print("=" * 30)
-        passed = sum(1 for _, result in results if result)
-        total = len(results)
-        
-        for test_name, result in results:
-            status = "✅ PASS" if result else "❌ FAIL"
-            print(f"   {test_name}: {status}")
-        
-        print(f"\n🎯 Overall Result: {passed}/{total} tests passed")
-        
-        if passed == total:
-            print("🎉 ALL TESTS PASSED! Serial MAVLink connection is working perfectly!")
-        elif passed > total // 2:
-            print("⚠️ PARTIAL SUCCESS. Some tests failed but basic connection works.")
-        else:
-            print("❌ MAJOR ISSUES. Serial connection needs troubleshooting.")
-        
-        return passed == total
+        print("✅ Servo komut testi tamamlandı")
     
-    def disconnect(self):
-        """Bağlantıyı kapat"""
-        if self.master:
-            try:
-                self.master.close()
-                print("🔌 Serial connection closed")
-            except:
-                pass
-        self.connected = False
+    def test_motor_commands(self):
+        """Motor komutlarını test et"""
+        print("\nMOTOR KOMUT TESİ")
+        print("⚠️  DİKKAT: Motor bağlıysa düşük hızda çalışacak!")
+        print("İptal etmek için Ctrl+C basın...")
+        
+        # 3 saniye bekle, kullanıcı iptal etme şansı
+        for i in range(3, 0, -1):
+            print(f"Başlama: {i} saniye...")
+            time.sleep(1)
+        
+        if not self.running:
+            return
+        
+        print("-"*60)
+        
+        motor_tests = [
+            (0, "Motor Durdur"),
+            (10, "Motor %10 Hız"),
+            (20, "Motor %20 Hız"),
+            (10, "Motor %10 Hız"),
+            (0, "Motor Durdur")
+        ]
+        
+        for speed_percent, description in motor_tests:
+            print(f"🔧 {description}")
+            self.mav.set_motor_speed(speed_percent)
+            time.sleep(2)
+        
+        print("✅ Motor komut testi tamamlandı")
+    
+    def run_full_test(self):
+        """Tam test senaryosu"""
+        try:
+            # Bağlantı testi
+            if not self.test_connection():
+                return
+            
+            # Veri okuma testi
+            self.test_data_reading()
+            
+            if not self.running:
+                return
+            
+            # Servo testi
+            self.test_servo_commands()
+            
+            if not self.running:
+                return
+            
+            # Motor testi (isteğe bağlı)
+            test_motor = input("\nMotor komutları test edilsin mi? (e/h): ").lower()
+            if test_motor == 'e':
+                self.test_motor_commands()
+            
+            print("\n" + "="*60)
+            print("🎉 TÜM TESTLER BAŞARIYLA TAMAMLANDI!")
+            print("="*60)
+            
+        except Exception as e:
+            print(f"\n❌ TEST HATASI: {e}")
+            
+        finally:
+            if self.mav:
+                self.mav.disconnect()
 
 def main():
     """Ana test fonksiyonu"""
     tester = MAVLinkTester()
     
     try:
-        # Full test suite çalıştır
-        success = tester.run_full_test()
-        
-        # Cleanup
-        tester.disconnect()
-        
-        # Exit code
-        sys.exit(0 if success else 1)
-        
+        tester.run_full_test()
     except KeyboardInterrupt:
-        print("\n⚠️ Test interrupted by user")
-        tester.disconnect()
-        sys.exit(1)
+        print("\nTest kullanıcı tarafından durduruldu")
     except Exception as e:
-        print(f"\n❌ Test suite error: {e}")
-        tester.disconnect()
-        sys.exit(1)
+        print(f"Beklenmeyen hata: {e}")
 
 if __name__ == "__main__":
-    main() 
+    main()

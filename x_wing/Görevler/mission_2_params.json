@@ -1,0 +1,12 @@
+{
+  "safe_launch_zone_distance": 30.0,
+  "launch_depth": 1.5,
+  "surface_approach_angle": 30.0,
+  "required_pitch_angle": 30.0,
+  "timeout_seconds": 300,
+  "depth_tolerance": 0.3,
+  "angle_tolerance": 5.0,
+  "launch_motor_speed": 35,
+  "surface_motor_speed": 40,
+  "control_frequency": 10
+}
