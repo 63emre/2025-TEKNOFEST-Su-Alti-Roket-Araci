@@ -120,6 +120,35 @@ class SaraMainController:
             self.logger.error(f"Sensör bağlantı testi hatası: {e}")
             return False
             
+    def calibrate_sensors(self):
+        """Sensör kalibrasyonu yap"""
+        try:
+            self.logger.info("🔧 Sensör kalibrasyonu başlatılıyor...")
+            
+            # SensorManager oluştur
+            sensor_manager = SensorManager(self.mavlink, self.system_status.logger)
+            
+            # Tüm sensörleri kalibre et
+            calibration_results = sensor_manager.calibrate_all()
+            
+            # Sonuçları kontrol et
+            depth_ok = calibration_results.get('depth', False)
+            attitude_ok = calibration_results.get('attitude', False)
+            
+            self.logger.info(f"Kalibrasyon sonuçları: D300={depth_ok}, Attitude={attitude_ok}")
+            
+            # En azından D300 kalibrasyonu başarılı olmalı
+            if depth_ok:
+                self.logger.info("✅ Sensör kalibrasyonu tamamlandı")
+                return True
+            else:
+                self.logger.error("❌ D300 derinlik sensörü kalibrasyonu başarısız")
+                return False
+                
+        except Exception as e:
+            self.logger.error(f"Sensör kalibrasyon hatası: {e}")
+            return False
+            
     def _request_data_streams(self):
         """Gerekli veri akışlarını iste"""
         try:
@@ -298,17 +327,22 @@ class SaraMainController:
                 self.logger.error("Sensör bağlantıları başarısız, çıkılıyor")
                 return False
                 
-            # 3. Başlatma butonu bekle
+            # 3. Sensör kalibrasyonu
+            if not self.calibrate_sensors():
+                self.logger.error("Sensör kalibrasyonu başarısız, çıkılıyor")
+                return False
+                
+            # 4. Başlatma butonu bekle
             if not self.wait_for_start_button():
                 self.logger.info("Başlatma iptal edildi")
                 return False
                 
-            # 4. 90 saniye güvenlik gecikmesi
+            # 5. 90 saniye güvenlik gecikmesi
             if not self.countdown_90_seconds():
                 self.logger.info("Geri sayım iptal edildi")
                 return False
                 
-            # 5. Görevi çalıştır
+            # 6. Görevi çalıştır
             success = self.run_mission(mission_type)
             
             if success:

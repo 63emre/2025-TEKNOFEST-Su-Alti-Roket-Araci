@@ -201,6 +201,52 @@ class DepthSensor:
             'is_valid': pressure is not None and depth is not None
         }
         
+    def calibrate_surface(self, duration=10, use_water_surface=True):
+        """Yüzey basıncını kalibre et (P0 değerini ayarla)
+        
+        Args:
+            duration: Kalibrasyon süresi (saniye)
+            use_water_surface: True=su yüzeyinde, False=havada
+            
+        Returns:
+            bool: Kalibrasyon başarılı mı
+        """
+        try:
+            self.logger.info(f"D300 yüzey kalibrasyonu başlıyor... ({duration}s)")
+            
+            if use_water_surface:
+                self.logger.info("📍 Sensörü su yüzeyinde tutun")
+            else:
+                self.logger.info("📍 Sensörü havada tutun")
+                
+            pressures = []
+            start_time = time.time()
+            
+            while (time.time() - start_time) < duration:
+                pressure, _ = self.read_raw_data()
+                
+                if pressure is not None:
+                    pressures.append(pressure)
+                    
+                time.sleep(0.1)
+                
+            if len(pressures) < 5:
+                self.logger.error("❌ Kalibrasyon için yeterli veri alınamadı")
+                return False
+                
+            # Medyan değeri referans basınç olarak kullan
+            self.pressure_offset = statistics.median(pressures)
+            
+            self.logger.info(f"✅ D300 kalibrasyonu tamamlandı")
+            self.logger.info(f"Referans basınç: {self.pressure_offset:.2f} mbar")
+            self.logger.info(f"Kalibrasyon verisi: {len(pressures)} örnek")
+            
+            return True
+            
+        except Exception as e:
+            self.logger.error(f"Kalibrasyon hatası: {e}")
+            return False
+
     def is_connected(self):
         """D300 sensörü bağlı mı kontrol et"""
         try:
@@ -426,6 +472,53 @@ class SensorManager:
         
         return health
         
+    def test_d300_connection(self):
+        """D300 derinlik sensörü bağlantısını test et"""
+        try:
+            self.logger.info("D300 sensör bağlantısı test ediliyor...")
+            
+            # 3 deneme yap
+            for attempt in range(3):
+                pressure, temperature = self.depth.read_raw_data()
+                
+                if pressure is not None and temperature is not None:
+                    self.logger.info(f"✅ D300 test başarılı - Basınç: {pressure:.1f}mbar, Sıcaklık: {temperature:.1f}°C")
+                    return True
+                    
+                if attempt < 2:  # Son denemede bekleme
+                    time.sleep(0.5)
+                    
+            self.logger.error("❌ D300 sensör bağlantısı başarısız")
+            return False
+            
+        except Exception as e:
+            self.logger.error(f"D300 test hatası: {e}")
+            return False
+            
+    def test_attitude_connection(self):
+        """Attitude sensörü bağlantısını test et"""
+        try:
+            self.logger.info("Attitude sensör bağlantısı test ediliyor...")
+            
+            # 3 deneme yap
+            for attempt in range(3):
+                attitude = self.attitude.get_attitude(timeout=1.0)
+                
+                if attitude is not None:
+                    self.logger.info(f"✅ Attitude test başarılı - Roll: {attitude['roll_deg']:.1f}°, "
+                                   f"Pitch: {attitude['pitch_deg']:.1f}°, Yaw: {attitude['yaw_raw_deg']:.1f}°")
+                    return True
+                    
+                if attempt < 2:  # Son denemede bekleme
+                    time.sleep(0.5)
+                    
+            self.logger.error("❌ Attitude sensör bağlantısı başarısız")
+            return False
+            
+        except Exception as e:
+            self.logger.error(f"Attitude test hatası: {e}")
+            return False
+
     def log_sensor_status(self):
         """Sensör durumunu logla"""
         health = self.check_sensor_health()
