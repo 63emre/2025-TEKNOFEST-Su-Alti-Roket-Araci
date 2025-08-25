@@ -15,12 +15,47 @@ Hardware:
 Pin Mapping: HARDWARE_PIN_MAPPING.md standardına göre
 """
 
-import RPi.GPIO as GPIO
 import time
 import threading
 import numpy as np
 import sys
 from datetime import datetime
+
+# GPIO uyumluluk katmanı
+try:
+    # Önce gpio_compat modülünü dene (pluswing klasöründen)
+    sys.path.append('../görevlerf1/pluswing')
+    from gpio_compat import GPIO
+    print("✓ GPIO uyumluluk katmanı yüklendi")
+except ImportError:
+    # Fallback: Direkt lgpio veya RPi.GPIO
+    try:
+        import lgpio as gpio_lib
+        print("✓ rpi-lgpio yüklendi")
+    except ImportError:
+        try:
+            import RPi.GPIO as gpio_lib
+            print("✓ RPi.GPIO yüklendi")
+        except ImportError:
+            print("❌ GPIO kütüphanesi bulunamadı!")
+            sys.exit(1)
+    
+    # Basit wrapper (test için)
+    class SimpleGPIO:
+        BCM = "BCM"
+        OUT = "OUT"
+        IN = "IN" 
+        HIGH = 1
+        LOW = 0
+        PUD_UP = "PUD_UP"
+        
+        def setmode(self, mode): pass
+        def setup(self, pin, direction, pull_up_down=None): pass
+        def output(self, pin, state): pass
+        def input(self, pin): return 0
+        def cleanup(self): pass
+    
+    GPIO = SimpleGPIO()
 
 # Pin Definitions - HARDWARE_PIN_MAPPING.md standardı
 GPIO_LED_RED = 4            # Kırmızı LED

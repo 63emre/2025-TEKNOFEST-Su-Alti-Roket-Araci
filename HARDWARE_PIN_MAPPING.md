@@ -312,8 +312,18 @@ echo "Testing main power..."
 
 ### **2. GPIO Test Sequence** 
 ```bash
-# Raspberry Pi GPIO test
-sudo python3 -c "import RPi.GPIO as GPIO; GPIO.setmode(GPIO.BCM); GPIO.setup(18, GPIO.IN); print(GPIO.input(18))"
+# Raspberry Pi 5 GPIO test (rpi-lgpio ile)
+sudo python3 -c "
+import lgpio
+h = lgpio.gpiochip_open(0)
+lgpio.gpio_claim_input(h, 18)
+print(f'GPIO 18 state: {lgpio.gpio_read(h, 18)}')
+lgpio.gpio_free(h, 18)
+lgpio.gpiochip_close(h)
+"
+
+# Eski Pi modelleri için (RPi.GPIO ile - sadece Pi 4 ve öncesi)
+# sudo python3 -c "import RPi.GPIO as GPIO; GPIO.setmode(GPIO.BCM); GPIO.setup(18, GPIO.IN); print(GPIO.input(18))"
 ```
 
 ### **3. I2C Device Detection (Pi5 Test)**

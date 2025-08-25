@@ -1,5 +1,11 @@
 # 🚀 TEKNOFEST 2025 - Su Altı ROV Kontrol Sistemi
 
+## ⚠️ Raspberry Pi 5 Uyumluluk Notı
+
+**Önemli:** Bu proje Raspberry Pi 5 ile uyumlu olacak şekilde güncellenmiştir. GPIO kütüphanesi `RPi.GPIO` yerine `rpi-lgpio` kullanmaktadır.
+
+🔧 **Kurulum:** Pi 5 kurulum talimatları için → [`PI5_SETUP_INSTRUCTIONS.md`](PI5_SETUP_INSTRUCTIONS.md)
+
 ## 🖥️ Terminal GUI (Ana Arayüz)
 
 Gerçek zamanlı terminal arayüzü ile kontrol:

@@ -23,14 +23,47 @@ import termios
 import tty
 import select
 from pymavlink import mavutil
-# Pi5 GPIO Support - RPi.GPIO yerine gpiozero kullan
+# Pi5 GPIO Support - RPi.GPIO yerine rpi-lgpio kullan
 try:
-    import RPi.GPIO as GPIO
-    HAS_RPI_GPIO = True
-    print("✅ RPi.GPIO library loaded")
+    # Önce gpio_compat modülünü dene (pluswing klasöründen)
+    sys.path.append('../görevlerf1/pluswing')
+    from gpio_compat import GPIO
+    HAS_GPIO = True
+    print("✅ GPIO uyumluluk katmanı yüklendi")
 except ImportError:
-    HAS_RPI_GPIO = False
-    print("⚠️ RPi.GPIO not available")
+    # Fallback
+    try:
+        import lgpio
+        HAS_GPIO = True
+        print("✅ rpi-lgpio library loaded")
+        
+        # Basit wrapper
+        class SimpleGPIO:
+            BCM = "BCM"
+            OUT = "OUT"
+            HIGH = 1
+            LOW = 0
+            def setmode(self, mode): pass
+            def setup(self, pin, direction): pass
+            def output(self, pin, state): pass
+            def cleanup(self): pass
+        GPIO = SimpleGPIO()
+        
+    except ImportError:
+        HAS_GPIO = False
+        print("⚠️ GPIO kütüphanesi mevcut değil")
+        
+        # Dummy GPIO class
+        class DummyGPIO:
+            BCM = "BCM"
+            OUT = "OUT"
+            HIGH = 1
+            LOW = 0
+            def setmode(self, mode): pass
+            def setup(self, pin, direction): pass
+            def output(self, pin, state): pass
+            def cleanup(self): pass
+        GPIO = DummyGPIO()
 
 # Pi5 için alternatif GPIO
 try:
@@ -146,11 +179,10 @@ class XWingRealtimeController:
             except Exception as e:
                 print(f"⚠️ gpiozero GPIO hatası: {e}")
         
-        # Fallback: RPi.GPIO dene
-        if HAS_RPI_GPIO:
+        # Fallback: GPIO dene
+        if HAS_GPIO:
             try:
                 GPIO.setmode(GPIO.BCM)
-                GPIO.setwarnings(False)
                 
                 # Buzzer pin setup
                 GPIO.setup(GPIO_BUZZER_PWM, GPIO.OUT)

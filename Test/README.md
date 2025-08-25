@@ -19,15 +19,18 @@ Bu klasör, su altı roket aracının tüm alt sistemlerini test etmek için gel
 
 ### Yazılım Bağımlılıkları
 ```bash
-# Temel sistemler
+# Pi 5 için güncellenmiş gereksinimler
 pip install pymavlink        # MAVLink protokolü
-pip install RPi.GPIO         # Raspberry Pi GPIO kontrolü
+pip install rpi-lgpio        # Raspberry Pi 5 uyumlu GPIO (RPi.GPIO yerine)
 pip install numpy            # Numerik hesaplamalar
 pip install smbus2           # I2C haberleşme (D300 sensör)
 
 # Test ve analiz
 pip install matplotlib       # Veri görselleştirme
 pip install scipy            # Sinyal işleme
+
+# Veya tüm gereksinimleri yükle
+pip install -r ../requirements.txt
 pip install json             # Veri kaydetme
 pip install threading       # Çoklu işlem
 

@@ -99,8 +99,17 @@ pluswing/
 sudo apt update && sudo apt upgrade
 sudo apt install python3 python3-pip
 
-pip3 install pymavlink RPi.GPIO smbus2
+# Raspberry Pi 5 için GPIO kütüphanesi
+pip3 install rpi-lgpio
+
+# Diğer gereksinimler
+pip3 install pymavlink smbus2 numpy
+
+# VEYA requirements.txt kullan (önerilen)
+pip3 install -r requirements.txt
 ```
+
+**Not:** Raspberry Pi 5'te eski `RPi.GPIO` kütüphanesi çalışmaz ("Cannot determine SOC peripheral base address" hatası). Bu proje `rpi-lgpio` kütüphanesini kullanacak şekilde güncellenmiştir.
 
 ### I2C Aktivasyonu
 

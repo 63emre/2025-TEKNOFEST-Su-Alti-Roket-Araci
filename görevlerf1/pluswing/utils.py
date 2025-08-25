@@ -7,9 +7,9 @@ LED kontrolü, buzzer kontrolü, zamanlayıcılar ve loglama fonksiyonları
 
 import time
 import threading
-import RPi.GPIO as GPIO
 from datetime import datetime
 from config import *
+from gpio_compat import GPIO
 
 class LEDController:
     """Kırmızı LED kontrol sınıfı"""
@@ -536,8 +536,9 @@ def safe_gpio_cleanup():
     """Güvenli GPIO temizleme"""
     try:
         GPIO.cleanup()
+        print("✓ GPIO temizliği tamamlandı")
     except Exception as e:
-        print(f"GPIO temizleme hatası: {e}")
+        print(f"⚠️ GPIO temizleme hatası: {e}")
 
 # Global sistem durumu (ana dosyadan kullanılabilir)
 system_status = None

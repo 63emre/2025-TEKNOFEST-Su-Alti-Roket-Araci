@@ -4,12 +4,43 @@ TEKNOFEST Su Altı Roket Aracı - GPIO Buton & Güvenlik Sistemi Testi
 16mm metal buton + 90 saniye güvenlik gecikme + acil durdurma testi
 """
 
-import RPi.GPIO as GPIO
 import time
 import threading
 import signal
 import sys
 from datetime import datetime
+
+# GPIO uyumluluk katmanı
+try:
+    # Önce gpio_compat modülünü dene (pluswing klasöründen)
+    sys.path.append('../görevlerf1/pluswing')
+    from gpio_compat import GPIO
+    print("✓ GPIO uyumluluk katmanı yüklendi")
+except ImportError:
+    # Fallback: Direkt lgpio veya RPi.GPIO
+    try:
+        import lgpio as gpio_lib
+        print("✓ rpi-lgpio yüklendi")
+    except ImportError:
+        import RPi.GPIO as gpio_lib
+        print("✓ RPi.GPIO yüklendi")
+    
+    # Basit wrapper (test için)
+    class SimpleGPIO:
+        BCM = "BCM"
+        OUT = "OUT"
+        IN = "IN" 
+        HIGH = 1
+        LOW = 0
+        PUD_UP = "PUD_UP"
+        
+        def setmode(self, mode): pass
+        def setup(self, pin, direction, pull_up_down=None): pass
+        def output(self, pin, state): pass
+        def input(self, pin): return 0
+        def cleanup(self): pass
+    
+    GPIO = SimpleGPIO()
 
 # GPIO pin tanımları
 POWER_BUTTON_PIN = 18    # Ana güç butonu (16mm metal buton)

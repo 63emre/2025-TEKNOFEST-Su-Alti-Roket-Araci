@@ -8,11 +8,11 @@ Not: GPIO10'daki selenoid sadece bu görevde kullanılır
 
 import time
 import math
-import RPi.GPIO as GPIO
 from config import *
 from utils import Timer, estimate_distance, format_time
 from sensors import SensorManager
 from control import StabilizationController, MotionController
+from gpio_compat import GPIO
 
 class RocketController:
     """Roket fırlatma kontrol sistemi"""
