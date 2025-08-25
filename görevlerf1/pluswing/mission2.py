@@ -8,6 +8,7 @@ Not: GPIO10'daki selenoid sadece bu görevde kullanılır
 
 import time
 import math
+from gpio_wrapper import GPIO
 from config import *
 from utils import Timer, estimate_distance, format_time
 from sensors import SensorManager

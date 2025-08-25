@@ -7,6 +7,7 @@ LED kontrolü, buzzer kontrolü, zamanlayıcılar ve loglama fonksiyonları
 
 import time
 import threading
+from gpio_wrapper import GPIO
 from datetime import datetime
 from config import *
 from gpio_compat import GPIO
