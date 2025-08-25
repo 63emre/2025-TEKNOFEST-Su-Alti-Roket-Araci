@@ -50,52 +50,66 @@ class SaraMainController:
                 self.logger.info(f"Bağlantı denemesi {attempt+1}/{retries}")
                 
                 # Port seçimi (Linux/Windows uyumlu)
-                port = MAVLINK_PORT
+                ports_to_try = []
                 if sys.platform.startswith('win'):
-                    port = MAVLINK_PORT_WIN
-                    
-                self.mavlink = mavutil.mavlink_connection(port, baud=MAVLINK_BAUD)
-                
-                # Heartbeat bekle
-                self.logger.info("Heartbeat bekleniyor...")
-                if not self.mavlink.wait_heartbeat(timeout=15):
-                    raise Exception("Pixhawk heartbeat alınamadı!")
-                    
-                self.logger.info("✓ MAVLink bağlantısı başarılı")
-                self.logger.info(f"  Sistem ID: {self.mavlink.target_system}")
-                self.logger.info(f"  Bileşen ID: {self.mavlink.target_component}")
-                
-                # Sensör bağlantısını test et
-                if self._test_sensor_connectivity():
-                    # Veri akışı istekleri
-                    self._request_data_streams()
-                    return True
+                    ports_to_try = [MAVLINK_PORT_WIN]
                 else:
-                    raise Exception("Sensör bağlantı testi başarısız")
+                    ports_to_try = MAVLINK_PORTS  # ["/dev/ttyACM0", "/dev/ttyACM1"]
+                
+                # Her portu dene
+                connection_success = False
+                for port in ports_to_try:
+                    try:
+                        self.logger.info(f"Port deneniyor: {port}")
+                        self.mavlink = mavutil.mavlink_connection(port, baud=MAVLINK_BAUD)
+                        
+                        # Heartbeat bekle
+                        self.logger.info("Heartbeat bekleniyor...")
+                        msg = self.mavlink.wait_heartbeat(timeout=3)
+                        
+                        if msg:
+                            self.logger.info(f"✅ MAVLink bağlantısı başarılı! Port: {port}")
+                            self.logger.info(f"Sistem ID: {msg.get_srcSystem()}, Tip: {msg.get_type()}")
+                            
+                            # Target system/component ayarla
+                            self.mavlink.target_system = msg.get_srcSystem()
+                            self.mavlink.target_component = msg.get_srcComponent()
+                            
+                            # Veri akışlarını iste
+                            self._request_data_streams()
+                            connection_success = True
+                            break
+                        else:
+                            self.logger.warning(f"Heartbeat alınamadı: {port}")
+                            
+                    except Exception as port_error:
+                        self.logger.warning(f"Port {port} bağlantı hatası: {port_error}")
+                        continue
+                        
+                if connection_success:
+                    return True
                     
             except Exception as e:
-                self.logger.warning(f"Bağlantı denemesi {attempt+1} başarısız: {e}")
-                if attempt < retries - 1:
-                    self.logger.info("2 saniye sonra yeniden denenecek...")
-                    time.sleep(2)
-                    
+                self.logger.error(f"MAVLink kurulum hatası (deneme {attempt+1}): {e}")
+                
+            if attempt < retries - 1:
+                self.logger.info("2 saniye beklenip tekrar denenecek...")
+                time.sleep(2)
+                
         self.logger.error("❌ MAVLink bağlantısı kurulamadı!")
         return False
         
-    def _test_sensor_connectivity(self):
-        """Sensör bağlantısını test et"""
+    def test_sensor_connections(self):
+        """Sensör bağlantılarını test et"""
         try:
-            # D300 sensörü için hızlı test
-            sensors = SensorManager(self.mavlink, self.logger)
-            time.sleep(1)  # Sensörlerin hazırlanması için bekle
+            # SensorManager oluştur
+            sensor_manager = SensorManager(self.mavlink, self.system_status.logger)
             
-            # D300 test
-            depth_data = sensors.depth.read_raw_data()
-            d300_ok = depth_data[0] is not None
+            # D300 test et
+            d300_ok = sensor_manager.test_d300_connection()
             
-            # Attitude test
-            attitude_data = sensors.attitude.get_attitude(timeout=2.0)
-            attitude_ok = attitude_data is not None
+            # Attitude test et
+            attitude_ok = sensor_manager.test_attitude_connection()
             
             self.logger.info(f"Sensör testi: D300={d300_ok}, Attitude={attitude_ok}")
             
@@ -150,377 +164,226 @@ class SaraMainController:
                 time.sleep(2)  # Buton bouncing önlemi
                 return True
                 
+            elif button_action == "stop":
+                self.logger.info("🛑 Durdurma butonu basıldı!")
+                self.emergency_stop()
+                return False
+                
             time.sleep(0.1)
             
         return False
         
-    def countdown_phase(self):
+    def countdown_90_seconds(self):
         """90 saniye güvenlik geri sayımı"""
-        self.logger.info(f"⏱️  {ARMING_DELAY_SECONDS} saniye güvenlik geri sayımı başlıyor...")
-        self.system_status.set_phase(MissionPhase.CALIBRATION)
+        self.logger.info("⏱️ 90 saniye güvenlik geri sayımı başlıyor...")
+        self.system_status.set_phase(MissionPhase.WAITING)
         
-        # Geri sayım buzzer'ını başlat
-        self.system_status.buzzer.countdown_buzzer(ARMING_DELAY_SECONDS)
-        
-        countdown_start = time.time()
-        last_announce = 0
-        
-        while time.time() - countdown_start < ARMING_DELAY_SECONDS:
-            if not self.system_running:
-                return False
+        # 90 saniye = 10 x (9 kısa bip + 1 uzun bip)
+        for group in range(10):
+            # 9 kısa bip
+            for short_beep in range(9):
+                if not self.system_running:
+                    return False
+                    
+                # Buton kontrolü
+                button_action = self.system_status.check_start_button()
+                if button_action == "stop":
+                    self.logger.info("🛑 Geri sayım durduruldu!")
+                    self.emergency_stop()
+                    return False
+                    
+                self.system_status.buzzer.beep(BUZZER_COUNTDOWN_SHORT)
+                time.sleep(BUZZER_COUNTDOWN_PAUSE)
                 
-            elapsed = time.time() - countdown_start
-            remaining = ARMING_DELAY_SECONDS - elapsed
-            
-            # Her 10 saniyede durumu bildir
-            if int(remaining) % 10 == 0 and int(remaining) != last_announce:
-                self.logger.info(f"⏱️  Arming'e {int(remaining)} saniye...")
-                last_announce = int(remaining)
+            # 1 uzun bip
+            if self.system_running:
+                self.system_status.buzzer.beep(BUZZER_COUNTDOWN_LONG)
+                remaining_groups = 9 - group
+                self.logger.info(f"⏱️ Geri sayım: {remaining_groups * 9} saniye kaldı")
                 
-            # Buton kontrol - eğer tekrar basıldıysa başa dön
-            button_action = self.system_status.check_start_button()
-            if button_action == "stop":
-                self.logger.info("🔘 Buton tekrar basıldı, başa dönülüyor...")
-                self.system_status.buzzer.stop_buzzer()
-                self.system_status.buzzer.beep(0.5)
-                time.sleep(2)
-                return False
-                
-            time.sleep(0.1)
-            
-        self.logger.info("✅ Güvenlik süresi tamamlandı!")
-        self.system_status.buzzer.mission_start_buzzer()
+        self.logger.info("✅ 90 saniye güvenlik gecikmesi tamamlandı!")
+        self.system_status.buzzer.beep_pattern(BUZZER_MISSION_START)
         return True
         
-    def _perform_calibrations(self):
-        """Kalibrasyon işlemleri (90 saniye içinde)"""
-        self.logger.info("🔧 Kalibrasyonlar yapılıyor...")
-        
+    def run_mission(self, mission_type=1):
+        """Görev çalıştır"""
         try:
-            # Sensör yöneticisi oluştur
-            sensors = SensorManager(self.mavlink, self.logger)
+            self.logger.info(f"🚀 Görev {mission_type} başlıyor...")
+            self.mission_running = True
             
-            # Sensör kalibrasyonları
-            calibration_results = sensors.calibrate_all()
+            # Sensör manager oluştur
+            sensor_manager = SensorManager(self.mavlink, self.logger)
             
-            success_count = sum(calibration_results.values())
-            total_count = len(calibration_results)
+            # Stabilizasyon kontrolcüsü oluştur
+            stabilization = StabilizationController(self.mavlink, self.logger)
             
-            if success_count == total_count:
-                self.logger.info("✅ Tüm kalibrasyonlar başarılı")
+            # Görev türüne göre çalıştır
+            if mission_type == 1:
+                success = run_mission_1(
+                    mavlink=self.mavlink,
+                    sensor_manager=sensor_manager,
+                    stabilization=stabilization,
+                    system_status=self.system_status,
+                    logger=self.logger
+                )
+            elif mission_type == 2:
+                success = run_mission_2(
+                    mavlink=self.mavlink,
+                    sensor_manager=sensor_manager,
+                    stabilization=stabilization,
+                    system_status=self.system_status,
+                    logger=self.logger
+                )
             else:
-                self.logger.warning(f"⚠️  Kalibrasyon: {success_count}/{total_count} başarılı")
+                self.logger.error(f"Geçersiz görev türü: {mission_type}")
+                return False
                 
-            # Sistem sağlığı kontrolü
-            health = sensors.check_sensor_health()
-            if health['overall_healthy']:
-                self.logger.info("✅ Sistem sağlık kontrolü: TAMAM")
+            if success:
+                self.logger.info("🎉 Görev başarıyla tamamlandı!")
+                self.system_status.set_phase(MissionPhase.COMPLETED)
             else:
-                self.logger.warning("⚠️  Sistem sağlık kontrolü: PROBLEM TESPİT EDİLDİ")
+                self.logger.error("❌ Görev başarısız!")
+                self.system_status.set_phase(MissionPhase.EMERGENCY)
                 
-        except Exception as e:
-            self.logger.error(f"Kalibrasyon hatası: {e}")
+            return success
             
-    def _perform_startup_calibrations(self):
-        """Sistem başlangıcında yapılacak otomatik kalibrasyonlar (kart kıpırdamaz)"""
-        self.logger.info("🔧 Başlangıç kalibrasyonları başlıyor...")
-        
-        try:
-            # Sensör yöneticisini başlat
-            sensors = SensorManager(self.mavlink, self.logger)
-            
-            # 1. Gyroscope kalibrasyonu (kart hareketsiz)
-            self.logger.info("📐 Gyroscope kalibrasyonu yapılıyor...")
-            self._calibrate_gyroscope()
-            
-            # 2. Barometer kalibrasyonu (kart hareketsiz)  
-            self.logger.info("🌡️ Barometer kalibrasyonu yapılıyor...")
-            self._calibrate_barometer()
-            
-            # 3. D300 derinlik sensörü kalibrasyonu (havada)
-            self.logger.info("🌊 D300 derinlik sensörü kalibrasyonu...")
-            d300_success = sensors.depth.calibrate_surface(
-                duration=D300_CALIB_DURATION_SEAWATER, 
-                use_water_surface=False  # Havada kalibrasyon
-            )
-            
-            if d300_success:
-                self.logger.info("✅ D300 kalibrasyonu tamamlandı")
-            else:
-                self.logger.warning("⚠️ D300 kalibrasyonu başarısız")
-                
-            self.logger.info("✅ Tüm başlangıç kalibrasyonları tamamlandı")
-            
-        except Exception as e:
-            self.logger.error(f"Başlangıç kalibrasyon hatası: {e}")
-            
-    def _calibrate_gyroscope(self):
-        """Gyroscope kalibrasyonu - kart hareketsiz"""
-        try:
-            self.logger.info("Gyroscope kalibrasyonu: 10 saniye hareketsiz bekleyin...")
-            
-            # Gyroscope bias hesaplama
-            gyro_samples = []
-            start_time = time.time()
-            
-            while time.time() - start_time < 10.0:  # 10 saniye
-                # SCALED_IMU mesajından gyroscope verisi al
-                msg = self.mavlink.recv_match(type='SCALED_IMU', blocking=False, timeout=0.1)
-                if msg:
-                    gyro_samples.append({
-                        'x': msg.xgyro,  # mrad/s
-                        'y': msg.ygyro,
-                        'z': msg.zgyro
-                    })
-                time.sleep(0.05)
-                
-            if len(gyro_samples) > 50:
-                # Ortalama bias hesapla
-                gyro_bias_x = sum(s['x'] for s in gyro_samples) / len(gyro_samples)
-                gyro_bias_y = sum(s['y'] for s in gyro_samples) / len(gyro_samples)
-                gyro_bias_z = sum(s['z'] for s in gyro_samples) / len(gyro_samples)
-                
-                self.logger.info(f"✅ Gyroscope bias: X={gyro_bias_x:.2f}, Y={gyro_bias_y:.2f}, Z={gyro_bias_z:.2f} mrad/s")
-            else:
-                self.logger.warning("⚠️ Gyroscope kalibrasyon verisi yetersiz")
-                
-        except Exception as e:
-            self.logger.error(f"Gyroscope kalibrasyon hatası: {e}")
-            
-    def _calibrate_barometer(self):
-        """Barometer kalibrasyonu - kart hareketsiz"""
-        try:
-            self.logger.info("Barometer kalibrasyonu: 5 saniye bekleyin...")
-            
-            pressure_samples = []
-            start_time = time.time()
-            
-            while time.time() - start_time < 5.0:  # 5 saniye
-                # SCALED_PRESSURE mesajından basınç verisi al
-                msg = self.mavlink.recv_match(type='SCALED_PRESSURE', blocking=False, timeout=0.1)
-                if msg:
-                    pressure_samples.append(msg.press_abs)  # hPa/mbar
-                time.sleep(0.1)
-                
-            if len(pressure_samples) > 20:
-                # Ortalama referans basınç
-                ref_pressure = sum(pressure_samples) / len(pressure_samples)
-                self.logger.info(f"✅ Barometer referans basınç: {ref_pressure:.2f} mbar")
-            else:
-                self.logger.warning("⚠️ Barometer kalibrasyon verisi yetersiz")
-                
-        except Exception as e:
-            self.logger.error(f"Barometer kalibrasyon hatası: {e}")
-            
-    def select_mission(self):
-        """Görev seçimi (gelecekte genişletilebilir)"""
-        # Şu an için sabit olarak Görev 1
-        # Gelecekte buton kombinasyonları ile seçim yapılabilir
-        return 1
-        
-    def run_selected_mission(self, mission_number):
-        """Seçilen görevi çalıştır"""
-        self.mission_running = True
-        success = False
-        
-        try:
-            if mission_number == 1:
-                self.logger.info("🎯 GÖREV 1 SEÇİLDİ: Seyir ve Başlangıç Noktasına Dönüş")
-                self.current_mission = "Görev 1"
-                success = run_mission_1(self.mavlink, self.system_status, self.logger)
-                
-            elif mission_number == 2:
-                self.logger.info("🎯 GÖREV 2 SEÇİLDİ: Roket Fırlatma")
-                self.current_mission = "Görev 2"
-                success = run_mission_2(self.mavlink, self.system_status, self.logger)
-                
-            else:
-                self.logger.error(f"❌ Geçersiz görev numarası: {mission_number}")
-                success = False
-                
         except Exception as e:
             self.logger.error(f"Görev çalıştırma hatası: {e}")
-            success = False
-            
+            self.system_status.set_phase(MissionPhase.EMERGENCY)
+            return False
         finally:
             self.mission_running = False
             
-        return success
+    def emergency_stop(self):
+        """Acil durdurma prosedürü"""
+        self.logger.error("🚨 ACİL DURDURMA AKTİF!")
+        self.system_running = False
+        self.mission_running = False
+        self.system_status.emergency_stop()
         
-    def mission_complete_sequence(self, success):
-        """Görev tamamlama sekansı"""
-        if success:
-            self.logger.info("🏆 GÖREV BAŞARIYLA TAMAMLANDI!")
-            self.system_status.buzzer.mission_end_buzzer()
-            
-            # Başarı için LED pattern
-            self.system_status.led.blink(0.2, 10)
-            
-        else:
-            self.logger.error("💥 GÖREV BAŞARISIZ!")
-            self.system_status.buzzer.emergency_buzzer()
-            
-            # Başarısızlık için LED pattern
-            self.system_status.led.blink(0.1, 20)
-            
-        # Sonuç bekleme
-        time.sleep(5)
+        # Tüm motorları durdur
+        if self.mavlink:
+            try:
+                # Ana motoru durdur
+                self.mavlink.mav.rc_channels_override_send(
+                    self.mavlink.target_system,
+                    self.mavlink.target_component,
+                    *[65535] * 8  # Tüm kanalları serbest bırak
+                )
+                self.logger.info("Tüm motor kanalları serbest bırakıldı")
+            except:
+                pass
+                
+    def signal_handler(self, signum, frame):
+        """Signal handler (Ctrl+C vs.)"""
+        self.logger.info("Signal yakalandı, güvenli kapatma başlıyor...")
+        self.emergency_stop()
         
-    def main_loop(self):
-        """Ana program döngüsü"""
-        self.logger.info("=" * 60)
-        self.logger.info("SU ALTI ROKET ARACI (SARA) - ANA PROGRAM")
-        self.logger.info("Teknofest 2025 Su Altı Roket Aracı Yarışması")
-        self.logger.info("=" * 60)
-        
+    def run(self, mission_type=1):
+        """Ana çalıştırma döngüsü"""
         try:
-            # MAVLink bağlantısını kur
+            # Signal handler ayarla
+            signal.signal(signal.SIGINT, self.signal_handler)
+            signal.signal(signal.SIGTERM, self.signal_handler)
+            
+            self.logger.info("🤖 SARA Su Altı Roket Aracı başlatılıyor...")
+            
+            # 1. MAVLink bağlantısını kur
             if not self.setup_mavlink():
-                self.logger.error("❌ MAVLink bağlantısı kurulamadı!")
+                self.logger.error("MAVLink bağlantısı kurulamadı, çıkılıyor")
                 return False
                 
-            # Sistem başlangıç kalibrasyonlarını yap (OTOMATIK)
-            self.logger.info("🔧 Sistem başlangıç kalibrasyonları yapılıyor...")
-            self._perform_startup_calibrations()
+            # 2. Sensör bağlantılarını test et
+            if not self.test_sensor_connections():
+                self.logger.error("Sensör bağlantıları başarısız, çıkılıyor")
+                return False
                 
-            # Ana döngü
-            mission_count = 0
+            # 3. Başlatma butonu bekle
+            if not self.wait_for_start_button():
+                self.logger.info("Başlatma iptal edildi")
+                return False
+                
+            # 4. 90 saniye güvenlik gecikmesi
+            if not self.countdown_90_seconds():
+                self.logger.info("Geri sayım iptal edildi")
+                return False
+                
+            # 5. Görevi çalıştır
+            success = self.run_mission(mission_type)
             
-            while self.system_running:
-                mission_count += 1
-                self.logger.info(f"\n🔄 DÖNGÜ {mission_count} BAŞLIYOR...")
+            if success:
+                self.logger.info("🏆 SARA görevi başarıyla tamamlandı!")
+            else:
+                self.logger.error("💥 SARA görevi başarısız!")
                 
-                # 1. Başlatma butonu bekle
-                if not self.wait_for_start_button():
-                    break
-                    
-                # 2. 90 saniye geri sayım
-                if not self.countdown_phase():
-                    continue  # Buton tekrar basıldı, başa dön
-                    
-                # 3. Görev seçimi
-                mission_number = self.select_mission()
-                
-                # 4. Seçilen görevi çalıştır
-                self.logger.info(f"🚀 Görev {mission_number} başlatılıyor...")
-                success = self.run_selected_mission(mission_number)
-                
-                # 5. Görev tamamlama sekansı
-                self.mission_complete_sequence(success)
-                
-                # 6. Yeni görev için hazırlık
-                self.logger.info("🔄 Yeni görev için başlatma butonu bekleniyor...")
-                time.sleep(2)
-                
-            self.logger.info("📴 Ana döngü sonlandırıldı")
-            return True
-            
-        except KeyboardInterrupt:
-            self.logger.info("\n⏹️  Kullanıcı tarafından durduruldu (Ctrl+C)")
-            return True
+            return success
             
         except Exception as e:
-            self.logger.error(f"💥 Ana döngü hatası: {e}")
+            self.logger.error(f"Ana program hatası: {e}")
+            self.emergency_stop()
             return False
             
-    def emergency_shutdown(self):
-        """Acil durum kapatma"""
-        self.logger.error("🚨 ACİL DURUM KAPATMA!")
-        
-        try:
-            self.system_running = False
-            
-            if self.mission_running:
-                self.logger.info("Çalışan görev durdruluyor...")
-                
-            # Sistem durumunu acil duruma geçir
-            self.system_status.emergency_stop()
-            
-            # MAVLink üzerinden acil durum komutları
-            if self.mavlink:
-                try:
-                    # Tüm servoları nötrle
-                    for channel in [SERVO_UP, SERVO_DOWN, SERVO_RIGHT, SERVO_LEFT]:
-                        self.mavlink.mav.command_long_send(
-                            self.mavlink.target_system,
-                            self.mavlink.target_component,
-                            mavutil.mavlink.MAV_CMD_DO_SET_SERVO,
-                            0, float(channel), float(PWM_NEUTRAL), 0, 0, 0, 0, 0
-                        )
-                        
-                    # Motoru durdur
-                    self.mavlink.mav.command_long_send(
-                        self.mavlink.target_system,
-                        self.mavlink.target_component,
-                        mavutil.mavlink.MAV_CMD_DO_SET_SERVO,
-                        0, float(MOTOR_MAIN), float(MOTOR_STOP), 0, 0, 0, 0, 0
-                    )
-                    
-                    self.logger.info("Acil durum komutları gönderildi")
-                    
-                except Exception as e:
-                    self.logger.error(f"Acil durum komut hatası: {e}")
-                    
-        except Exception as e:
-            self.logger.error(f"Acil durum kapatma hatası: {e}")
+        finally:
+            # Temizlik
+            self.cleanup()
             
     def cleanup(self):
         """Sistem temizliği"""
-        self.logger.info("🧹 Sistem temizleniyor...")
+        self.logger.info("Sistem temizleniyor...")
         
         try:
+            # MAVLink'i kapat
+            if self.mavlink:
+                self.mavlink.close()
+                
             # Sistem durumunu temizle
             if self.system_status:
                 self.system_status.cleanup()
                 
-            # GPIO temizle
+            # GPIO temizliği
             safe_gpio_cleanup()
             
-            self.logger.info("✅ Sistem temizliği tamamlandı")
-            
         except Exception as e:
-            self.logger.error(f"Temizlik hatası: {e}")
-
-# Signal handler'lar
-def signal_handler(signum, frame):
-    """Signal yakalayıcı (Ctrl+C, SIGTERM vs.)"""
-    print("\n🛑 Signal alındı, güvenli kapatma...")
-    if 'main_controller' in globals():
-        main_controller.emergency_shutdown()
-    sys.exit(0)
+            self.logger.warning(f"Temizlik hatası: {e}")
+            
+        self.logger.info("✅ Sistem temizliği tamamlandı")
 
 def main():
     """Ana fonksiyon"""
-    global main_controller
+    import argparse
     
-    # Signal handler'ları ayarla
-    signal.signal(signal.SIGINT, signal_handler)   # Ctrl+C
-    signal.signal(signal.SIGTERM, signal_handler)  # Termination
+    parser = argparse.ArgumentParser(description='SARA Su Altı Roket Aracı')
+    parser.add_argument('--mission', type=int, choices=[1, 2], default=1,
+                       help='Görev numarası (1 veya 2)')
+    parser.add_argument('--test-only', action='store_true',
+                       help='Sadece bağlantı testi yap')
     
-    main_controller = None
+    args = parser.parse_args()
     
-    try:
-        # Ana kontrolcüyü başlat
-        main_controller = SaraMainController()
+    sara = SaraMainController()
+    
+    if args.test_only:
+        # Sadece test modu
+        print("🧪 Test modu - sadece bağlantılar kontrol ediliyor...")
+        mavlink_ok = sara.setup_mavlink()
+        sensor_ok = sara.test_sensor_connections() if mavlink_ok else False
         
-        # Ana döngüyü çalıştır
-        success = main_controller.main_loop()
+        print(f"MAVLink: {'✅' if mavlink_ok else '❌'}")
+        print(f"Sensörler: {'✅' if sensor_ok else '❌'}")
         
-        if success:
-            print("✅ Program normal olarak sonlandı")
-        else:
-            print("❌ Program hata ile sonlandı")
-            sys.exit(1)
-            
-    except Exception as e:
-        print(f"💥 Kritik hata: {e}")
-        if main_controller:
-            main_controller.emergency_shutdown()
-        sys.exit(1)
-        
-    finally:
-        if main_controller:
-            main_controller.cleanup()
+        sara.cleanup()
+        return mavlink_ok and sensor_ok
+    else:
+        # Normal görev modu
+        return sara.run(args.mission)
 
 if __name__ == "__main__":
-    main()
+    try:
+        success = main()
+        sys.exit(0 if success else 1)
+    except KeyboardInterrupt:
+        print("\n🛑 Program kullanıcı tarafından durduruldu")
+        sys.exit(1)
+    except Exception as e:
+        print(f"💥 Kritik hata: {e}")
+        sys.exit(1)

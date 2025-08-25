@@ -46,9 +46,23 @@ class GPIOCompat:
                 # GPIO chip'i aç
                 self.chip = gpio_lib.gpiochip_open(0)  # /dev/gpiochip0
                 print(f"✓ GPIO chip açıldı: {self.chip}")
+                
+                # Sistem başlangıcında kritik pinleri temizle
+                self._force_cleanup_critical_pins()
+                
             except Exception as e:
                 print(f"❌ GPIO chip açma hatası: {e}")
                 raise
+    
+    def _force_cleanup_critical_pins(self):
+        """Kritik pinleri zorla temizle"""
+        critical_pins = [21, 9, 11, 10]  # LED, BUZZER, BUTTON, SOLENOID
+        
+        for pin in critical_pins:
+            try:
+                gpio_lib.gpio_free(self.chip, pin)
+            except:
+                pass  # Pin zaten serbest veya kullanımda değil
     
     def setmode(self, mode):
         """GPIO modunu ayarla"""
@@ -65,6 +79,15 @@ class GPIOCompat:
             
         if GPIO_LIB == "lgpio":
             try:
+                # Pin zaten kurulmuşsa önce serbest bırak
+                if pin in self.setup_pins:
+                    try:
+                        gpio_lib.gpio_free(self.chip, pin)
+                        self.setup_pins.discard(pin)
+                    except:
+                        pass
+                
+                # Pin'i yeniden kur
                 if direction == self.OUT:
                     gpio_lib.gpio_claim_output(self.chip, pin, self.LOW)
                 elif direction == self.IN:

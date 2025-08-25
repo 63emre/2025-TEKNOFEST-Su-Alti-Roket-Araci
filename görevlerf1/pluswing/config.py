@@ -6,7 +6,7 @@ Deneme.txt belgesine göre hazırlanmıştır.
 """
 
 # ---- MAVLink Bağlantı Ayarları ----
-MAVLINK_PORT = "/dev/ttyACM0"  # Pixhawk USB bağlantısı (Linux)
+MAVLINK_PORTS = ["/dev/ttyACM0", "/dev/ttyACM1"]  # Pixhawk USB bağlantısı (Linux) - fallback ile
 MAVLINK_PORT_WIN = "COM5"      # Windows için alternatif
 MAVLINK_BAUD = 115200
 
