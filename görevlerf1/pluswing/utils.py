@@ -352,7 +352,7 @@ class SystemStatus:
         # Durum değişkenleri
         self.mission_phase = MissionPhase.WAITING
         self.is_emergency = False
-        self.button_toggle_state = False  # Soft-kill butonu toggle durumu
+        self.button_pressed_once = False  # Yarışma mod: ilk basış kontrolü
         
     def set_phase(self, phase):
         """Görev fazını değiştir"""
@@ -374,13 +374,18 @@ class SystemStatus:
             self.buzzer.emergency_buzzer()
             
     def check_start_button(self):
-        """Başlatma butonunu kontrol et - YARIŞMA MOD (tek basış)"""
+        """Başlatma butonunu kontrol et - YARIŞMA MOD (sadece ilk basış)"""
         if self.button.is_pressed():
             self.logger.info("Başlatma butonu basıldı!")
             
-            # Yarışma için: Her zaman start döndür (toggle yok)
-            self.logger.info("Görev başlatma modu")
-            return "start"
+            # Yarışma için: Sadece ilk basış start döndürür
+            if not self.button_pressed_once:
+                self.button_pressed_once = True
+                self.logger.info("Görev başlatma modu")
+                return "start"
+            else:
+                self.logger.info("Buton zaten basılmış - görmezden geliniyor")
+                return None
                 
         return None
         
