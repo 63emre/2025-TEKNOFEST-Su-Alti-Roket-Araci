@@ -145,9 +145,15 @@ class DepthSensor:
             
         # D300 verisi yok - fallback durumu
         if mission_phase == "PHASE_1":
-            # İlk 10m içinde D300 kesilirse emergency
-            self.logger.critical("🚨 FAZ 1'DE D300 SENSÖRü KESTİ - ACİL DURUM PROSEDÜRÜ!")
-            return None, "EMERGENCY_PHASE1", True
+            # YARIŞMA MOD: Faz 1'de de fallback kullan
+            self.logger.warning("⚠️ FAZ 1'DE D300 YOK - FALLBACK MODE!")
+            if self.last_valid_depth is not None:
+                return self.last_valid_depth, "FALLBACK", True
+            else:
+                # İlk derinlik tahmini: su yüzeyinden başla
+                estimated_depth = 0.5  # 50cm tahmin
+                self.last_valid_depth = estimated_depth
+                return estimated_depth, "ESTIMATED", True
             
         # Diğer fazlarda fallback ile devam et
         if self.last_valid_depth is not None:

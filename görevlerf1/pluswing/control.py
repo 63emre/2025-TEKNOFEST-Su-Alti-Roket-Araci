@@ -516,6 +516,10 @@ class StabilizationController:
             
         return self.turn_to_heading(target_yaw_deg, timeout)
         
+    def emergency_180_turn(self, timeout=30):
+        """Acil durum 180 derece dönüş (turn_180_degrees ile aynı)"""
+        return self.turn_180_degrees(timeout)
+        
     def surface_control(self, duration=10):
         """Yüzeye çıkış kontrolü"""
         self.logger.info("Yüzeye çıkış kontrolü başlatılıyor...")
