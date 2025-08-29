@@ -384,6 +384,10 @@ class Mission2Controller:
         
     def _execute_rocket_preparation(self):
         """Faz 2: Roket hazırlık ve pozisyonlama"""
+        # 🆕 ROKET HAZIRLIK SİNYALİ
+        self.system_status.buzzer.beep_pattern(get_buzzer_signal_for_phase(MissionPhase.ROCKET_PREP))  # 5 orta bip
+        self.system_status.led.blink(get_led_blink_for_phase(MissionPhase.ROCKET_PREP))
+        
         self.logger.info("📍 FAZ 2: Roket hazırlık ve pozisyonlama")
         self.current_phase = MissionPhase.ROCKET_PREP
         self.system_status.set_phase(MissionPhase.ROCKET_PREP)
@@ -461,6 +465,10 @@ class Mission2Controller:
         
     def _execute_rocket_launch(self):
         """Faz 3: Roket fırlatma"""
+        # 🆕 ROKET FIRLATMA SİNYALİ
+        self.system_status.buzzer.beep_pattern(get_buzzer_signal_for_phase(MissionPhase.ROCKET_LAUNCH))  # 1 çok uzun bip
+        self.system_status.led.turn_on()  # Sürekli açık
+        
         self.logger.info("📍 FAZ 3: Roket fırlatma")
         self.current_phase = MissionPhase.ROCKET_LAUNCH
         self.system_status.set_phase(MissionPhase.ROCKET_LAUNCH)
