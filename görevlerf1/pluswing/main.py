@@ -113,7 +113,12 @@ class SaraMainController:
             
             self.logger.info(f"Sensör testi: D300={d300_ok}, Attitude={attitude_ok}")
             
-            # En azından D300 çalışmalı
+            # YARIŞMA MOD: D300 yoksa sadece uyar, devam et
+            if not d300_ok:
+                self.logger.warning("⚠️ D300 bulunamadı - FALLBACK MODE aktif!")
+                self.logger.warning("⚠️ Derinlik kontrolü manuel olacak!")
+                return attitude_ok  # Attitude yeterli
+            
             return d300_ok
             
         except Exception as e:
