@@ -135,8 +135,12 @@ class Mission1Controller:
                 return False
                 
             # Stabilizasyonu güncelle
-            if not self.stabilizer.update_stabilization():
-                self.logger.warning("Stabilizasyon güncellenemedi")
+            try:
+                if not self.stabilizer.update_stabilization():
+                    self.logger.warning("Stabilizasyon güncellenemedi")
+            except Exception as stab_error:
+                self.logger.error(f"Faz 1 stabilizasyon hatası: {stab_error}")
+                return False
                 
             # Mesafe hesaplama
             current_time = time.time()

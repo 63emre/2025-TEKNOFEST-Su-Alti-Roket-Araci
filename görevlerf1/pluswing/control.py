@@ -79,6 +79,14 @@ class ServoController:
     def set_servo(self, channel, pwm_value):
         """Servo PWM değeri ayarla"""
         try:
+            # Güvenlik kontrolleri
+            if channel is None:
+                self.logger.error("Servo channel None!")
+                return False
+            if pwm_value is None:
+                self.logger.warning(f"Servo {channel} PWM değeri None, PWM_NEUTRAL kullanılıyor")
+                pwm_value = PWM_NEUTRAL
+                
             pwm_clamped = clamp(pwm_value, PWM_MIN, PWM_MAX)
             
             self.mavlink.mav.command_long_send(
@@ -99,6 +107,9 @@ class ServoController:
             
     def set_motor(self, pwm_value):
         """Ana motor PWM değeri ayarla"""
+        if pwm_value is None:
+            self.logger.warning("Motor PWM değeri None, MOTOR_STOP kullanılıyor")
+            pwm_value = MOTOR_STOP
         return self.set_servo(MOTOR_MAIN, pwm_value)
         
     def neutral_all_servos(self):
@@ -254,6 +265,16 @@ class StabilizationController:
     def combine_commands(self, roll_left, roll_right, pitch_up, pitch_down,
                         yaw_up, yaw_down, yaw_right, yaw_left):
         """Tüm eksen komutlarını birleştir"""
+        # None değerleri 0.0 ile değiştir
+        roll_left = roll_left if roll_left is not None else 0.0
+        roll_right = roll_right if roll_right is not None else 0.0
+        pitch_up = pitch_up if pitch_up is not None else 0.0
+        pitch_down = pitch_down if pitch_down is not None else 0.0
+        yaw_up = yaw_up if yaw_up is not None else 0.0
+        yaw_down = yaw_down if yaw_down is not None else 0.0
+        yaw_right = yaw_right if yaw_right is not None else 0.0
+        yaw_left = yaw_left if yaw_left is not None else 0.0
+        
         # Her kanat için komutları topla
         final_up = pitch_up + yaw_up
         final_down = pitch_down + yaw_down  
@@ -312,10 +333,15 @@ class StabilizationController:
         
         # Debug bilgisi (gerektiğinde)
         if self.logger and hasattr(self.logger, 'debug'):
-            self.logger.debug(f"Stabilizasyon - Roll: {math.degrees(roll):.1f}°, "
-                            f"Pitch: {math.degrees(pitch):.1f}°, "
-                            f"Yaw: {math.degrees(yaw_relative):.1f}° "
-                            f"Derinlik: {current_depth:.2f}m/{self.target_depth:.2f}m")
+            roll_deg = math.degrees(roll) if roll is not None else 0.0
+            pitch_deg = math.degrees(pitch) if pitch is not None else 0.0
+            yaw_deg = math.degrees(yaw_relative) if yaw_relative is not None else 0.0
+            depth_str = f"{current_depth:.2f}" if current_depth is not None else "N/A"
+            
+            self.logger.debug(f"Stabilizasyon - Roll: {roll_deg:.1f}°, "
+                            f"Pitch: {pitch_deg:.1f}°, "
+                            f"Yaw: {yaw_deg:.1f}° "
+                            f"Derinlik: {depth_str}m/{self.target_depth:.2f}m")
         
         return success
         
