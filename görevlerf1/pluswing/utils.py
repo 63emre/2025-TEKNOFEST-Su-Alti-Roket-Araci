@@ -194,15 +194,15 @@ class ButtonController:
             return False
             
         try:
-            # İlk okuma
-            button_state1 = not GPIO.input(GPIO_START_BUTTON)  # Pull-up, basıldığında LOW
+            # İlk okuma - DOĞRU MANTIK: 1=BASILDI, 0=SERBEST
+            button_state1 = GPIO.input(GPIO_START_BUTTON)  # 1=basıldı, 0=serbest
             time.sleep(0.05)  # 50ms bekle
             
             # İkinci okuma (doğrulama)
-            button_state2 = not GPIO.input(GPIO_START_BUTTON)
+            button_state2 = GPIO.input(GPIO_START_BUTTON)
             
-            # İki okuma da aynı ve TRUE ise gerçek basış
-            if button_state1 and button_state2 and button_state1 == button_state2:
+            # İki okuma da 1 (HIGH) ise gerçek basış
+            if button_state1 == 1 and button_state2 == 1:
                 self.last_press_time = current_time
                 return True
                 
