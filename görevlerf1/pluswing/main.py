@@ -267,12 +267,8 @@ class SaraMainController:
                 if not self.system_running:
                     return False
                     
-                # Buton kontrolü
-                button_action = self.system_status.check_start_button()
-                if button_action == "stop":
-                    self.logger.info("🛑 Geri sayım durduruldu!")
-                    self.emergency_stop()
-                    return False
+                # YARIŞMA MOD: Geri sayım sırasında buton kontrolü yok
+                # Güvenlik için sadece Ctrl+C ile durdurabiliriz
                     
                 self.system_status.buzzer.beep(BUZZER_COUNTDOWN_SHORT)
                 time.sleep(BUZZER_COUNTDOWN_PAUSE)

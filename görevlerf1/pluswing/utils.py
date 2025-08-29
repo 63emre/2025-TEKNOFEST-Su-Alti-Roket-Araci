@@ -374,18 +374,13 @@ class SystemStatus:
             self.buzzer.emergency_buzzer()
             
     def check_start_button(self):
-        """Başlatma butonunu kontrol et - YARIŞMA MOD (basit)"""
+        """Başlatma butonunu kontrol et - YARIŞMA MOD (tek basış)"""
         if self.button.is_pressed():
             self.logger.info("Başlatma butonu basıldı!")
             
-            # Yarışma için: İlk basış = start, sonrakiler = stop
-            if not hasattr(self, 'first_press_done'):
-                self.first_press_done = True
-                self.logger.info("Görev başlatma modu")
-                return "start"
-            else:
-                self.logger.info("Görev durdurma modu")
-                return "stop"
+            # Yarışma için: Her zaman start döndür (toggle yok)
+            self.logger.info("Görev başlatma modu")
+            return "start"
                 
         return None
         
