@@ -49,11 +49,8 @@ class Mission1Controller:
         self.logger.info("Görev 1 başlangıç hazırlıkları...")
         
         try:
-            # Sensör kalibrasyonu (havada - su yüzeyinde tutmadan)
-            calibration_results = self.sensors.calibrate_all(use_water_surface_calib=False)
-            
-            if not all(calibration_results.values()):
-                self.logger.warning("Bazı sensörler kalibre edilemedi!")
+            # NOT: Sensör kalibrasyonu main.py'de zaten yapıldı, tekrar yapma!
+            self.logger.info("Sensörler ana kontrolcüde kalibre edildi")
                 
             # Stabilizasyonu başlat
             self.stabilizer.enable_stabilization()
@@ -145,9 +142,14 @@ class Mission1Controller:
             current_time = time.time()
             if current_time - last_distance_check >= 1.0:  # Her saniye
                 phase_time = self.phase_timer.elapsed()
-                estimated_distance = estimate_distance(speed_pwm, phase_time)
-                self.phase_distance = estimated_distance
-                self.total_distance_traveled = estimated_distance
+                # Güvenli mesafe hesaplama - None kontrolü
+                if speed_pwm is not None and phase_time is not None:
+                    estimated_distance = estimate_distance(speed_pwm, phase_time)
+                    self.phase_distance = estimated_distance
+                    self.total_distance_traveled = estimated_distance
+                else:
+                    estimated_distance = 0.0
+                    self.logger.warning("Mesafe hesaplama için gerekli veriler eksik")
                 
                 # Durum raporu (D300 sensöründen güvenli okuma)
                 depth_result = self.sensors.depth.get_depth_safe("PHASE_1")
@@ -190,10 +192,12 @@ class Mission1Controller:
         
         # Hedef değerleri ayarla
         target_depth = TARGET_DEPTH_MAIN
-        remaining_distance = MISSION_DISTANCE - self.phase1_actual_distance  # Gerçek Faz 1 mesafesini çıkar
+        # Güvenli mesafe hesaplama - None kontrolü
+        phase1_distance = self.phase1_actual_distance if self.phase1_actual_distance is not None else 0.0
+        remaining_distance = MISSION_DISTANCE - phase1_distance  # Gerçek Faz 1 mesafesini çıkar
         speed_pwm = get_speed_for_phase(MissionPhase.PHASE_2)
         
-        self.logger.info(f"Faz 2 hedefi: {remaining_distance:.1f}m (Faz 1 gerçek: {self.phase1_actual_distance:.1f}m)")
+        self.logger.info(f"Faz 2 hedefi: {remaining_distance:.1f}m (Faz 1 gerçek: {phase1_distance:.1f}m)")
         
         self.stabilizer.set_target_depth(target_depth)
         self.current_speed_pwm = speed_pwm
@@ -219,9 +223,16 @@ class Mission1Controller:
             current_time = time.time()
             if current_time - last_distance_check >= 1.0:  # Her saniye
                 phase_time = self.phase_timer.elapsed()
-                estimated_distance = estimate_distance(speed_pwm, phase_time)
-                phase_2_distance = estimated_distance
-                self.total_distance_traveled = self.phase1_actual_distance + phase_2_distance
+                # Güvenli mesafe hesaplama - None kontrolü
+                if speed_pwm is not None and phase_time is not None:
+                    estimated_distance = estimate_distance(speed_pwm, phase_time)
+                    phase_2_distance = estimated_distance
+                    phase1_dist = self.phase1_actual_distance if self.phase1_actual_distance is not None else 0.0
+                    self.total_distance_traveled = phase1_dist + phase_2_distance
+                else:
+                    estimated_distance = 0.0
+                    phase_2_distance = 0.0
+                    self.logger.warning("Faz 2 mesafe hesaplama için gerekli veriler eksik")
                 
                 # D300 güvenli okuma (diğer fazlarda fallback devam eder)
                 depth_result = self.sensors.depth.get_depth_safe("PHASE_2")
@@ -239,23 +250,6 @@ class Mission1Controller:
             if phase_2_distance >= remaining_distance:
                 self.phase2_actual_distance = phase_2_distance  # Gerçek mesafeyi kaydet
                 self.logger.info(f"✓ Faz 2 tamamlandı: {self.phase2_actual_distance:.1f}m")
-                break
-                phase_2_distance = estimated_distance
-                self.total_distance_traveled = FIRST_PHASE_DISTANCE + estimated_distance
-                
-                # Durum raporu (D300 sensöründen)
-                sensor_data = self.sensors.get_all_sensor_data()
-                current_depth = sensor_data['depth']['depth_m'] if sensor_data['depth']['is_valid'] else None
-                depth_str = f"{current_depth:.1f}m" if current_depth else "N/A"
-                
-                self.logger.info(f"Faz 2 - Toplam: {self.total_distance_traveled:.1f}m/{MISSION_DISTANCE}m, "
-                               f"Derinlik: {depth_str}/{target_depth}m")
-                
-                last_distance_check = current_time
-                
-            # Hedef mesafeye ulaştık mı?
-            if phase_2_distance >= remaining_distance:
-                self.logger.info(f"✓ Faz 2 tamamlandı: Toplam {self.total_distance_traveled:.1f}m")
                 break
                 
             # Zaman aşımı kontrolü
@@ -296,11 +290,13 @@ class Mission1Controller:
         
         # Hedef değerleri ayarla
         target_depth = TARGET_DEPTH_MAIN
-        # Gerçek gidilen mesafeyi kullan (phase1 + phase2)
-        return_distance = self.phase1_actual_distance + self.phase2_actual_distance
+        # Gerçek gidilen mesafeyi kullan (phase1 + phase2) - None kontrolü
+        phase1_dist = self.phase1_actual_distance if self.phase1_actual_distance is not None else 0.0
+        phase2_dist = self.phase2_actual_distance if self.phase2_actual_distance is not None else 0.0
+        return_distance = phase1_dist + phase2_dist
         speed_pwm = get_speed_for_phase(MissionPhase.RETURN)
         
-        self.logger.info(f"Geri dönüş hedefi: {return_distance:.1f}m (Faz1: {self.phase1_actual_distance:.1f}m + Faz2: {self.phase2_actual_distance:.1f}m)")
+        self.logger.info(f"Geri dönüş hedefi: {return_distance:.1f}m (Faz1: {phase1_dist:.1f}m + Faz2: {phase2_dist:.1f}m)")
         
         self.stabilizer.set_target_depth(target_depth)
         self.current_speed_pwm = speed_pwm
@@ -326,16 +322,23 @@ class Mission1Controller:
             current_time = time.time()
             if current_time - last_distance_check >= 1.0:  # Her saniye
                 phase_time = self.phase_timer.elapsed()
-                estimated_distance = estimate_distance(speed_pwm, phase_time)
-                return_distance_traveled = estimated_distance
+                # Güvenli mesafe hesaplama - None kontrolü
+                if speed_pwm is not None and phase_time is not None:
+                    estimated_distance = estimate_distance(speed_pwm, phase_time)
+                    return_distance_traveled = estimated_distance
+                else:
+                    estimated_distance = 0.0
+                    return_distance_traveled = 0.0
+                    self.logger.warning("Geri dönüş mesafe hesaplama için gerekli veriler eksik")
                 
-                # Durum raporu (D300 sensöründen)
-                sensor_data = self.sensors.get_all_sensor_data()
-                current_depth = sensor_data['depth']['depth_m'] if sensor_data['depth']['is_valid'] else None
+                # Durum raporu (D300 sensöründen güvenli okuma)
+                depth_result = self.sensors.depth.get_depth_safe("RETURN")
+                current_depth, connection_status, fallback_used = depth_result
                 depth_str = f"{current_depth:.1f}m" if current_depth else "N/A"
+                status_indicator = "⚠️" if fallback_used else "✅"
                 
-                self.logger.info(f"Geri dönüş - Mesafe: {return_distance_traveled:.1f}m/{return_distance}m, "
-                               f"Derinlik: {depth_str}/{target_depth}m")
+                self.logger.info(f"Geri dönüş - Mesafe: {return_distance_traveled:.1f}m/{return_distance:.1f}m, "
+                               f"Derinlik: {depth_str}/{target_depth}m {status_indicator}")
                 
                 last_distance_check = current_time
                 
@@ -434,19 +437,26 @@ class Mission1Controller:
             'phase': self.current_phase,
             'mission_time': self.mission_timer.elapsed() if self.mission_timer.is_running() else 0,
             'phase_time': self.phase_timer.elapsed() if self.phase_timer.is_running() else 0,
-            'total_distance': self.total_distance_traveled,
-            'phase_distance': self.phase_distance,
+            'total_distance': self.total_distance_traveled if self.total_distance_traveled is not None else 0.0,
+            'phase_distance': self.phase_distance if self.phase_distance is not None else 0.0,
             'completed': self.mission_completed,
             'success': self.mission_success,
-            'current_speed': self.current_speed_pwm
+            'current_speed': self.current_speed_pwm if self.current_speed_pwm is not None else MOTOR_STOP
         }
         
         # Sensör durumu ekle
-        sensor_data = self.sensors.get_all_sensor_data()
-        if sensor_data['depth']['is_valid']:
-            status['current_depth'] = sensor_data['depth']['depth_m']
-        if sensor_data['attitude']:
-            status['current_heading'] = sensor_data['attitude']['yaw_relative_deg']
+        try:
+            sensor_data = self.sensors.get_all_sensor_data()
+            if sensor_data and sensor_data['depth'] and sensor_data['depth']['is_valid']:
+                depth_val = sensor_data['depth']['depth_m']
+                if depth_val is not None:
+                    status['current_depth'] = depth_val
+            if sensor_data and sensor_data['attitude']:
+                heading_val = sensor_data['attitude'].get('yaw_relative_deg')
+                if heading_val is not None:
+                    status['current_heading'] = heading_val
+        except Exception as e:
+            self.logger.warning(f"Sensör durumu alma hatası: {e}")
             
         return status
         
@@ -461,10 +471,10 @@ class Mission1Controller:
                         f"Süre: {mission_time_str}, "
                         f"Mesafe: {status['total_distance']:.1f}m")
                         
-        if 'current_depth' in status:
+        if 'current_depth' in status and status['current_depth'] is not None:
             self.logger.info(f"Derinlik: {status['current_depth']:.2f}m")
             
-        if 'current_heading' in status:
+        if 'current_heading' in status and status['current_heading'] is not None:
             self.logger.info(f"Heading: {status['current_heading']:.1f}°")
             
     def cleanup(self):

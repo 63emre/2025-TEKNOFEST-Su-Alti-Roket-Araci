@@ -121,11 +121,8 @@ class Mission2Controller:
         self.logger.info("Görev 2 başlangıç hazırlıkları...")
         
         try:
-            # Sensör kalibrasyonu (havada - su yüzeyinde tutmadan)
-            calibration_results = self.sensors.calibrate_all(use_water_surface_calib=False)
-            
-            if not all(calibration_results.values()):
-                self.logger.warning("Bazı sensörler kalibre edilemedi!")
+            # NOT: Sensör kalibrasyonu main.py'de zaten yapıldı, tekrar yapma!
+            self.logger.info("Sensörler ana kontrolcüde kalibre edildi")
                 
             # Roket sistemi hazırlığı
             if not self.rocket.prepare_rocket():
