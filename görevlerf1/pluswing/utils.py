@@ -182,7 +182,7 @@ class ButtonController:
         GPIO.setmode(GPIO.BCM)
         GPIO.setup(GPIO_START_BUTTON, GPIO.IN, pull_up_down=GPIO.PUD_UP)
         self.last_press_time = 0
-        self.debounce_time = 0.2  # 200ms debounce
+        self.debounce_time = 2.0  # 2000ms debounce (yarışma için)
         
     def is_pressed(self):
         """Buton basılı mı kontrol et (debounce ile)"""
@@ -374,12 +374,13 @@ class SystemStatus:
             self.buzzer.emergency_buzzer()
             
     def check_start_button(self):
-        """Başlatma butonunu kontrol et ve toggle durumunu yönet"""
+        """Başlatma butonunu kontrol et - YARIŞMA MOD (basit)"""
         if self.button.is_pressed():
-            self.button_toggle_state = not self.button_toggle_state
-            self.logger.info(f"Başlatma butonu basıldı, durum: {self.button_toggle_state}")
+            self.logger.info("Başlatma butonu basıldı!")
             
-            if self.button_toggle_state:
+            # Yarışma için: İlk basış = start, sonrakiler = stop
+            if not hasattr(self, 'first_press_done'):
+                self.first_press_done = True
                 self.logger.info("Görev başlatma modu")
                 return "start"
             else:

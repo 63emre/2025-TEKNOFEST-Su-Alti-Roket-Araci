@@ -19,8 +19,8 @@ class DepthSensor:
     """
     
     # D300 mesaj kaynaklarına göre mesaj tanımları
-    MSG_NAME_BY_SRC = {2: 'SCALED_PRESSURE2', 3: 'SCALED_PRESSURE3'}
-    MSG_ID_BY_SRC = {2: 137, 3: 142}
+    MSG_NAME_BY_SRC = {1: 'SCALED_PRESSURE', 2: 'SCALED_PRESSURE2', 3: 'SCALED_PRESSURE3'}
+    MSG_ID_BY_SRC = {1: 29, 2: 137, 3: 142}
     
     def __init__(self, mavlink_connection, logger=None, src=None):
         self.mavlink = mavlink_connection

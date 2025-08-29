@@ -369,7 +369,12 @@ class StabilizationController:
     def calculate_depth_correction(self, current_depth):
         """Derinlik kontrolü için pitch düzeltmesi"""
         if current_depth is None:
-            return 0.0
+            # D300 yok - manuel derinlik kontrolü
+            # Hedef derinliğe göre sabit pitch ver
+            if self.target_depth > 1.0:  # 1m'den derin hedefse
+                return math.radians(-5.0)  # 5° burun aşağı (dalış)
+            else:
+                return 0.0  # Yüzeye yakınsa nötr
             
         if abs(current_depth - self.target_depth) < DEPTH_DEADBAND:
             return 0.0
