@@ -10,6 +10,7 @@ import threading
 from gpio_wrapper import GPIO
 from datetime import datetime
 from config import *
+from gpio_compat import GPIO
 
 class LEDController:
     """Kırmızı LED kontrol sınıfı"""
@@ -182,7 +183,7 @@ class ButtonController:
         GPIO.setmode(GPIO.BCM)
         GPIO.setup(GPIO_START_BUTTON, GPIO.IN, pull_up_down=GPIO.PUD_UP)
         self.last_press_time = 0
-        self.debounce_time = 2.0  # 2000ms debounce (yarışma için)
+        self.debounce_time = 0.2  # 200ms debounce
         
     def is_pressed(self):
         """Buton basılı mı kontrol et (debounce ile)"""
@@ -352,7 +353,7 @@ class SystemStatus:
         # Durum değişkenleri
         self.mission_phase = MissionPhase.WAITING
         self.is_emergency = False
-        self.button_pressed_once = False  # Yarışma mod: ilk basış kontrolü
+        self.button_toggle_state = False  # Soft-kill butonu toggle durumu
         
     def set_phase(self, phase):
         """Görev fazını değiştir"""
@@ -374,18 +375,13 @@ class SystemStatus:
             self.buzzer.emergency_buzzer()
             
     def check_start_button(self):
-        """Başlatma butonunu kontrol et - YARIŞMA MOD (sadece ilk basış)"""
+        """Başlatma butonunu kontrol et - İPTAL/RESTART sistemi"""
         if self.button.is_pressed():
-            self.logger.info("Başlatma butonu basıldı!")
+            self.logger.info("🔘 Başlatma butonu basıldı!")
             
-            # Yarışma için: Sadece ilk basış start döndürür
-            if not self.button_pressed_once:
-                self.button_pressed_once = True
-                self.logger.info("Görev başlatma modu")
-                return "start"
-            else:
-                self.logger.info("Buton zaten basılmış - görmezden geliniyor")
-                return None
+            # Her basış restart için kullanılır
+            self.logger.info("Görev başlatma/restart modu")
+            return "restart"
                 
         return None
         

@@ -40,18 +40,17 @@ MOTOR_REVERSE_MAX = 1100
 
 # ---- D300 Derinlik Sensörü (MAVLink) ----
 # D300 Pixhawk'a bağlı, MAVLink SCALED_PRESSURE mesajları üzerinden veri alınır
-D300_SOURCE = 1                    # 1=SCALED_PRESSURE, 2=SCALED_PRESSURE2, 3=SCALED_PRESSURE3
+D300_SOURCE = 2                    # 2=SCALED_PRESSURE2, 3=SCALED_PRESSURE3
 D300_DATA_RATE_HZ = 10            # Veri alma hızı (Hz)
 D300_SEAWATER_DENSITY = 1025.0    # Deniz suyu yoğunluğu (kg/m³) - GÖREVLER DENİZDE
 D300_FRESHWATER_DENSITY = 997.0   # Tatlı su yoğunluğu (kg/m³)
 D300_GRAVITY = 9.81               # Yerçekimi (m/s²)
 
 # ---- D300 Kalibrasyon Ayarları ----
-# Otomatik kalibrasyon - güç verildiğinde butona basılmadan yapılır
+# Su yüzeyinde tutmadan kalibrasyon için
 D300_CALIB_DURATION_SEAWATER = 6   # Deniz suyu kalibrasyonu süresi (saniye)
 D300_CALIB_DURATION_FRESHWATER = 6 # Tatlı su kalibrasyonu süresi (saniye)
 D300_USE_WATER_SURFACE_CALIB = False  # True: Su yüzeyinde tut, False: Havada kalibre et
-AUTO_CALIBRATION_ON_POWER = True     # Güç verildiğinde otomatik kalibrasyon
 
 # ---- Güvenlik Zamanları ----
 ARMING_DELAY_SECONDS = 90    # 90 saniye arming gecikmesi
@@ -82,18 +81,12 @@ YAW_K_ANG_US_PER_RAD = 400.0
 YAW_DEADBAND_DEG = 2.0
 YAW_MAX_DELTA_US = 300.0
 
-# Derinlik Kontrolü (PID) - Deniz Koşulları İçin Optimize Edilmiş
-DEPTH_KP = 150.0        # P kontrolcü katsayısı (deniz için yumuşak - önceki: 200.0)
-DEPTH_KI = 6.0          # I kontrolcü katsayısı (windup önleme - önceki: 10.0)
-DEPTH_KD = 80.0         # D kontrolcü katsayısı (daha iyi damping - önceki: 50.0)
-DEPTH_MAX_PITCH = 20.0  # Maksimum pitch açısı (daha fazla otorite - önceki: 15.0)
+# Derinlik Kontrolü (PID)
+DEPTH_KP = 200.0        # P kontrolcü katsayısı
+DEPTH_KI = 10.0         # I kontrolcü katsayısı
+DEPTH_KD = 50.0         # D kontrolcü katsayısı
+DEPTH_MAX_PITCH = 15.0  # Maksimum pitch açısı (derece)
 DEPTH_DEADBAND = 0.2    # Derinlik deadband (metre)
-
-# Gelişmiş PID Kontrol Parametreleri
-DEPTH_INTEGRAL_CLAMP = 0.3      # Integral windup sınırı (radyan)
-DEPTH_FILTER_CUTOFF = 5.0       # Sinyal filtresi kesim frekansı (Hz)
-DEPTH_FAILSAFE_TIMEOUT = 5.0    # Max output için fail-safe süresi (saniye)
-DEPTH_MAX_OUTPUT_THRESHOLD = 0.9 # Fail-safe tetikleme eşiği (%90)
 
 # ---- Genel Güvenlik Sınırları ----
 OVERALL_MAX_DELTA_US = 400.0
@@ -132,46 +125,15 @@ SPEED_SLOW = 1600      # Yavaş hız
 SPEED_MEDIUM = 1700    # Orta hız  
 SPEED_FAST = 1800      # Hızlı hız
 
-# ---- Buzzer ve LED (Pinger) Sinyalleri ----
-# Sistem başlangıç ve faz geçiş sinyalleri - DETAYLANDIRILMIŞ
-
-# Sistem başlangıç
-BUZZER_POWER_ON = [0.2, 0.1, 0.2, 0.1, 0.2]     # Güç verildiğinde (3 kısa bip)
-BUZZER_CALIBRATION = [0.1, 0.1, 0.1, 0.1, 0.1, 0.1]  # Kalibrasyon sırasında (6 hızlı bip)
-BUZZER_CALIBRATION_OK = [0.5, 0.2, 0.5]          # Kalibrasyon başarılı (2 uzun bip)
-BUZZER_CALIBRATION_FAIL = [0.1, 0.1] * 5         # Kalibrasyon başarısız (10 hızlı bip)
-
-# 90 saniye geri sayım (değiştirilmedi)
+# ---- Buzzer Sinyalleri ----
+# 90 saniye = 10 x 9 saniye (9 kısa bip + 1 uzun bip)
+BUZZER_STARTUP = [0.5, 0.2, 0.5, 0.2, 0.5]  # Başlangıç sinyali
 BUZZER_COUNTDOWN_SHORT = 0.1    # Kısa bip süresi  
 BUZZER_COUNTDOWN_LONG = 0.5     # Uzun bip süresi
 BUZZER_COUNTDOWN_PAUSE = 0.9    # Bip arası bekleme
-
-# Görev fazları - HER FAZ İÇİN FARKLI SİNYAL
-BUZZER_MISSION_START = [0.3, 0.1, 0.3, 0.1, 0.3]    # Görev başlangıcı (3 orta bip)
-BUZZER_PHASE_1 = [0.2]                               # Faz 1 başlangıcı (1 bip)
-BUZZER_PHASE_2 = [0.2, 0.1, 0.2]                    # Faz 2 başlangıcı (2 bip)
-BUZZER_TURNING = [0.3, 0.1, 0.3, 0.1, 0.3]         # 180° dönüş (3 orta bip)
-BUZZER_RETURN = [0.2, 0.1, 0.2, 0.1, 0.2, 0.1, 0.2]  # Geri dönüş (4 bip)
-BUZZER_SURFACING = [1.0, 0.3, 1.0]                  # Yüzeye çıkış (2 uzun bip)
-
-# Roket görevleri (Görev 2)
-BUZZER_ROCKET_PREP = [0.5, 0.2, 0.5, 0.2, 0.5, 0.2, 0.5, 0.2, 0.5]  # Roket hazırlık (5 orta bip)
-BUZZER_ROCKET_LAUNCH = [2.0]                         # Roket fırlatma (1 çok uzun bip)
-
-# Görev sonucu
-BUZZER_MISSION_SUCCESS = [0.5, 0.2, 0.5, 0.2, 0.5, 0.2, 0.5]  # Başarılı (4 orta bip)
-BUZZER_MISSION_FAIL = [0.1, 0.1] * 8                 # Başarısız (16 hızlı bip)
-BUZZER_EMERGENCY = [0.1, 0.1] * 10                   # Acil durum (20 hızlı bip)
-
-# LED (Pinger) Durumları - DETAYLANDIRILMIŞ
-LED_POWER_ON_BLINK = 0.5        # Güç verildiğinde yanıp sönme
-LED_CALIBRATION_BLINK = 0.2     # Kalibrasyon sırasında hızlı yanıp sönme
-LED_WAITING_BLINK = 1.0         # Buton bekleme - yavaş yanıp sönme
-LED_COUNTDOWN_BLINK = 0.1       # Geri sayım - çok hızlı yanıp sönme
-LED_MISSION_ON = True           # Görev sırasında sürekli açık
-LED_PHASE_TRANSITION = 0.3      # Faz geçişlerinde orta hızda yanıp sönme
-LED_EMERGENCY_BLINK = 0.05      # Acil durum - çok hızlı yanıp sönme
-LED_SUCCESS_SLOW_BLINK = 2.0    # Görev başarılı - çok yavaş yanıp sönme
+BUZZER_MISSION_START = [0.2, 0.1] * 5        # Görev başlangıcı (5 saniye)
+BUZZER_MISSION_END = [1.0, 0.5] * 3          # Görev bitişi (3 saniyede 1)
+BUZZER_EMERGENCY = [0.1, 0.1] * 10           # Acil durum
 
 # ---- Hız Hesaplama Sabitleri ----
 ESTIMATED_SPEED_SLOW = 1.0      # m/s
@@ -225,36 +187,3 @@ def get_target_depth_for_phase(phase):
         return TARGET_DEPTH_MAIN
     else:
         return TARGET_DEPTH_MAIN
-
-def get_buzzer_signal_for_phase(phase):
-    """Faza göre buzzer sinyali döndür"""
-    signals = {
-        MissionPhase.CALIBRATION: BUZZER_CALIBRATION,
-        MissionPhase.PHASE_1: BUZZER_PHASE_1,
-        MissionPhase.PHASE_2: BUZZER_PHASE_2,
-        MissionPhase.TURNING: BUZZER_TURNING,
-        MissionPhase.RETURN: BUZZER_RETURN,
-        MissionPhase.SURFACING: BUZZER_SURFACING,
-        MissionPhase.ROCKET_PREP: BUZZER_ROCKET_PREP,
-        MissionPhase.ROCKET_LAUNCH: BUZZER_ROCKET_LAUNCH,
-        MissionPhase.COMPLETED: BUZZER_MISSION_SUCCESS,
-        MissionPhase.EMERGENCY: BUZZER_EMERGENCY
-    }
-    return signals.get(phase, [0.2])  # Varsayılan: 1 kısa bip
-
-def get_led_blink_for_phase(phase):
-    """Faza göre LED yanıp sönme hızı döndür"""
-    blink_rates = {
-        MissionPhase.CALIBRATION: LED_CALIBRATION_BLINK,
-        MissionPhase.WAITING: LED_WAITING_BLINK,
-        MissionPhase.PHASE_1: LED_PHASE_TRANSITION,
-        MissionPhase.PHASE_2: LED_PHASE_TRANSITION,
-        MissionPhase.TURNING: LED_PHASE_TRANSITION,
-        MissionPhase.RETURN: LED_PHASE_TRANSITION,
-        MissionPhase.SURFACING: LED_PHASE_TRANSITION,
-        MissionPhase.ROCKET_PREP: LED_PHASE_TRANSITION,
-        MissionPhase.ROCKET_LAUNCH: LED_MISSION_ON,
-        MissionPhase.COMPLETED: LED_SUCCESS_SLOW_BLINK,
-        MissionPhase.EMERGENCY: LED_EMERGENCY_BLINK
-    }
-    return blink_rates.get(phase, LED_MISSION_ON)

@@ -17,8 +17,8 @@ from config import *
 from utils import init_system_status, wait_with_button_check, safe_gpio_cleanup
 from sensors import SensorManager
 from control import StabilizationController
-from mission1 import Mission1Controller
-from mission2 import Mission2Controller
+from mission1 import run_mission_1
+from mission2 import run_mission_2
 
 class SaraMainController:
     """SARA Ana Kontrol Sistemi"""
@@ -113,67 +113,17 @@ class SaraMainController:
             
             self.logger.info(f"Sensör testi: D300={d300_ok}, Attitude={attitude_ok}")
             
-            # YARIŞMA MOD: D300 yoksa sadece uyar, devam et
-            if not d300_ok:
-                self.logger.warning("⚠️ D300 bulunamadı - FALLBACK MODE aktif!")
-                self.logger.warning("⚠️ Derinlik kontrolü manuel olacak!")
-                return attitude_ok  # Attitude yeterli
-            
+            # En azından D300 çalışmalı
             return d300_ok
             
         except Exception as e:
             self.logger.error(f"Sensör bağlantı testi hatası: {e}")
             return False
             
-    def auto_calibrate_on_power(self):
-        """Güç verildiğinde otomatik kalibrasyon yap - butona basılmadan"""
-        if not AUTO_CALIBRATION_ON_POWER:
-            self.logger.info("Otomatik kalibrasyon deaktif, manuel kalibrasyon gerekli")
-            return self.calibrate_sensors()
-            
-        try:
-            self.logger.info("🔧 Otomatik sensör kalibrasyonu başlatılıyor...")
-            
-            # Kalibrasyon sinyali başlat
-            self.system_status.set_phase(MissionPhase.CALIBRATION)
-            self.system_status.buzzer.beep_pattern(BUZZER_CALIBRATION)
-            self.system_status.led.blink(LED_CALIBRATION_BLINK)
-            
-            # SensorManager oluştur
-            sensor_manager = SensorManager(self.mavlink, self.system_status.logger)
-            
-            # Tüm sensörleri kalibre et
-            calibration_results = sensor_manager.calibrate_all()
-            
-            # Sonuçları kontrol et
-            depth_ok = calibration_results.get('depth', False)
-            attitude_ok = calibration_results.get('attitude', False)
-            
-            self.logger.info(f"Otomatik kalibrasyon sonuçları: D300={depth_ok}, Attitude={attitude_ok}")
-            
-            # Sonuç sinyalleri
-            if depth_ok:
-                self.logger.info("✅ Otomatik sensör kalibrasyonu tamamlandı")
-                self.system_status.buzzer.beep_pattern(BUZZER_CALIBRATION_OK)
-                self.system_status.led.blink(LED_SUCCESS_SLOW_BLINK, count=2)
-                time.sleep(2)  # Sinyal tamamlanması için bekle
-                return True
-            else:
-                self.logger.error("❌ D300 derinlik sensörü otomatik kalibrasyonu başarısız")
-                self.system_status.buzzer.beep_pattern(BUZZER_CALIBRATION_FAIL)
-                self.system_status.led.blink(LED_EMERGENCY_BLINK, count=10)
-                return False
-                
-        except Exception as e:
-            self.logger.error(f"Otomatik kalibrasyon hatası: {e}")
-            self.system_status.buzzer.beep_pattern(BUZZER_CALIBRATION_FAIL)
-            self.system_status.led.blink(LED_EMERGENCY_BLINK, count=10)
-            return False
-
     def calibrate_sensors(self):
-        """Manuel sensör kalibrasyonu yap"""
+        """Sensör kalibrasyonu yap"""
         try:
-            self.logger.info("🔧 Manuel sensör kalibrasyonu başlatılıyor...")
+            self.logger.info("🔧 Sensör kalibrasyonu başlatılıyor...")
             
             # SensorManager oluştur
             sensor_manager = SensorManager(self.mavlink, self.system_status.logger)
@@ -185,18 +135,18 @@ class SaraMainController:
             depth_ok = calibration_results.get('depth', False)
             attitude_ok = calibration_results.get('attitude', False)
             
-            self.logger.info(f"Manuel kalibrasyon sonuçları: D300={depth_ok}, Attitude={attitude_ok}")
+            self.logger.info(f"Kalibrasyon sonuçları: D300={depth_ok}, Attitude={attitude_ok}")
             
             # En azından D300 kalibrasyonu başarılı olmalı
             if depth_ok:
-                self.logger.info("✅ Manuel sensör kalibrasyonu tamamlandı")
+                self.logger.info("✅ Sensör kalibrasyonu tamamlandı")
                 return True
             else:
-                self.logger.error("❌ D300 derinlik sensörü manuel kalibrasyonu başarısız")
+                self.logger.error("❌ D300 derinlik sensörü kalibrasyonu başarısız")
                 return False
                 
         except Exception as e:
-            self.logger.error(f"Manuel kalibrasyon hatası: {e}")
+            self.logger.error(f"Sensör kalibrasyon hatası: {e}")
             return False
             
     def _request_data_streams(self):
@@ -230,23 +180,18 @@ class SaraMainController:
         self.logger.info("🔘 Başlatma butonu bekleniyor...")
         self.system_status.set_phase(MissionPhase.WAITING)
         
-        # LED yavaş yanıp sönsün (bekleme modunda)
-        self.system_status.led.blink(LED_WAITING_BLINK)
+        # LED yanıp sönsün (bekleme modunda)
+        self.system_status.led.blink(0.5)
         
         while self.system_running:
             button_action = self.system_status.check_start_button()
             
-            if button_action == "start":
+            if button_action == "restart":
                 self.logger.info("✅ Başlatma butonu basıldı!")
                 self.system_status.led.turn_on()
-                self.system_status.buzzer.beep_pattern(BUZZER_MISSION_START)
+                self.system_status.buzzer.beep_pattern(BUZZER_STARTUP)
                 time.sleep(2)  # Buton bouncing önlemi
                 return True
-                
-            elif button_action == "stop":
-                self.logger.info("🛑 Durdurma butonu basıldı!")
-                self.emergency_stop()
-                return False
                 
             time.sleep(0.1)
             
@@ -257,9 +202,6 @@ class SaraMainController:
         self.logger.info("⏱️ 90 saniye güvenlik geri sayımı başlıyor...")
         self.system_status.set_phase(MissionPhase.WAITING)
         
-        # LED çok hızlı yanıp sönsün (geri sayım modunda)
-        self.system_status.led.blink(LED_COUNTDOWN_BLINK)
-        
         # 90 saniye = 10 x (9 kısa bip + 1 uzun bip)
         for group in range(10):
             # 9 kısa bip
@@ -267,8 +209,11 @@ class SaraMainController:
                 if not self.system_running:
                     return False
                     
-                # YARIŞMA MOD: Geri sayım sırasında buton kontrolü yok
-                # Güvenlik için sadece Ctrl+C ile durdurabiliriz
+                # Buton kontrolü - iptal için
+                button_action = self.system_status.check_start_button()
+                if button_action == "restart":
+                    self.logger.info("🛑 Geri sayım iptal edildi! Yeniden buton bekleniyor...")
+                    return "restart"  # İptal sinyali
                     
                 self.system_status.buzzer.beep(BUZZER_COUNTDOWN_SHORT)
                 time.sleep(BUZZER_COUNTDOWN_PAUSE)
@@ -297,11 +242,21 @@ class SaraMainController:
             
             # Görev türüne göre çalıştır
             if mission_type == 1:
-                mission_controller = Mission1Controller(self.mavlink, self.system_status, self.logger)
-                success = mission_controller.start_mission()
+                success = run_mission_1(
+                    mavlink=self.mavlink,
+                    sensor_manager=sensor_manager,
+                    stabilization=stabilization,
+                    system_status=self.system_status,
+                    logger=self.logger
+                )
             elif mission_type == 2:
-                mission_controller = Mission2Controller(self.mavlink, self.system_status, self.logger)
-                success = mission_controller.start_mission()
+                success = run_mission_2(
+                    mavlink=self.mavlink,
+                    sensor_manager=sensor_manager,
+                    stabilization=stabilization,
+                    system_status=self.system_status,
+                    logger=self.logger
+                )
             else:
                 self.logger.error(f"Geçersiz görev türü: {mission_type}")
                 return False
@@ -356,11 +311,6 @@ class SaraMainController:
             
             self.logger.info("🤖 SARA Su Altı Roket Aracı başlatılıyor...")
             
-            # 🆕 GÜÇ VERİLDİĞİNDE OTOMATIK PROSEDÜR
-            self.system_status.buzzer.beep_pattern(BUZZER_POWER_ON)
-            self.system_status.led.blink(LED_POWER_ON_BLINK, count=3)
-            time.sleep(2)  # Başlangıç sinyali için bekle
-            
             # 1. MAVLink bağlantısını kur
             if not self.setup_mavlink():
                 self.logger.error("MAVLink bağlantısı kurulamadı, çıkılıyor")
@@ -371,21 +321,32 @@ class SaraMainController:
                 self.logger.error("Sensör bağlantıları başarısız, çıkılıyor")
                 return False
                 
-            # 🆕 3. OTOMATİK KALIBRASYON (BUTONA BASILMADAN)
-            if not self.auto_calibrate_on_power():
-                self.logger.error("Otomatik kalibrasyon başarısız, çıkılıyor")
+            # 3. Sensör kalibrasyonu
+            if not self.calibrate_sensors():
+                self.logger.error("Sensör kalibrasyonu başarısız, çıkılıyor")
                 return False
                 
-            # 🚨 YARIŞMA MOD: Buton devre dışı - otomatik başlat
-            self.logger.info("🚨 YARIŞMA MODU: Buton atlanıyor, otomatik başlatılıyor...")
-            self.system_status.buzzer.beep_pattern(BUZZER_MISSION_START)
-            self.system_status.led.turn_on()
-            time.sleep(2)
+            # 4-5. Buton bekle ve 90 saniye döngüsü
+            while True:
+                # 4. Başlatma butonu bekle
+                if not self.wait_for_start_button():
+                    self.logger.info("Başlatma iptal edildi")
+                    return False
+                    
+                # 5. 90 saniye güvenlik gecikmesi
+                countdown_result = self.countdown_90_seconds()
                 
-            # 5. 90 saniye güvenlik gecikmesi
-            if not self.countdown_90_seconds():
-                self.logger.info("Geri sayım iptal edildi")
-                return False
+                if countdown_result == True:
+                    # 90 saniye tamamlandı, görev başlayabilir
+                    break
+                elif countdown_result == "restart":
+                    # Buton basıldı, yeniden buton bekle
+                    self.logger.info("🔄 Geri sayım iptal edildi, yeniden buton bekleniyor...")
+                    continue
+                else:
+                    # Hata durumu
+                    self.logger.error("Geri sayım hatası")
+                    return False
                 
             # 6. Görevi çalıştır
             success = self.run_mission(mission_type)

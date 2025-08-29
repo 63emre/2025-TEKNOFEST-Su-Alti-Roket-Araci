@@ -19,8 +19,8 @@ class DepthSensor:
     """
     
     # D300 mesaj kaynaklarına göre mesaj tanımları
-    MSG_NAME_BY_SRC = {1: 'SCALED_PRESSURE', 2: 'SCALED_PRESSURE2', 3: 'SCALED_PRESSURE3'}
-    MSG_ID_BY_SRC = {1: 29, 2: 137, 3: 142}
+    MSG_NAME_BY_SRC = {2: 'SCALED_PRESSURE2', 3: 'SCALED_PRESSURE3'}
+    MSG_ID_BY_SRC = {2: 137, 3: 142}
     
     def __init__(self, mavlink_connection, logger=None, src=None):
         self.mavlink = mavlink_connection
@@ -37,11 +37,6 @@ class DepthSensor:
         
         # Medyan filtre için kuyruk
         self.pressure_queue = deque(maxlen=5)
-        
-        # 5Hz Low-pass filtre için (D300 10Hz'de çalışıyor)
-        self.filtered_depth = 0.0
-        self.filter_cutoff = DEPTH_FILTER_CUTOFF  # 5Hz
-        self.last_filter_time = None
         
         # Veri geçerlilik kontrolleri
         self.pressure_min = 700.0   # mbar
@@ -145,15 +140,9 @@ class DepthSensor:
             
         # D300 verisi yok - fallback durumu
         if mission_phase == "PHASE_1":
-            # YARIŞMA MOD: Faz 1'de de fallback kullan
-            self.logger.warning("⚠️ FAZ 1'DE D300 YOK - FALLBACK MODE!")
-            if self.last_valid_depth is not None:
-                return self.last_valid_depth, "FALLBACK", True
-            else:
-                # İlk derinlik tahmini: su yüzeyinden başla
-                estimated_depth = 0.5  # 50cm tahmin
-                self.last_valid_depth = estimated_depth
-                return estimated_depth, "ESTIMATED", True
+            # İlk 10m içinde D300 kesilirse emergency
+            self.logger.critical("🚨 FAZ 1'DE D300 SENSÖRü KESTİ - ACİL DURUM PROSEDÜRÜ!")
+            return None, "EMERGENCY_PHASE1", True
             
         # Diğer fazlarda fallback ile devam et
         if self.last_valid_depth is not None:
@@ -168,38 +157,16 @@ class DepthSensor:
         return None, "NO_DATA", True
         
     def _calculate_depth(self, pressure_mbar):
-        """Basınçtan derinlik hesaplama (5Hz low-pass filtrelenmiş)"""
+        """Basınçtan derinlik hesaplama"""
         if self.pressure_offset is None:
             return None
             
-        # Ham derinlik hesaplama: h = (P - P0) * 100 / (ρ * g)
+        # Derinlik hesaplama: h = (P - P0) * 100 / (ρ * g)
         # P, P0: mbar → Pa için *100, ρ: kg/m³, g: m/s²
         pressure_diff_pa = (pressure_mbar - self.pressure_offset) * 100.0
-        raw_depth = pressure_diff_pa / (self.water_density * self.gravity)
-        raw_depth = max(0.0, raw_depth)  # Negatif derinlik olmasın
+        depth = pressure_diff_pa / (self.water_density * self.gravity)
         
-        # 5Hz Low-pass filtre uygula
-        current_time = time.time()
-        
-        if self.last_filter_time is None:
-            # İlk okuma - filtreyi başlat
-            self.filtered_depth = raw_depth
-            self.last_filter_time = current_time
-            return raw_depth
-            
-        dt = current_time - self.last_filter_time
-        if dt <= 0:
-            return self.filtered_depth
-            
-        # RC low-pass filter: α = dt / (RC + dt)
-        rc = 1.0 / (2.0 * math.pi * self.filter_cutoff)
-        alpha = dt / (rc + dt)
-        
-        # Filtrelenmiş derinlik
-        self.filtered_depth = alpha * raw_depth + (1.0 - alpha) * self.filtered_depth
-        self.last_filter_time = current_time
-        
-        return self.filtered_depth
+        return max(0.0, depth)  # Negatif derinlik olmasın
     
     def get_depth(self):
         """Derinlik ölçümü (metre) - Standart versiyon"""
