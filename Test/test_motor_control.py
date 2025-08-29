@@ -23,7 +23,7 @@ except ImportError:
     print(f"⚠️ Using fallback serial connection: {MAV_ADDRESS}")
 
 # Motor kanal tanımları - HARDWARE_PIN_MAPPING.md standardı
-MOTOR_CHANNEL = 1  # Pixhawk MAIN 1 output (DEGZ M5 Motor + ESC)
+MOTOR_CHANNEL = 11  # Pixhawk MAIN 1 output (DEGZ M5 Motor + ESC)
 
 # ESC PWM değer aralıkları (BLU 30A ESC için)
 ESC_MIN = 1000      # Motor stop

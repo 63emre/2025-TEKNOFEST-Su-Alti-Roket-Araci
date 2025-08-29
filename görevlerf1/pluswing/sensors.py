@@ -38,6 +38,11 @@ class DepthSensor:
         # Medyan filtre için kuyruk
         self.pressure_queue = deque(maxlen=5)
         
+        # 5Hz Low-pass filtre için (D300 10Hz'de çalışıyor)
+        self.filtered_depth = 0.0
+        self.filter_cutoff = DEPTH_FILTER_CUTOFF  # 5Hz
+        self.last_filter_time = None
+        
         # Veri geçerlilik kontrolleri
         self.pressure_min = 700.0   # mbar
         self.pressure_max = 1200.0  # mbar
@@ -157,16 +162,38 @@ class DepthSensor:
         return None, "NO_DATA", True
         
     def _calculate_depth(self, pressure_mbar):
-        """Basınçtan derinlik hesaplama"""
+        """Basınçtan derinlik hesaplama (5Hz low-pass filtrelenmiş)"""
         if self.pressure_offset is None:
             return None
             
-        # Derinlik hesaplama: h = (P - P0) * 100 / (ρ * g)
+        # Ham derinlik hesaplama: h = (P - P0) * 100 / (ρ * g)
         # P, P0: mbar → Pa için *100, ρ: kg/m³, g: m/s²
         pressure_diff_pa = (pressure_mbar - self.pressure_offset) * 100.0
-        depth = pressure_diff_pa / (self.water_density * self.gravity)
+        raw_depth = pressure_diff_pa / (self.water_density * self.gravity)
+        raw_depth = max(0.0, raw_depth)  # Negatif derinlik olmasın
         
-        return max(0.0, depth)  # Negatif derinlik olmasın
+        # 5Hz Low-pass filtre uygula
+        current_time = time.time()
+        
+        if self.last_filter_time is None:
+            # İlk okuma - filtreyi başlat
+            self.filtered_depth = raw_depth
+            self.last_filter_time = current_time
+            return raw_depth
+            
+        dt = current_time - self.last_filter_time
+        if dt <= 0:
+            return self.filtered_depth
+            
+        # RC low-pass filter: α = dt / (RC + dt)
+        rc = 1.0 / (2.0 * math.pi * self.filter_cutoff)
+        alpha = dt / (rc + dt)
+        
+        # Filtrelenmiş derinlik
+        self.filtered_depth = alpha * raw_depth + (1.0 - alpha) * self.filtered_depth
+        self.last_filter_time = current_time
+        
+        return self.filtered_depth
     
     def get_depth(self):
         """Derinlik ölçümü (metre) - Standart versiyon"""

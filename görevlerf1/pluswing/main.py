@@ -17,8 +17,8 @@ from config import *
 from utils import init_system_status, wait_with_button_check, safe_gpio_cleanup
 from sensors import SensorManager
 from control import StabilizationController
-from mission1 import run_mission_1
-from mission2 import run_mission_2
+from mission1 import Mission1Controller
+from mission2 import Mission2Controller
 
 class SaraMainController:
     """SARA Ana Kontrol Sistemi"""
@@ -248,21 +248,11 @@ class SaraMainController:
             
             # Görev türüne göre çalıştır
             if mission_type == 1:
-                success = run_mission_1(
-                    mavlink=self.mavlink,
-                    sensor_manager=sensor_manager,
-                    stabilization=stabilization,
-                    system_status=self.system_status,
-                    logger=self.logger
-                )
+                mission_controller = Mission1Controller(self.mavlink, self.system_status, self.logger)
+                success = mission_controller.start_mission()
             elif mission_type == 2:
-                success = run_mission_2(
-                    mavlink=self.mavlink,
-                    sensor_manager=sensor_manager,
-                    stabilization=stabilization,
-                    system_status=self.system_status,
-                    logger=self.logger
-                )
+                mission_controller = Mission2Controller(self.mavlink, self.system_status, self.logger)
+                success = mission_controller.start_mission()
             else:
                 self.logger.error(f"Geçersiz görev türü: {mission_type}")
                 return False

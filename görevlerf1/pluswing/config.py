@@ -81,12 +81,18 @@ YAW_K_ANG_US_PER_RAD = 400.0
 YAW_DEADBAND_DEG = 2.0
 YAW_MAX_DELTA_US = 300.0
 
-# Derinlik Kontrolü (PID)
-DEPTH_KP = 200.0        # P kontrolcü katsayısı
-DEPTH_KI = 10.0         # I kontrolcü katsayısı
-DEPTH_KD = 50.0         # D kontrolcü katsayısı
-DEPTH_MAX_PITCH = 15.0  # Maksimum pitch açısı (derece)
+# Derinlik Kontrolü (PID) - Deniz Koşulları İçin Optimize Edilmiş
+DEPTH_KP = 150.0        # P kontrolcü katsayısı (deniz için yumuşak - önceki: 200.0)
+DEPTH_KI = 6.0          # I kontrolcü katsayısı (windup önleme - önceki: 10.0)
+DEPTH_KD = 80.0         # D kontrolcü katsayısı (daha iyi damping - önceki: 50.0)
+DEPTH_MAX_PITCH = 20.0  # Maksimum pitch açısı (daha fazla otorite - önceki: 15.0)
 DEPTH_DEADBAND = 0.2    # Derinlik deadband (metre)
+
+# Gelişmiş PID Kontrol Parametreleri
+DEPTH_INTEGRAL_CLAMP = 0.3      # Integral windup sınırı (radyan)
+DEPTH_FILTER_CUTOFF = 5.0       # Sinyal filtresi kesim frekansı (Hz)
+DEPTH_FAILSAFE_TIMEOUT = 5.0    # Max output için fail-safe süresi (saniye)
+DEPTH_MAX_OUTPUT_THRESHOLD = 0.9 # Fail-safe tetikleme eşiği (%90)
 
 # ---- Genel Güvenlik Sınırları ----
 OVERALL_MAX_DELTA_US = 400.0

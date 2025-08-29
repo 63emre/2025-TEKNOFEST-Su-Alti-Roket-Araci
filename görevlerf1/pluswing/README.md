@@ -35,8 +35,6 @@ GPIO 21 → Kırmızı LED (Durum göstergesi)
 GPIO 9  → Buzzer (Ses sinyalleri)
 GPIO 11 → Başlatma/Soft-kill Butonu
 GPIO 10 → Selenoid Valf (Sadece Görev 2)
-GPIO 2  → D300 SDA (I2C)
-GPIO 3  → D300 SCL (I2C)
 ```
 
 ### Plus Wing (+) Servo Konfigürasyonu
@@ -129,6 +127,17 @@ sudo python3 main.py
 
 ```bash
 sudo nano /etc/systemd/system/sara.service
+
+# Anlık takip 
+journalctl -u sara.service -f
+
+
+# Son 100 log satırı
+journalctl -u sara.service -n 100 -f
+
+
+# Servis loglarını ayrı dosyaya kaydetmek
+journalctl -u sara.service > ~/sara.log
 ```
 
 ```ini

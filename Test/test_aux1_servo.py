@@ -8,6 +8,7 @@ Pixhawk AUX OUT 1 servo motor kontrolü ve test
 import time
 from pymavlink import mavutil
 import threading
+import platform
 
 # MAVLink Serial bağlantı adresi - DYNAMIC CONFIGURATION SYSTEM
 import os
@@ -17,13 +18,20 @@ try:
     print(f"📡 Using dynamic serial connection: {MAV_ADDRESS}")
 except ImportError:
     # Fallback to serial config with environment variables
-    serial_port = os.getenv("MAV_ADDRESS", "/dev/ttyACM0")
+    # Platform-based default port detection
+    if platform.system() == "Windows":
+        default_port = "COM17"
+    else:
+        # Linux/Unix systems
+        default_port = "/dev/ttyACM0"
+    
+    serial_port = os.getenv("MAV_ADDRESS", default_port)
     baud_rate = int(os.getenv("MAV_BAUD", "115200"))
     MAV_ADDRESS = f"{serial_port},{baud_rate}"
-    print(f"⚠️ Using fallback serial connection: {MAV_ADDRESS}")
+    print(f"⚠️ Using fallback serial connection: {MAV_ADDRESS} (Platform: {platform.system()})")
 
 # AUX1 servo kanal (Pixhawk AUX OUT 1 = Servo channel 7 - Disabled function)
-SERVO_CHANNEL = 9
+SERVO_CHANNEL = 11
 
 # Servo frekansı (Hz)
 SERVO_FREQUENCY = 330
