@@ -215,9 +215,15 @@ class Mission2Controller:
             current_time = time.time()
             if current_time - last_distance_check >= 1.0:  # Her saniye
                 phase_time = self.phase_timer.elapsed()
-                estimated_distance = estimate_distance(speed_pwm, phase_time)
-                approach_distance = estimated_distance
-                self.total_distance_traveled = estimated_distance
+                # Güvenli mesafe hesaplama - None kontrolü
+                if speed_pwm is not None and phase_time is not None:
+                    estimated_distance = estimate_distance(speed_pwm, phase_time)
+                    approach_distance = estimated_distance
+                    self.total_distance_traveled = estimated_distance
+                else:
+                    estimated_distance = 0.0
+                    approach_distance = 0.0
+                    self.logger.warning("Yaklaşma mesafe hesaplama için gerekli veriler eksik")
                 
                 # Durum raporu (D300 sensöründen)
                 sensor_data = self.sensors.get_all_sensor_data()
@@ -369,8 +375,14 @@ class Mission2Controller:
             current_time = time.time()
             if current_time - last_distance_check >= 1.0:  # Her saniye
                 phase_time = self.phase_timer.elapsed()
-                estimated_distance = estimate_distance(speed_pwm, phase_time)
-                withdrawal_traveled = estimated_distance
+                # Güvenli mesafe hesaplama - None kontrolü
+                if speed_pwm is not None and phase_time is not None:
+                    estimated_distance = estimate_distance(speed_pwm, phase_time)
+                    withdrawal_traveled = estimated_distance
+                else:
+                    estimated_distance = 0.0
+                    withdrawal_traveled = 0.0
+                    self.logger.warning("Geri çekilme mesafe hesaplama için gerekli veriler eksik")
                 
                 # Durum raporu
                 remaining_distance = withdrawal_distance - withdrawal_traveled

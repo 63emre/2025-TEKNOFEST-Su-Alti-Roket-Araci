@@ -160,10 +160,14 @@ def get_motor_channel():
 
 def clamp(value, min_val, max_val):
     """Değeri belirtilen aralıkta sınırla"""
+    if value is None:
+        return (min_val + max_val) / 2  # Orta değer döndür
     return max(min_val, min(max_val, value))
 
 def to_pwm(delta_us):
     """Delta mikrosekondeyi PWM değerine çevir"""
+    if delta_us is None:
+        return PWM_NEUTRAL
     return int(clamp(PWM_NEUTRAL + delta_us, PWM_MIN, PWM_MAX))
 
 def get_speed_for_phase(phase):

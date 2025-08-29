@@ -33,6 +33,9 @@ class PIDController:
         
     def update(self, setpoint, measured_value):
         """PID hesaplama"""
+        if setpoint is None or measured_value is None:
+            return 0
+            
         current_time = time.time()
         
         if self.last_time is None:
@@ -164,6 +167,9 @@ class StabilizationController:
         
     def calculate_roll_commands(self, roll):
         """Roll ekseninde stabilizasyon komutları"""
+        if roll is None:
+            return 0.0, 0.0
+            
         roll_deg = math.degrees(roll)
         
         if abs(roll_deg) < ROLL_DEADBAND_DEG:
@@ -183,6 +189,10 @@ class StabilizationController:
         
     def calculate_pitch_commands(self, pitch, depth_correction=0.0):
         """Pitch ekseninde stabilizasyon komutları (derinlik düzeltmesi dahil)"""
+        if pitch is None:
+            return 0.0, 0.0
+            
+        depth_correction = depth_correction if depth_correction is not None else 0.0
         total_pitch = pitch + depth_correction
         pitch_deg = math.degrees(total_pitch)
         
