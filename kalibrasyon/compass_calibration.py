@@ -20,7 +20,7 @@ from pymavlink import mavutil
 
 # MAVLink bağlantı ayarları
 MAVLINK_PORT = "/dev/ttyACM0"  # Linux
-MAVLINK_PORT_WIN = "COM5"      # Windows
+MAVLINK_PORT_WIN = "COM17"     # Windows
 MAVLINK_BAUD = 115200
 
 class CompassCalibrator:

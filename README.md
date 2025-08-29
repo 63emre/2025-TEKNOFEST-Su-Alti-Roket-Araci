@@ -125,11 +125,19 @@ PID/
 3. **Faz 3**: Roket fırlatma (selenoid ile CO2 tüpü)
 4. **Faz 4**: Güvenli geri çekilme ve yüzeye çıkış
 
+#### Güvenli Atış Bölgesi (Aşama-2):
+⚠️ **Önemli**: Aşama-2 için görev detaylarında belirtilen güvenli atış bölgesinin, saha şartları göz önüne alınarak, izleme alanına dik olacak şekilde **30 metre ileriden başlaması** uygun bulunmuştur. Takımların **30 metre ilerledikten sonra, güvenli bölge içerisinde, roket ateşlemesi yapması** beklenmektedir.
+
 #### Teknik Özellikler:
+- **Roket Taşıma Bölmesi**: Şartname uyumlu ön kısım roket taşıma sistemi
 - **Selenoid Kontrolü**: GPIO10 üzerinden selenoid valf kontrolü
 - **Fırlatma Sistemi**: CO2 tüpü ile basınçlı fırlatma
+- **Yunuslama Açısı**: Şartname uyumlu 7.5°-15° yunuslama kontrolü
+- **Otonom Fırlatma**: Sistemin roket ateşleme mekanizmasını otonom çalıştırma
 - **Güvenlik**: Acil durumda selenoid otomatik kapanma
 - **Zamanlama**: 2 saniye selenoid açık kalma süresi
+- **Güvenli Mesafe**: 30m ilerleme sonrası fırlatma bölgesi
+- **Kontrollü Yüzey Çıkışı**: Yunuslama açısı ile satha ulaşma
 
 ## 🔧 Kalibrasyon Sistemi
 

@@ -7,21 +7,27 @@ Environment Variable Support: MAV_ADDRESS, MAV_BAUD
 
 import os
 import time
+import platform
 from pymavlink import mavutil
 
 def get_default_connections():
     """Varsayılan bağlantı seçenekleri - Environment variables ile"""
+    # Platform-based default port detection
+    if platform.system() == "Windows":
+        default_port = "COM17"
+        alt_ports = ["COM17,115200", "COM19,115200", "COM20,115200", "COM21,115200"]
+    else:
+        # Linux/Unix systems
+        default_port = "/dev/ttyACM0"
+        alt_ports = ["/dev/ttyUSB0,115200", "/dev/ttyUSB1,115200", "/dev/ttyAMA0,115200"]
+    
     # Environment variables'dan değerler al
-    serial_port = os.getenv("MAV_ADDRESS", "/dev/ttyACM0")
+    serial_port = os.getenv("MAV_ADDRESS", default_port)
     baud_rate = int(os.getenv("MAV_BAUD", "115200"))
     
     connections = [
         f"{serial_port},{baud_rate}",  # Primary serial connection
-        "/dev/ttyUSB0,115200",         # Alternative USB serial
-        "/dev/ttyUSB1,115200",         # Alternative USB serial  
-        "/dev/ttyAMA0,115200",         # Raspberry Pi UART
-        # TCP connection removed - using serial only for direct connection
-    ]
+    ] + alt_ports
     
     print(f"🔧 Default connections configured:")
     print(f"   Primary: {serial_port} @ {baud_rate} baud")
@@ -31,7 +37,14 @@ def get_default_connections():
 
 def get_primary_connection():
     """Birincil bağlantı string'i döndür"""
-    serial_port = os.getenv("MAV_ADDRESS", "/dev/ttyACM0")
+    # Platform-based default port detection
+    if platform.system() == "Windows":
+        default_port = "COM17"
+    else:
+        # Linux/Unix systems
+        default_port = "/dev/ttyACM0"
+    
+    serial_port = os.getenv("MAV_ADDRESS", default_port)
     baud_rate = int(os.getenv("MAV_BAUD", "115200"))
     return f"{serial_port},{baud_rate}"
 
@@ -151,8 +164,16 @@ def main():
     
     # Environment variables
     print(f"🔧 Environment Variables:")
-    print(f"   MAV_ADDRESS = {os.getenv('MAV_ADDRESS', 'Not set (default: /dev/ttyACM0)')}")
+    
+    # Platform-based default display
+    if platform.system() == "Windows":
+        default_display = "COM17"
+    else:
+        default_display = "/dev/ttyACM0"
+    
+    print(f"   MAV_ADDRESS = {os.getenv('MAV_ADDRESS', f'Not set (default: {default_display})')}")
     print(f"   MAV_BAUD = {os.getenv('MAV_BAUD', 'Not set (default: 115200)')}")
+    print(f"   Platform: {platform.system()}")
     
     # Test primary connection
     primary = get_primary_connection()

@@ -12,7 +12,7 @@ import threading
 from pymavlink import mavutil
 
 # Environment variables for serial connection
-MAV_ADDRESS = os.getenv("MAV_ADDRESS", "/dev/ttyACM0")
+MAV_ADDRESS = os.getenv("MAV_ADDRESS", "COM3")
 MAV_BAUD = int(os.getenv("MAV_BAUD", "115200"))
 
 print(f"🔧 Serial Configuration:")

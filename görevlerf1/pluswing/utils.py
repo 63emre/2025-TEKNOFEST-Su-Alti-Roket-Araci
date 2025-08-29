@@ -10,7 +10,6 @@ import threading
 from gpio_wrapper import GPIO
 from datetime import datetime
 from config import *
-from gpio_compat import GPIO
 
 class LEDController:
     """Kırmızı LED kontrol sınıfı"""

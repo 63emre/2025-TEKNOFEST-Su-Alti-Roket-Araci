@@ -12,27 +12,142 @@ from config import *
 from utils import Logger
 
 class PIDController:
-    """PID Kontrolcü Sınıfı"""
+    """Gelişmiş PID Kontrolcü Sınıfı - Deniz Koşulları İçin Optimize Edilmiş
     
-    def __init__(self, kp, ki, kd, output_min=-1000, output_max=1000):
+    Özellikler:
+    - 5Hz Low-pass sinyal filtresi
+    - Integral windup koruması
+    - Fail-safe mekanizması
+    - Deniz koşullarında kararlı çalışma
+    """
+    
+    def __init__(self, kp, ki, kd, output_min=-1000, output_max=1000, 
+                 integral_clamp=None, filter_cutoff=None, logger=None):
+        # Temel PID parametreleri
         self.kp = kp
         self.ki = ki
         self.kd = kd
         self.output_min = output_min
         self.output_max = output_max
         
+        # Gelişmiş parametreler (config'den alınır)
+        self.integral_clamp = integral_clamp or DEPTH_INTEGRAL_CLAMP
+        self.filter_cutoff = filter_cutoff or DEPTH_FILTER_CUTOFF
+        self.failsafe_timeout = DEPTH_FAILSAFE_TIMEOUT
+        self.max_output_threshold = DEPTH_MAX_OUTPUT_THRESHOLD
+        
+        # PID durumu
         self.previous_error = 0
         self.integral = 0
         self.last_time = None
+        
+        # Sinyal filtresi durumu
+        self.filtered_error = 0.0
+        self.filtered_derivative = 0.0
+        
+        # Fail-safe durumu
+        self.max_output_start_time = None
+        self.consecutive_max_outputs = 0
+        self.logger = logger
+        
+        if self.logger:
+            self.logger.info(f"Gelişmiş PID başlatıldı - Kp:{kp}, Ki:{ki}, Kd:{kd}")
+            self.logger.info(f"Filtre: {self.filter_cutoff}Hz, Clamp: ±{self.integral_clamp}")
         
     def reset(self):
         """PID değerlerini sıfırla"""
         self.previous_error = 0
         self.integral = 0
         self.last_time = None
+        self.filtered_error = 0.0
+        self.filtered_derivative = 0.0
+        self.max_output_start_time = None
+        self.consecutive_max_outputs = 0
+        
+        if self.logger:
+            self.logger.info("PID reset edildi")
+        
+    def _low_pass_filter(self, new_value, old_filtered_value, dt):
+        """5Hz Low-pass sinyal filtresi
+        
+        Args:
+            new_value: Yeni ham değer
+            old_filtered_value: Önceki filtrelenmiş değer
+            dt: Zaman adımı
+            
+        Returns:
+            Filtrelenmiş değer
+        """
+        if dt <= 0:
+            return old_filtered_value
+            
+        # RC = 1 / (2 * π * fc) formülü ile kesim frekansı
+        rc = 1.0 / (2.0 * math.pi * self.filter_cutoff)
+        alpha = dt / (rc + dt)
+        
+        return alpha * new_value + (1.0 - alpha) * old_filtered_value
+        
+    def _apply_integral_clamp(self):
+        """Integral windup koruması uygula"""
+        if abs(self.integral) > self.integral_clamp:
+            # Integral sınırını aş
+            clamped_integral = math.copysign(self.integral_clamp, self.integral)
+            
+            if self.logger and abs(self.integral - clamped_integral) > 0.01:
+                self.logger.debug(f"Integral clamp: {self.integral:.3f} → {clamped_integral:.3f}")
+                
+            self.integral = clamped_integral
+            
+    def _check_failsafe(self, output):
+        """Fail-safe mekanizması kontrolü
+        
+        Args:
+            output: PID çıkışı
+            
+        Returns:
+            Güvenli çıkış değeri
+        """
+        output_ratio = abs(output) / max(abs(self.output_max), abs(self.output_min))
+        
+        # Max output eşiğini aştık mı?
+        if output_ratio > self.max_output_threshold:
+            current_time = time.time()
+            
+            if self.max_output_start_time is None:
+                self.max_output_start_time = current_time
+                self.consecutive_max_outputs = 1
+            else:
+                self.consecutive_max_outputs += 1
+                duration = current_time - self.max_output_start_time
+                
+                # Fail-safe süresi aşıldı mı?
+                if duration > self.failsafe_timeout:
+                    if self.logger:
+                        self.logger.error(f"🚨 PID FAIL-SAFE TETİKLENDİ! {duration:.1f}s boyunca max output")
+                        self.logger.error(f"Output: {output:.1f}, Eşik: {self.max_output_threshold*100:.0f}%")
+                        self.logger.error("Sistem resetleniyor...")
+                    
+                    # PID'i resetle ve güvenli çıkış ver
+                    self.reset()
+                    return 0.0
+                    
+        else:
+            # Normal output - fail-safe sayacını resetle
+            self.max_output_start_time = None
+            self.consecutive_max_outputs = 0
+            
+        return output
         
     def update(self, setpoint, measured_value):
-        """PID hesaplama"""
+        """Gelişmiş PID hesaplama
+        
+        Args:
+            setpoint: Hedef değer
+            measured_value: Ölçülen değer
+            
+        Returns:
+            PID çıkışı (filtrelenmiş ve korumalı)
+        """
         current_time = time.time()
         
         if self.last_time is None:
@@ -43,28 +158,50 @@ class PIDController:
         if dt <= 0:
             return 0
             
-        # Hata hesapla
-        error = setpoint - measured_value
+        # 1. Ham hata hesapla
+        raw_error = setpoint - measured_value
         
-        # Integral hesapla
-        self.integral += error * dt
+        # 2. Hata sinyalini filtrele (5Hz low-pass)
+        self.filtered_error = self._low_pass_filter(raw_error, self.filtered_error, dt)
         
-        # Derivative hesapla
-        derivative = (error - self.previous_error) / dt
+        # 3. Integral hesapla ve clamp uygula
+        self.integral += self.filtered_error * dt
+        self._apply_integral_clamp()
         
-        # PID çıkışını hesapla
-        output = (self.kp * error + 
+        # 4. Derivative hesapla ve filtrele
+        if dt > 0:
+            raw_derivative = (self.filtered_error - self.previous_error) / dt
+            self.filtered_derivative = self._low_pass_filter(raw_derivative, self.filtered_derivative, dt)
+        else:
+            self.filtered_derivative = 0
+            
+        # 5. PID çıkışını hesapla
+        output = (self.kp * self.filtered_error + 
                  self.ki * self.integral + 
-                 self.kd * derivative)
+                 self.kd * self.filtered_derivative)
         
-        # Çıkışı sınırla
+        # 6. Çıkışı sınırla
         output = max(self.output_min, min(self.output_max, output))
         
-        # Bir sonraki iterasyon için değerleri sakla
-        self.previous_error = error
+        # 7. Fail-safe kontrolü uygula
+        output = self._check_failsafe(output)
+        
+        # 8. Bir sonraki iterasyon için değerleri sakla
+        self.previous_error = self.filtered_error
         self.last_time = current_time
         
         return output
+        
+    def get_debug_info(self):
+        """Debug bilgilerini döndür"""
+        return {
+            'filtered_error': self.filtered_error,
+            'integral': self.integral,
+            'filtered_derivative': self.filtered_derivative,
+            'integral_clamped': abs(self.integral) >= self.integral_clamp * 0.95,
+            'consecutive_max_outputs': self.consecutive_max_outputs,
+            'failsafe_active': self.max_output_start_time is not None
+        }
 
 class ServoController:
     """Servo kontrol sınıfı"""
@@ -122,13 +259,14 @@ class StabilizationController:
         self.logger = logger or Logger()
         self.servo_controller = ServoController(mavlink_connection, logger)
         
-        # Derinlik kontrolü için PID
+        # Derinlik kontrolü için gelişmiş PID
         self.depth_pid = PIDController(
             kp=DEPTH_KP, 
             ki=DEPTH_KI, 
             kd=DEPTH_KD,
             output_min=-math.radians(DEPTH_MAX_PITCH),
-            output_max=math.radians(DEPTH_MAX_PITCH)
+            output_max=math.radians(DEPTH_MAX_PITCH),
+            logger=logger
         )
         
         # Hedef değerler
@@ -300,12 +438,20 @@ class StabilizationController:
         success &= self.servo_controller.set_servo(SERVO_RIGHT, to_pwm(final_right))
         success &= self.servo_controller.set_servo(SERVO_LEFT, to_pwm(final_left))
         
-        # Debug bilgisi (gerektiğinde)
+        # Debug bilgisi (gelişmiş PID dahil)
         if self.logger and hasattr(self.logger, 'debug'):
+            pid_debug = self.depth_pid.get_debug_info()
+            
             self.logger.debug(f"Stabilizasyon - Roll: {math.degrees(roll):.1f}°, "
                             f"Pitch: {math.degrees(pitch):.1f}°, "
                             f"Yaw: {math.degrees(yaw_relative):.1f}° "
                             f"Derinlik: {current_depth:.2f}m/{self.target_depth:.2f}m")
+                            
+            # PID debug bilgileri
+            if pid_debug['integral_clamped']:
+                self.logger.debug(f"🔒 Integral clamp aktif: {pid_debug['integral']:.3f}")
+            if pid_debug['failsafe_active']:
+                self.logger.debug(f"⚠️ PID fail-safe aktif: {pid_debug['consecutive_max_outputs']} max output")
         
         return success
         

@@ -102,6 +102,10 @@ class Mission1Controller:
             self.mission_success = True
             self.system_status.set_phase(MissionPhase.COMPLETED)
             
+            # 🆕 BAŞARI SİNYALİ
+            self.system_status.buzzer.beep_pattern(get_buzzer_signal_for_phase(MissionPhase.COMPLETED))
+            self.system_status.led.blink(get_led_blink_for_phase(MissionPhase.COMPLETED))
+            
             self.logger.info("🎉 GÖREV 1 BAŞARIYLA TAMAMLANDI!")
             return True
             
@@ -112,8 +116,13 @@ class Mission1Controller:
             
     def _execute_phase_1(self):
         """Faz 1: İlk 10 metre - 2m derinlik"""
+        # 🆕 FAZ 1 SİNYALİ
+        self.system_status.buzzer.beep_pattern(get_buzzer_signal_for_phase(MissionPhase.PHASE_1))  # 1 bip
+        self.system_status.led.blink(get_led_blink_for_phase(MissionPhase.PHASE_1))
+        
         self.logger.info("📍 FAZ 1: İlk 10 metre (2m derinlik)")
         self.current_phase = MissionPhase.PHASE_1
+        self.system_status.set_phase(MissionPhase.PHASE_1)
         self.phase_timer.start()
         
         # Hedef değerleri ayarla
@@ -184,8 +193,13 @@ class Mission1Controller:
         
     def _execute_phase_2(self):
         """Faz 2: Ana seyir - 3m derinlik"""
+        # 🆕 FAZ 2 SİNYALİ  
+        self.system_status.buzzer.beep_pattern(get_buzzer_signal_for_phase(MissionPhase.PHASE_2))  # 2 bip
+        self.system_status.led.blink(get_led_blink_for_phase(MissionPhase.PHASE_2))
+        
         self.logger.info("📍 FAZ 2: Ana seyir (3m derinlik)")
         self.current_phase = MissionPhase.PHASE_2
+        self.system_status.set_phase(MissionPhase.PHASE_2)
         self.phase_timer.start()
         
         # Hedef değerleri ayarla
@@ -269,6 +283,10 @@ class Mission1Controller:
         
     def _execute_turning(self):
         """Faz 3: 180° dönüş"""
+        # 🆕 DÖNÜŞ SİNYALİ
+        self.system_status.buzzer.beep_pattern(get_buzzer_signal_for_phase(MissionPhase.TURNING))  # 3 bip
+        self.system_status.led.blink(get_led_blink_for_phase(MissionPhase.TURNING))
+        
         self.logger.info("📍 FAZ 3: 180° dönüş")
         self.current_phase = MissionPhase.TURNING
         self.system_status.set_phase(MissionPhase.TURNING)
@@ -289,6 +307,10 @@ class Mission1Controller:
             
     def _execute_return(self):
         """Faz 4: Geri dönüş"""
+        # 🆕 GERİ DÖNÜŞ SİNYALİ
+        self.system_status.buzzer.beep_pattern(get_buzzer_signal_for_phase(MissionPhase.RETURN))  # 4 bip
+        self.system_status.led.blink(get_led_blink_for_phase(MissionPhase.RETURN))
+        
         self.logger.info("📍 FAZ 4: Geri dönüş")
         self.current_phase = MissionPhase.RETURN
         self.system_status.set_phase(MissionPhase.RETURN)
@@ -355,6 +377,10 @@ class Mission1Controller:
         
     def _execute_surfacing(self):
         """Faz 5: Yüzeye çıkış"""
+        # 🆕 YÜZEYE ÇIKIŞ SİNYALİ
+        self.system_status.buzzer.beep_pattern(get_buzzer_signal_for_phase(MissionPhase.SURFACING))  # 2 uzun bip
+        self.system_status.led.blink(get_led_blink_for_phase(MissionPhase.SURFACING))
+        
         self.logger.info("📍 FAZ 5: Yüzeye çıkış")
         self.current_phase = MissionPhase.SURFACING
         self.system_status.set_phase(MissionPhase.SURFACING)
