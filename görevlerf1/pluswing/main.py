@@ -376,10 +376,11 @@ class SaraMainController:
                 self.logger.error("Otomatik kalibrasyon başarısız, çıkılıyor")
                 return False
                 
-            # 4. Başlatma butonu bekle
-            if not self.wait_for_start_button():
-                self.logger.info("Başlatma iptal edildi")
-                return False
+            # 🚨 YARIŞMA MOD: Buton devre dışı - otomatik başlat
+            self.logger.info("🚨 YARIŞMA MODU: Buton atlanıyor, otomatik başlatılıyor...")
+            self.system_status.buzzer.beep_pattern(BUZZER_MISSION_START)
+            self.system_status.led.turn_on()
+            time.sleep(2)
                 
             # 5. 90 saniye güvenlik gecikmesi
             if not self.countdown_90_seconds():
