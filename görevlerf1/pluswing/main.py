@@ -125,11 +125,11 @@ class SaraMainController:
         try:
             self.logger.info("🔧 Sensör kalibrasyonu başlatılıyor...")
             
-            # SensorManager oluştur
-            sensor_manager = SensorManager(self.mavlink, self.system_status.logger)
+            # SensorManager oluştur ve sınıf değişkeni olarak sakla
+            self.sensor_manager = SensorManager(self.mavlink, self.system_status.logger)
             
             # Tüm sensörleri kalibre et
-            calibration_results = sensor_manager.calibrate_all()
+            calibration_results = self.sensor_manager.calibrate_all()
             
             # Sonuçları kontrol et
             depth_ok = calibration_results.get('depth', False)
@@ -234,24 +234,25 @@ class SaraMainController:
             self.logger.info(f"🚀 Görev {mission_type} başlıyor...")
             self.mission_running = True
             
-            # Sensör manager oluştur
-            sensor_manager = SensorManager(self.mavlink, self.logger)
-            
-            # Stabilizasyon kontrolcüsü oluştur
-            stabilization = StabilizationController(self.mavlink, self.logger)
+            # Kalibre edilmiş sensör manager'ı kullan
+            if not hasattr(self, 'sensor_manager'):
+                self.logger.warning("Sensör manager bulunamadı, yeni oluşturuluyor")
+                self.sensor_manager = SensorManager(self.mavlink, self.logger)
             
             # Görev türüne göre çalıştır
             if mission_type == 1:
                 success = run_mission_1(
                     mavlink_connection=self.mavlink,
                     system_status=self.system_status,
-                    logger=self.logger
+                    logger=self.logger,
+                    sensor_manager=self.sensor_manager
                 )
             elif mission_type == 2:
                 success = run_mission_2(
                     mavlink_connection=self.mavlink,
                     system_status=self.system_status,
-                    logger=self.logger
+                    logger=self.logger,
+                    sensor_manager=self.sensor_manager
                 )
             else:
                 self.logger.error(f"Geçersiz görev türü: {mission_type}")

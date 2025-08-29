@@ -87,13 +87,13 @@ class RocketController:
 class Mission2Controller:
     """Görev 2 Ana Kontrol Sınıfı"""
     
-    def __init__(self, mavlink_connection, system_status, logger):
+    def __init__(self, mavlink_connection, system_status, logger, sensor_manager=None):
         self.mavlink = mavlink_connection
         self.system_status = system_status
         self.logger = logger
         
-        # Ana bileşenler
-        self.sensors = SensorManager(mavlink_connection, logger)
+        # Ana bileşenler - kalibre edilmiş sensör manager'ı kullan
+        self.sensors = sensor_manager if sensor_manager else SensorManager(mavlink_connection, logger)
         self.stabilizer = StabilizationController(mavlink_connection, self.sensors, logger)
         self.motion = MotionController(self.stabilizer, logger)
         self.rocket = RocketController(logger)
@@ -510,9 +510,9 @@ class Mission2Controller:
         except Exception as e:
             self.logger.error(f"Görev 2 temizlik hatası: {e}")
 
-def run_mission_2(mavlink_connection, system_status, logger):
+def run_mission_2(mavlink_connection, system_status, logger, sensor_manager=None):
     """Görev 2'yi çalıştır (dış arayüz fonksiyonu)"""
-    mission = Mission2Controller(mavlink_connection, system_status, logger)
+    mission = Mission2Controller(mavlink_connection, system_status, logger, sensor_manager)
     
     try:
         # Görevi başlat

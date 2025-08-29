@@ -16,13 +16,13 @@ from control import StabilizationController, MotionController
 class Mission1Controller:
     """Görev 1 Ana Kontrol Sınıfı"""
     
-    def __init__(self, mavlink_connection, system_status, logger):
+    def __init__(self, mavlink_connection, system_status, logger, sensor_manager=None):
         self.mavlink = mavlink_connection
         self.system_status = system_status
         self.logger = logger
         
-        # Ana bileşenler
-        self.sensors = SensorManager(mavlink_connection, logger)
+        # Ana bileşenler - kalibre edilmiş sensör manager'ı kullan
+        self.sensors = sensor_manager if sensor_manager else SensorManager(mavlink_connection, logger)
         self.stabilizer = StabilizationController(mavlink_connection, self.sensors, logger)
         self.motion = MotionController(self.stabilizer, logger)
         
@@ -164,6 +164,8 @@ class Mission1Controller:
                     self.logger.critical("🚨 FAZ 1'DE D300 KESİNTİSİ - ACİL DURUM!")
                     self._emergency_phase1_abort()
                     return False
+                elif connection_status == "TEMPORARY_ISSUE":
+                    self.logger.warning("⚠️ D300 geçici bağlantı sorunu - devam ediliyor")
                 
                 depth_str = f"{current_depth:.1f}m" if current_depth else "N/A"
                 status_indicator = "⚠️" if fallback_used else "✅"
@@ -390,7 +392,7 @@ class Mission1Controller:
             
             # 2. 180° yaw verip kendini kapat
             self.logger.info("Acil durum 180° dönüş başlatılıyor...")
-            emergency_turn_success = self.stabilizer.emergency_180_turn(timeout=30)
+            emergency_turn_success = self.stabilizer.turn_180_degrees(timeout=30)
             
             if emergency_turn_success:
                 self.logger.info("✓ Acil durum dönüş tamamlandı")
@@ -503,9 +505,9 @@ class Mission1Controller:
         except Exception as e:
             self.logger.error(f"Görev 1 temizlik hatası: {e}")
 
-def run_mission_1(mavlink_connection, system_status, logger):
+def run_mission_1(mavlink_connection, system_status, logger, sensor_manager=None):
     """Görev 1'i çalıştır (dış arayüz fonksiyonu)"""
-    mission = Mission1Controller(mavlink_connection, system_status, logger)
+    mission = Mission1Controller(mavlink_connection, system_status, logger, sensor_manager)
     
     try:
         # Görevi başlat

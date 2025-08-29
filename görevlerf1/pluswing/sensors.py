@@ -126,6 +126,10 @@ class DepthSensor:
         """
         pressure, _ = self.read_raw_data()
         
+        # Debug bilgisi
+        if mission_phase == "PHASE_1":
+            self.logger.info(f"D300 Debug - Pressure: {pressure}, Offset: {self.pressure_offset}, Connected: {self.is_connected}")
+        
         if pressure is not None and self.pressure_offset is not None:
             # Normal derinlik hesaplama
             self.pressure_queue.append(pressure)
@@ -140,9 +144,13 @@ class DepthSensor:
             
         # D300 verisi yok - fallback durumu
         if mission_phase == "PHASE_1":
-            # İlk 10m içinde D300 kesilirse emergency
-            self.logger.critical("🚨 FAZ 1'DE D300 SENSÖRü KESTİ - ACİL DURUM PROSEDÜRÜ!")
-            return None, "EMERGENCY_PHASE1", True
+            # İlk 10m içinde D300 kesilirse emergency - Ama daha toleranslı ol
+            if self.consecutive_failures < 20:  # 20 başarısız okuma sonrası emergency
+                self.logger.warning(f"⚠️ FAZ 1 D300 geçici bağlantı sorunu (başarısız okuma: {self.consecutive_failures})")
+                return 0.0, "TEMPORARY_ISSUE", True  # Geçici sorun, 0 derinlik döndür
+            else:
+                self.logger.critical("🚨 FAZ 1'DE D300 SENSÖRü KESTİ - ACİL DURUM PROSEDÜRÜ!")
+                return None, "EMERGENCY_PHASE1", True
             
         # Diğer fazlarda fallback ile devam et
         if self.last_valid_depth is not None:
