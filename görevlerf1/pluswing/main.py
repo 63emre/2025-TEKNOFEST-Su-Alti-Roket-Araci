@@ -243,17 +243,13 @@ class SaraMainController:
             # Görev türüne göre çalıştır
             if mission_type == 1:
                 success = run_mission_1(
-                    mavlink=self.mavlink,
-                    sensor_manager=sensor_manager,
-                    stabilization=stabilization,
+                    mavlink_connection=self.mavlink,
                     system_status=self.system_status,
                     logger=self.logger
                 )
             elif mission_type == 2:
                 success = run_mission_2(
-                    mavlink=self.mavlink,
-                    sensor_manager=sensor_manager,
-                    stabilization=stabilization,
+                    mavlink_connection=self.mavlink,
                     system_status=self.system_status,
                     logger=self.logger
                 )
