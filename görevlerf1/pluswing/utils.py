@@ -186,7 +186,7 @@ class ButtonController:
         self.debounce_time = 1.0  # 1000ms debounce (floating pin koruması)
         
     def is_pressed(self):
-        """Buton basılı mı kontrol et (güvenli debounce ile)"""
+        """Buton EDGE tespiti - basma anını yakala"""
         current_time = time.time()
         
         # Çok sıkı debounce kontrolü
@@ -194,23 +194,27 @@ class ButtonController:
             return False
             
         try:
-            # İlk okuma - DOĞRU MANTIK: 1=BASILDI, 0=SERBEST
-            button_state1 = GPIO.input(GPIO_START_BUTTON)  # 1=basıldı, 0=serbest
-            time.sleep(0.05)  # 50ms bekle
+            # Mevcut durum
+            current_state = GPIO.input(GPIO_START_BUTTON)  # 1=basıldı, 0=serbest
             
-            # İkinci okuma (doğrulama)
-            button_state2 = GPIO.input(GPIO_START_BUTTON)
+            # Önceki durumu kontrol et
+            if not hasattr(self, 'previous_state'):
+                self.previous_state = 0  # İlk çalışmada serbest kabul et
             
-            # İki okuma da 1 (HIGH) ise gerçek basış
-            if button_state1 == 1 and button_state2 == 1:
+            # EDGE tespiti: 0→1 geçişi (serbest→basıldı)
+            if self.previous_state == 0 and current_state == 1:
+                # Gerçek basma anı tespit edildi
                 self.last_press_time = current_time
+                self.previous_state = current_state
                 return True
+            
+            # Durumu güncelle
+            self.previous_state = current_state
+            return False
                 
         except Exception as e:
             # GPIO hatası varsa False döndür
             return False
-            
-        return False
         
     def wait_for_press(self, timeout=None):
         """Buton basılmasını bekle"""
