@@ -183,16 +183,33 @@ class ButtonController:
         GPIO.setmode(GPIO.BCM)
         GPIO.setup(GPIO_START_BUTTON, GPIO.IN, pull_up_down=GPIO.PUD_UP)
         self.last_press_time = 0
-        self.debounce_time = 0.2  # 200ms debounce
+        self.debounce_time = 1.0  # 1000ms debounce (floating pin koruması)
         
     def is_pressed(self):
-        """Buton basılı mı kontrol et (debounce ile)"""
+        """Buton basılı mı kontrol et (güvenli debounce ile)"""
         current_time = time.time()
-        button_state = not GPIO.input(GPIO_START_BUTTON)  # Pull-up, basıldığında LOW
         
-        if button_state and (current_time - self.last_press_time) > self.debounce_time:
-            self.last_press_time = current_time
-            return True
+        # Çok sıkı debounce kontrolü
+        if (current_time - self.last_press_time) < self.debounce_time:
+            return False
+            
+        try:
+            # İlk okuma
+            button_state1 = not GPIO.input(GPIO_START_BUTTON)  # Pull-up, basıldığında LOW
+            time.sleep(0.05)  # 50ms bekle
+            
+            # İkinci okuma (doğrulama)
+            button_state2 = not GPIO.input(GPIO_START_BUTTON)
+            
+            # İki okuma da aynı ve TRUE ise gerçek basış
+            if button_state1 and button_state2 and button_state1 == button_state2:
+                self.last_press_time = current_time
+                return True
+                
+        except Exception as e:
+            # GPIO hatası varsa False döndür
+            return False
+            
         return False
         
     def wait_for_press(self, timeout=None):
@@ -377,7 +394,7 @@ class SystemStatus:
     def check_start_button(self):
         """Başlatma butonunu kontrol et - İPTAL/RESTART sistemi"""
         if self.button.is_pressed():
-            self.logger.info("🔘 Başlatma butonu basıldı!")
+            self.logger.info("🔘 Başlatma butonu GERÇEKten basıldı!")
             
             # Her basış restart için kullanılır
             self.logger.info("Görev başlatma/restart modu")
