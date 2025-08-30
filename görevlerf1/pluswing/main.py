@@ -437,8 +437,8 @@ class SaraMainController:
         self.logger.info("🚀 Artık PWM sinyalleri yollanabilir!")
         
         # PWM sinyallerini etkinleştir
-        if hasattr(self, 'sensor_manager') and hasattr(self.sensor_manager, 'servo_controller'):
-            self.sensor_manager.servo_controller.enable_pwm_signals()
+        # NOT: PWM etkinleştirme mission başlatıldığında yapılacak
+        self.logger.info("🎯 PWM etkinleştirme görev başlatılırken yapılacak")
         
         self.system_status.buzzer.beep_pattern(BUZZER_MISSION_START)
         return True
