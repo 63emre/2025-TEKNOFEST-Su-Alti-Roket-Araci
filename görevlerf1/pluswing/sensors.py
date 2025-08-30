@@ -8,6 +8,7 @@ D300 derinlik sensörü ve Pixhawk MAVLink telemetri fonksiyonları
 import time
 import math
 import statistics
+import threading
 from collections import deque
 from pymavlink import mavutil
 from config import *
@@ -27,8 +28,8 @@ class DepthSensor:
         self.primary_src = src or D300_SOURCE
         self.logger = logger or Logger()
         
-        # Çoklu D300 kaynak fallback sistemi
-        self.available_sources = [2, 3]  # SCALED_PRESSURE2 ve SCALED_PRESSURE3
+        # Çoklu D300 kaynak fallback sistemi (config'den)
+        self.available_sources = D300_FALLBACK_SOURCES
         self.current_src = self.primary_src
         self.tried_sources = set()
         
@@ -49,22 +50,30 @@ class DepthSensor:
         self.temp_min = -5.0        # °C
         self.temp_max = 60.0        # °C
         
-        # GÜÇLENDİRİLMİŞ FALLBACK SİSTEMİ
+        # GÜÇLENDİRİLMİŞ FALLBACK SİSTEMİ (config'den)
         self.last_valid_depth = None
         self.last_valid_pressure = None
         self.last_valid_time = None
         self.connection_lost_time = None
         self.is_connected = True
         self.consecutive_failures = 0
-        self.max_failures_before_disconnect = 15  # 15 başarısız okuma sonrası bağlantı kesildi
-        self.max_failures_before_source_switch = 5   # 5 başarısız okuma sonrası kaynak değiştir
+        self.max_failures_before_disconnect = D300_MAX_FAILURES_BEFORE_DISCONNECT
+        self.max_failures_before_source_switch = D300_MAX_FAILURES_BEFORE_SOURCE_SWITCH
         
-        # Yeniden bağlantı denemeleri
+        # Yeniden bağlantı denemeleri (config'den)
         self.reconnect_attempts = 0
-        self.max_reconnect_attempts = 10
+        self.max_reconnect_attempts = D300_MAX_RECONNECT_ATTEMPTS
         self.last_reconnect_attempt = 0
+        self.reconnect_interval = D300_RECONNECT_INTERVAL
+        
+        # SÜREKLI ARAMA SİSTEMİ
+        self.continuous_search_enabled = True
+        self.search_thread = None
+        self.search_lock = threading.Lock()
+        self.search_interval = 1.0  # Her 1 saniyede bir ara
         
         self._request_data_stream()
+        self._start_continuous_search()
         self.logger.info(f"D300 sensörü MAVLink {self.msg_name} üzerinden başlatıldı (Kaynak: {self.current_src})")
     
     def _update_source_config(self):
@@ -174,8 +183,8 @@ class DepthSensor:
         """D300 yeniden bağlantı denemesi"""
         current_time = time.time()
         
-        # Çok sık deneme yapma (en az 2 saniye ara)
-        if current_time - self.last_reconnect_attempt < 2.0:
+        # Çok sık deneme yapma (config'den interval)
+        if current_time - self.last_reconnect_attempt < self.reconnect_interval:
             return False
             
         self.last_reconnect_attempt = current_time
@@ -202,6 +211,119 @@ class DepthSensor:
         
         # Mevcut kaynak çalışmıyorsa alternatif dene
         return self._try_switch_source()
+    
+    def _start_continuous_search(self):
+        """Sürekli D300 arama thread'ini başlat"""
+        if self.search_thread is None or not self.search_thread.is_alive():
+            self.continuous_search_enabled = True
+            self.search_thread = threading.Thread(target=self._continuous_search_worker, daemon=True)
+            self.search_thread.start()
+            self.logger.info("🔍 D300 sürekli arama thread'i başlatıldı")
+    
+    def _stop_continuous_search(self):
+        """Sürekli D300 arama thread'ini durdur"""
+        self.continuous_search_enabled = False
+        if self.search_thread and self.search_thread.is_alive():
+            self.search_thread.join(timeout=2.0)
+            self.logger.info("🛑 D300 sürekli arama thread'i durduruldu")
+    
+    def _continuous_search_worker(self):
+        """Sürekli D300 arama worker thread"""
+        self.logger.info("🔄 D300 sürekli arama worker başladı")
+        
+        while self.continuous_search_enabled:
+            try:
+                with self.search_lock:
+                    # Bağlantı yoksa veya sorunluysa arama yap
+                    if not self.is_connected or self.consecutive_failures > 3:
+                        self._background_search_and_reconnect()
+                
+                time.sleep(self.search_interval)
+                
+            except Exception as e:
+                self.logger.error(f"D300 sürekli arama hatası: {e}")
+                time.sleep(self.search_interval * 2)  # Hata durumunda daha uzun bekle
+        
+        self.logger.info("🔄 D300 sürekli arama worker sona erdi")
+    
+    def _background_search_and_reconnect(self):
+        """Arka planda D300 arama ve yeniden bağlantı"""
+        try:
+            # Mevcut kaynağı test et
+            if self._test_current_source():
+                if not self.is_connected:
+                    self.logger.info("✅ D300 mevcut kaynak yeniden çalışır halde")
+                    self.is_connected = True
+                    self.consecutive_failures = 0
+                    self.connection_lost_time = None
+                return True
+            
+            # Mevcut kaynak çalışmıyorsa alternatif kaynak dene
+            for src in self.available_sources:
+                if src != self.current_src:
+                    if self._test_source(src):
+                        old_src = self.current_src
+                        self.current_src = src
+                        self._update_source_config()
+                        self._request_data_stream()
+                        
+                        self.logger.info(f"🔄 D300 otomatik kaynak değişimi: {old_src} -> {src}")
+                        self.is_connected = True
+                        self.consecutive_failures = 0
+                        self.connection_lost_time = None
+                        return True
+            
+            # Hiçbir kaynak çalışmıyorsa veri akışlarını yeniden iste
+            self._request_all_sources()
+            
+        except Exception as e:
+            self.logger.warning(f"D300 arka plan arama hatası: {e}")
+        
+        return False
+    
+    def _test_current_source(self):
+        """Mevcut D300 kaynağını test et"""
+        try:
+            test_msg = self.mavlink.recv_match(type=self.msg_name, blocking=False, timeout=0.1)
+            if test_msg:
+                pressure = float(test_msg.press_abs)
+                return self.pressure_min <= pressure <= self.pressure_max
+        except:
+            pass
+        return False
+    
+    def _test_source(self, src):
+        """Belirtilen D300 kaynağını test et"""
+        try:
+            msg_name = self.MSG_NAME_BY_SRC[src]
+            test_msg = self.mavlink.recv_match(type=msg_name, blocking=False, timeout=0.1)
+            if test_msg:
+                pressure = float(test_msg.press_abs)
+                return self.pressure_min <= pressure <= self.pressure_max
+        except:
+            pass
+        return False
+    
+    def _request_all_sources(self):
+        """Tüm D300 kaynakları için veri akışı iste"""
+        for src in self.available_sources:
+            try:
+                msg_id = self.MSG_ID_BY_SRC[src]
+                interval_us = int(1_000_000 / D300_DATA_RATE_HZ)
+                self.mavlink.mav.command_long_send(
+                    self.mavlink.target_system,
+                    self.mavlink.target_component,
+                    mavutil.mavlink.MAV_CMD_SET_MESSAGE_INTERVAL,
+                    0, msg_id, interval_us, 0, 0, 0, 0, 0
+                )
+            except Exception as e:
+                self.logger.warning(f"D300 kaynak {src} veri akışı isteği hatası: {e}")
+                
+    def cleanup(self):
+        """D300 sensör temizliği"""
+        self.logger.info("D300 sensör temizleniyor...")
+        self._stop_continuous_search()
+        self.continuous_search_enabled = False
                 
     def get_depth_safe(self, mission_phase=None):
         """Güvenli derinlik ölçümü - fallback mekanizmalı
@@ -490,6 +612,20 @@ class SensorManager:
         self.system = SystemSensor(mavlink_connection, self.logger)
         
         self.logger.info("Sensör yöneticisi başlatıldı")
+    
+    def cleanup(self):
+        """Tüm sensörleri temizle"""
+        self.logger.info("Sensör yöneticisi temizleniyor...")
+        try:
+            if hasattr(self.depth, 'cleanup'):
+                self.depth.cleanup()
+            if hasattr(self.attitude, 'cleanup'):
+                self.attitude.cleanup()
+            if hasattr(self.system, 'cleanup'):
+                self.system.cleanup()
+        except Exception as e:
+            self.logger.warning(f"Sensör temizlik hatası: {e}")
+        self.logger.info("✅ Sensör yöneticisi temizlendi")
         
     def calibrate_all(self, use_water_surface_calib=None):
         """Tüm sensörleri kalibre et

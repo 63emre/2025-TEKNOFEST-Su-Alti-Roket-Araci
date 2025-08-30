@@ -107,13 +107,13 @@ class SaraMainController:
                         self.mavlink = mavutil.mavlink_connection(
                             port, 
                             baud=MAVLINK_BAUD,
-                            timeout=5,
+                            timeout=MAVLINK_CONNECTION_TIMEOUT,
                             retries=1
                         )
                         
                         # Heartbeat bekle
                         self.logger.info("💓 Heartbeat bekleniyor...")
-                        msg = self.mavlink.wait_heartbeat(timeout=5)
+                        msg = self.mavlink.wait_heartbeat(timeout=MAVLINK_HEARTBEAT_TIMEOUT)
                         
                         if msg:
                             self.logger.info(f"✅ MAVLink bağlantısı başarılı!")
@@ -176,6 +176,46 @@ class SaraMainController:
         except Exception as e:
             self.logger.warning(f"MAVLink bağlantı testi hatası: {e}")
             return False
+    
+    def runtime_mavlink_reconnect(self):
+        """Çalışma zamanında MAVLink yeniden bağlantı denemesi"""
+        if not hasattr(self, 'successful_port') or not self.successful_port:
+            self.logger.warning("Önceki başarılı port bilgisi yok, tam tarama yapılıyor")
+            return self.setup_mavlink(retries=1)
+        
+        self.logger.warning(f"🔄 MAVLink yeniden bağlantı denemesi: {self.successful_port}")
+        
+        try:
+            # Önceki bağlantıyı kapat
+            if self.mavlink:
+                try:
+                    self.mavlink.close()
+                except:
+                    pass
+            
+            # Başarılı portu önce dene
+            self.mavlink = mavutil.mavlink_connection(
+                self.successful_port, 
+                baud=MAVLINK_BAUD,
+                timeout=MAVLINK_CONNECTION_TIMEOUT,
+                retries=1
+            )
+            
+            msg = self.mavlink.wait_heartbeat(timeout=MAVLINK_HEARTBEAT_TIMEOUT)
+            
+            if msg:
+                self.logger.info("✅ MAVLink yeniden bağlantı başarılı!")
+                self.mavlink.target_system = msg.get_srcSystem()
+                self.mavlink.target_component = msg.get_srcComponent()
+                self._request_data_streams()
+                return True
+            else:
+                self.logger.warning("⚠️ Önceki port çalışmıyor, tam tarama yapılıyor")
+                return self.setup_mavlink(retries=1)
+                
+        except Exception as e:
+            self.logger.error(f"Yeniden bağlantı hatası: {e}")
+            return self.setup_mavlink(retries=1)
         
     def test_sensor_connections(self):
         """Sensör bağlantılarını test et"""

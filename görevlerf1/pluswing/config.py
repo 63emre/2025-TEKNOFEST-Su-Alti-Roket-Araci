@@ -45,12 +45,19 @@ MOTOR_REVERSE_MIN = 1450
 MOTOR_REVERSE_MAX = 1100
 
 # ---- D300 Derinlik Sensörü (MAVLink) ----
-# D300 Pixhawk'a bağlı, MAVLink SCALED_PRESSURE mesajları üzerinden veri alınır
-D300_SOURCE = 2                    # 2=SCALED_PRESSURE2, 3=SCALED_PRESSURE3
+# D300 Pixhawk'a I2C ile bağlı, MAVLink SCALED_PRESSURE mesajları üzerinden veri alınır
+D300_SOURCE = 2                    # Birincil kaynak: 2=SCALED_PRESSURE2, 3=SCALED_PRESSURE3
+D300_FALLBACK_SOURCES = [2, 3]    # Fallback kaynakları (otomatik değişim)
 D300_DATA_RATE_HZ = 10            # Veri alma hızı (Hz)
 D300_SEAWATER_DENSITY = 1025.0    # Deniz suyu yoğunluğu (kg/m³) - GÖREVLER DENİZDE
 D300_FRESHWATER_DENSITY = 997.0   # Tatlı su yoğunluğu (kg/m³)
 D300_GRAVITY = 9.81               # Yerçekimi (m/s²)
+
+# D300 Fallback ayarları
+D300_MAX_FAILURES_BEFORE_SOURCE_SWITCH = 5    # Kaynak değiştirme öncesi başarısız okuma
+D300_MAX_FAILURES_BEFORE_DISCONNECT = 15      # Bağlantı kesildi kabul etme
+D300_MAX_RECONNECT_ATTEMPTS = 10               # Maksimum yeniden bağlantı denemesi
+D300_RECONNECT_INTERVAL = 2.0                  # Yeniden bağlantı deneme aralığı (saniye)
 
 # ---- D300 Kalibrasyon Ayarları ----
 # Su yüzeyinde tutmadan kalibrasyon için
