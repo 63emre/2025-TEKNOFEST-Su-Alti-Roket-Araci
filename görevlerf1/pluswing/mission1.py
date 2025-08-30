@@ -52,6 +52,9 @@ class Mission1Controller:
         self.stabilizer.servo_controller.enable_pwm_signals()
         self.logger.info("🚀 Mission1: PWM sinyalleri etkinleştirildi!")
         
+        # MOTOR TEST - PWM etkinleştirme sonrası
+        self.test_motor_after_pwm_enable()
+        
         # Görev durumu
         self.mission_timer = Timer()
         self.phase_timer = Timer()
@@ -78,6 +81,49 @@ class Mission1Controller:
         self.initial_depth = None    # Başlangıç derinliği
         
         self.logger.info("Görev 1 kontrolcüsü başlatıldı")
+    
+    def test_motor_after_pwm_enable(self):
+        """PWM etkinleştirme sonrası motor testi"""
+        self.logger.info("🧪 MOTOR PWM TEST BAŞLIYOR...")
+        
+        try:
+            # PWM durumunu kontrol et
+            pwm_status = self.stabilizer.servo_controller.pwm_allowed
+            self.logger.info(f"🔍 PWM Durumu: {pwm_status}")
+            
+            if not pwm_status:
+                self.logger.error("❌ PWM henüz etkinleştirilmemiş!")
+                return False
+            
+            # Motor STOP testi
+            self.logger.info("🔧 Motor STOP testi...")
+            stop_success = self.motion.servo_controller.set_motor(MOTOR_STOP)
+            self.logger.info(f"Motor STOP sonucu: {stop_success}")
+            
+            time.sleep(0.5)
+            
+            # Motor İLERİ testi (kısa süre)
+            self.logger.info("🔧 Motor İLERİ testi (1 saniye)...")
+            forward_success = self.motion.servo_controller.set_motor(MOTOR_FORWARD_MIN)
+            self.logger.info(f"Motor İLERİ sonucu: {forward_success}")
+            
+            time.sleep(1.0)  # 1 saniye test
+            
+            # Tekrar STOP
+            self.logger.info("🔧 Motor STOP (test sonu)...")
+            stop_success2 = self.motion.servo_controller.set_motor(MOTOR_STOP)
+            self.logger.info(f"Motor STOP sonucu: {stop_success2}")
+            
+            if stop_success and forward_success and stop_success2:
+                self.logger.info("✅ MOTOR PWM TESTİ BAŞARILI!")
+                return True
+            else:
+                self.logger.error("❌ MOTOR PWM TESTİ BAŞARISIZ!")
+                return False
+                
+        except Exception as e:
+            self.logger.error(f"Motor test hatası: {e}")
+            return False
         
     def initialize_mission(self):
         """Görev başlangıç hazırlıkları"""

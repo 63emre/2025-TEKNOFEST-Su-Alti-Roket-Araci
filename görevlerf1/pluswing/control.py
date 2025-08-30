@@ -95,9 +95,12 @@ class ServoController:
     def set_servo(self, channel, pwm_value):
         """Servo PWM değeri ayarla"""
         try:
-            # 90 SANİYE PWM GÜVENLİK KONTROLÜ
+            # 65 SANİYE PWM GÜVENLİK KONTROLÜ
             if not self.pwm_allowed:
-                self.logger.warning(f"🚫 PWM sinyali engellendi! 90 saniye tamamlanmadan PWM yollanamaz (Kanal:{channel})")
+                if channel == MOTOR_MAIN:
+                    self.logger.error(f"🚫 MOTOR PWM ENGELLENDİ! 65 saniye tamamlanmadan motor çalışamaz (PWM:{pwm_value})")
+                else:
+                    self.logger.warning(f"🚫 PWM sinyali engellendi! 65 saniye tamamlanmadan PWM yollanamaz (Kanal:{channel})")
                 return False
             
             # Güvenlik kontrolleri
@@ -120,6 +123,12 @@ class ServoController:
                 0, 0, 0, 0, 0
             )
             
+            # Başarılı PWM gönderimi logu
+            if channel == MOTOR_MAIN:
+                self.logger.info(f"✅ MOTOR PWM GÖNDERİLDİ! Kanal:{channel}, PWM:{pwm_clamped}")
+            else:
+                self.logger.debug(f"✅ Servo PWM gönderildi: Kanal:{channel}, PWM:{pwm_clamped}")
+            
             return True
             
         except Exception as e:
@@ -131,6 +140,10 @@ class ServoController:
         if pwm_value is None:
             self.logger.warning("Motor PWM değeri None, MOTOR_STOP kullanılıyor")
             pwm_value = MOTOR_STOP
+        
+        # MOTOR DEBUG
+        self.logger.info(f"🔧 MOTOR SET: PWM={pwm_value}, Kanal={MOTOR_MAIN}, PWM_Allowed={self.pwm_allowed}")
+        
         return self.set_servo(MOTOR_MAIN, pwm_value)
         
     def neutral_all_servos(self):
