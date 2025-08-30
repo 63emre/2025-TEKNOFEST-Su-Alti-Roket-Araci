@@ -46,8 +46,8 @@ MOTOR_REVERSE_MAX = 1100
 
 # ---- D300 Derinlik Sensörü (MAVLink) ----
 # D300 Pixhawk'a I2C ile bağlı, MAVLink SCALED_PRESSURE mesajları üzerinden veri alınır
-D300_SOURCE = 2                    # Birincil kaynak: 2=SCALED_PRESSURE2, 3=SCALED_PRESSURE3
-D300_FALLBACK_SOURCES = [2, 3]    # Fallback kaynakları (otomatik değişim)
+D300_SOURCE = 2                    # Birincil kaynak: 2=SCALED_PRESSURE2
+D300_FALLBACK_SOURCES = [2, 3, 1, 0, 4, 5, 6, 7]    # TÜM KAYNAKLARI DENE!
 D300_DATA_RATE_HZ = 5             # Veri alma hızı (Hz) - Çalışan koddan
 D300_SEAWATER_DENSITY = 1025.0    # Deniz suyu yoğunluğu (kg/m³) - GÖREVLER DENİZDE
 D300_FRESHWATER_DENSITY = 997.0   # Tatlı su yoğunluğu (kg/m³) - Çalışan koddan

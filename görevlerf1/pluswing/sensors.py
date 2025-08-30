@@ -19,9 +19,27 @@ class DepthSensor:
     MAVLink SCALED_PRESSURE mesajları üzerinden basınç ve sıcaklık okuması yapar
     """
     
-    # D300 mesaj kaynaklarına göre mesaj tanımları
-    MSG_NAME_BY_SRC = {2: 'SCALED_PRESSURE2', 3: 'SCALED_PRESSURE3'}
-    MSG_ID_BY_SRC = {2: 137, 3: 142}
+    # D300 TÜM OLASI KAYNAKLARI - HEPSİNİ YAKALA!
+    MSG_NAME_BY_SRC = {
+        0: 'SCALED_PRESSURE',   # Kaynak 0 - Birincil basınç
+        1: 'SCALED_PRESSURE1',  # Kaynak 1 - İkincil basınç  
+        2: 'SCALED_PRESSURE2',  # Kaynak 2 - D300 (varsayılan)
+        3: 'SCALED_PRESSURE3',  # Kaynak 3 - D300 alternatif
+        4: 'SCALED_PRESSURE4',  # Kaynak 4 - Ek basınç sensörü
+        5: 'SCALED_PRESSURE5',  # Kaynak 5 - Ek basınç sensörü
+        6: 'SCALED_PRESSURE6',  # Kaynak 6 - Ek basınç sensörü
+        7: 'SCALED_PRESSURE7'   # Kaynak 7 - Ek basınç sensörü
+    }
+    MSG_ID_BY_SRC = {
+        0: 29,   # SCALED_PRESSURE
+        1: 136,  # SCALED_PRESSURE1
+        2: 137,  # SCALED_PRESSURE2 (mevcut)
+        3: 142,  # SCALED_PRESSURE3 (mevcut)
+        4: 143,  # SCALED_PRESSURE4
+        5: 144,  # SCALED_PRESSURE5
+        6: 145,  # SCALED_PRESSURE6
+        7: 146   # SCALED_PRESSURE7
+    }
     
     def __init__(self, mavlink_connection, logger=None, src=None):
         self.mavlink = mavlink_connection
@@ -72,9 +90,21 @@ class DepthSensor:
         self.search_lock = threading.Lock()
         self.search_interval = 1.0  # Her 1 saniyede bir ara
         
+        # KAPSAMLI D300 TARAMA BAŞLAT
+        self.logger.info("🔍 D300 sensörü başlatılıyor - TÜM kaynaklar taranacak...")
+        
+        # İlk olarak kapsamlı tarama yap
+        active_sources = self.scan_all_pressure_sources()
+        
+        if active_sources:
+            self.logger.info(f"✅ D300 başlatıldı - Aktif kaynaklar: {active_sources}")
+            self.logger.info(f"🎯 Kullanılan kaynak: {self.current_src} ({self.msg_name})")
+        else:
+            self.logger.warning("⚠️ D300 başlatıldı ama hiç aktif kaynak bulunamadı - sürekli arama devam edecek")
+        
+        # Normal veri akışı ve sürekli arama başlat
         self._request_data_stream()
         self._start_continuous_search()
-        self.logger.info(f"D300 sensörü MAVLink {self.msg_name} üzerinden başlatıldı (Kaynak: {self.current_src})")
     
     def to_depth_m(self, press_hpa: float) -> float:
         """Çalışan kodun exact derinlik hesaplama fonksiyonu - KALİBRASYONSUZ"""
@@ -326,19 +356,79 @@ class DepthSensor:
         return False
     
     def _request_all_sources(self):
-        """Tüm D300 kaynakları için veri akışı iste"""
-        for src in self.available_sources:
+        """TÜM D300 kaynakları için veri akışı iste - KAPSAMLI TARAMA"""
+        self.logger.info("🔍 TÜM D300 kaynaklarından veri akışı isteniyor...")
+        
+        for src in range(8):  # 0-7 arası TÜM kaynakları dene
             try:
-                msg_id = self.MSG_ID_BY_SRC[src]
-                interval_us = int(1_000_000 / D300_DATA_RATE_HZ)
-                self.mavlink.mav.command_long_send(
-                    self.mavlink.target_system,
-                    self.mavlink.target_component,
-                    mavutil.mavlink.MAV_CMD_SET_MESSAGE_INTERVAL,
-                    0, msg_id, interval_us, 0, 0, 0, 0, 0
-                )
+                if src in self.MSG_ID_BY_SRC:
+                    msg_id = self.MSG_ID_BY_SRC[src]
+                    msg_name = self.MSG_NAME_BY_SRC[src]
+                    interval_us = int(1_000_000 / D300_DATA_RATE_HZ)
+                    
+                    self.mavlink.mav.command_long_send(
+                        self.mavlink.target_system,
+                        self.mavlink.target_component,
+                        mavutil.mavlink.MAV_CMD_SET_MESSAGE_INTERVAL,
+                        0, msg_id, interval_us, 0, 0, 0, 0, 0
+                    )
+                    
+                    self.logger.info(f"📡 Kaynak {src} ({msg_name}) veri akışı istendi")
+                    
             except Exception as e:
                 self.logger.warning(f"D300 kaynak {src} veri akışı isteği hatası: {e}")
+                
+    def scan_all_pressure_sources(self):
+        """TÜM basınç kaynaklarını tara ve aktif olanları bul"""
+        self.logger.info("🔍 D300 KAYNAK TARAMASI BAŞLIYOR...")
+        active_sources = []
+        
+        # Önce tüm kaynaklardan veri iste
+        self._request_all_sources()
+        
+        # 2 saniye bekle veri akışının başlaması için
+        time.sleep(2.0)
+        
+        # Her kaynağı test et
+        for src in range(8):
+            if src in self.MSG_NAME_BY_SRC:
+                msg_name = self.MSG_NAME_BY_SRC[src]
+                try:
+                    # 3 deneme yap
+                    for attempt in range(3):
+                        msg = self.mavlink.recv_match(type=msg_name, blocking=False, timeout=0.5)
+                        if msg:
+                            pressure = float(getattr(msg, "press_abs", 0.0))
+                            temp_raw = float(getattr(msg, "temperature", 0))
+                            temp_c = temp_raw / 100.0
+                            
+                            # Geçerli veri kontrolü
+                            if self.pressure_min <= pressure <= self.pressure_max:
+                                active_sources.append(src)
+                                self.logger.info(f"✅ Kaynak {src} ({msg_name}): Basınç={pressure:.1f}hPa, Sıcaklık={temp_c:.1f}°C")
+                                break
+                        time.sleep(0.2)
+                    else:
+                        self.logger.info(f"❌ Kaynak {src} ({msg_name}): Veri yok")
+                        
+                except Exception as e:
+                    self.logger.warning(f"Kaynak {src} test hatası: {e}")
+        
+        if active_sources:
+            self.logger.info(f"🎯 AKTIF D300 KAYNAKLARI: {active_sources}")
+            # En iyi kaynağı seç (öncelik sırasına göre)
+            for preferred_src in [2, 3, 1, 0, 4, 5, 6, 7]:
+                if preferred_src in active_sources:
+                    if preferred_src != self.current_src:
+                        old_src = self.current_src
+                        self.current_src = preferred_src
+                        self._update_source_config()
+                        self.logger.info(f"🔄 En iyi kaynak seçildi: {old_src} -> {preferred_src}")
+                    break
+        else:
+            self.logger.error("❌ HİÇBİR D300 KAYNAĞI BULUNAMADI!")
+            
+        return active_sources
                 
     def cleanup(self):
         """D300 sensör temizliği"""
