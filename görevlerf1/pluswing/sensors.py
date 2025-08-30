@@ -95,17 +95,19 @@ class DepthSensor:
             self.logger.warning(f"D300 veri akışı isteği başarısız: {e}")
             
     def read_raw_data(self):
-        """Ham D300 sensör verisi oku"""
+        """Ham D300 sensör verisi oku - Verilen koda göre düzeltildi"""
         try:
-            msg = self.mavlink.recv_match(type=self.msg_name, blocking=False, timeout=0.1)
-            if msg is None:
+            # Verilen kodun exact metodu: blocking=True, timeout=2
+            msg = self.mavlink.recv_match(type=self.msg_name, blocking=True, timeout=2)
+            
+            if not msg:  # Verilen kodun exact kontrolü
                 self.consecutive_failures += 1
                 self._check_connection_status()
                 return None, None
                 
-            # Basınç ve sıcaklık verilerini al
-            pressure_mbar = float(msg.press_abs)  # hPa = mbar
-            temperature_c = float(msg.temperature) / 100.0  # Celsius
+            # Verilen kodun exact veri çıkarma metodu
+            pressure_mbar = float(getattr(msg, "press_abs", 0.0))  # getattr kullanımı
+            temperature_c = float(getattr(msg, "temperature", 0)) / 100.0  # getattr kullanımı
             
             # Veri geçerlilik kontrolü
             if not (self.pressure_min <= pressure_mbar <= self.pressure_max):

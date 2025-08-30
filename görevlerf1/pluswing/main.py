@@ -249,7 +249,17 @@ class SaraMainController:
             
             # 10 saniye uzun buzzer ile kalibrasyon uyarısı
             self.logger.info("🔊 10 saniye kalibrasyon buzzer başlıyor...")
-            self.system_status.buzzer.beep(10.0)  # 10 saniye uzun bip
+            # GPIO ile manuel 10 saniye uzun bip
+            try:
+                from gpio_compat import GPIO
+                GPIO.setmode(GPIO.BCM)
+                GPIO.setup(GPIO_BUZZER, GPIO.OUT)
+                GPIO.output(GPIO_BUZZER, GPIO.HIGH)
+                time.sleep(10.0)  # 10 saniye
+                GPIO.output(GPIO_BUZZER, GPIO.LOW)
+                self.logger.info("✅ 10 saniye kalibrasyon buzzer tamamlandı")
+            except Exception as buzzer_error:
+                self.logger.warning(f"Kalibrasyon buzzer hatası: {buzzer_error}")
             
             # D300 deniz suyu kalibrasyonu (su üstünde)
             self.logger.info("🌊 D300 deniz suyu kalibrasyonu başlıyor...")
@@ -272,7 +282,17 @@ class SaraMainController:
                 attitude_calibration_success = False
             
             # Kalibrasyon tamamlandı sinyali
-            self.system_status.buzzer.beep_pattern([0.5, 0.2, 0.5, 0.2, 0.5])  # Başarı sinyali
+            try:
+                from gpio_compat import GPIO
+                # 3x kısa bip (başarı sinyali)
+                for _ in range(3):
+                    GPIO.output(GPIO_BUZZER, GPIO.HIGH)
+                    time.sleep(0.3)
+                    GPIO.output(GPIO_BUZZER, GPIO.LOW)
+                    time.sleep(0.2)
+                self.logger.info("✅ Kalibrasyon başarı sinyali verildi")
+            except Exception as buzzer_error:
+                self.logger.warning(f"Başarı sinyali buzzer hatası: {buzzer_error}")
             
             self.logger.info("✅ Sensör kalibrasyonu tamamlandı")
             self.logger.info("🤖 Sistem görev için hazır!")
