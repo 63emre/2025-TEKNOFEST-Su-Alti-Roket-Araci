@@ -76,6 +76,12 @@ class DepthSensor:
         self._start_continuous_search()
         self.logger.info(f"D300 sensörü MAVLink {self.msg_name} üzerinden başlatıldı (Kaynak: {self.current_src})")
     
+    def to_depth_m(self, press_hpa: float) -> float:
+        """Çalışan kodun exact derinlik hesaplama fonksiyonu"""
+        pa = press_hpa * 100.0
+        dp = max(0.0, pa - D300_SEA_LEVEL_PRESSURE_PA)
+        return dp / (self.water_density * self.gravity)
+    
     def _update_source_config(self):
         """Mevcut kaynak konfigürasyonunu güncelle"""
         self.msg_name = self.MSG_NAME_BY_SRC[self.current_src]
@@ -95,19 +101,22 @@ class DepthSensor:
             self.logger.warning(f"D300 veri akışı isteği başarısız: {e}")
             
     def read_raw_data(self):
-        """Ham D300 sensör verisi oku - Verilen koda göre düzeltildi"""
+        """Ham D300 sensör verisi oku - Çalışan koda göre düzeltildi"""
         try:
-            # Verilen kodun exact metodu: blocking=True, timeout=2
+            # Çalışan kodun exact metodu: blocking=True, timeout=2
             msg = self.mavlink.recv_match(type=self.msg_name, blocking=True, timeout=2)
             
-            if not msg:  # Verilen kodun exact kontrolü
+            if not msg:  # Çalışan kodun exact kontrolü
                 self.consecutive_failures += 1
                 self._check_connection_status()
                 return None, None
                 
-            # Verilen kodun exact veri çıkarma metodu
-            pressure_mbar = float(getattr(msg, "press_abs", 0.0))  # getattr kullanımı
+            # Çalışan kodun exact veri çıkarma metodu
+            pressure_hpa = float(getattr(msg, "press_abs", 0.0))  # hPa cinsinden
             temperature_c = float(getattr(msg, "temperature", 0)) / 100.0  # getattr kullanımı
+            
+            # hPa'dan mbar'a çevir (1 hPa = 1 mbar)
+            pressure_mbar = pressure_hpa
             
             # Veri geçerlilik kontrolü
             if not (self.pressure_min <= pressure_mbar <= self.pressure_max):
@@ -375,16 +384,21 @@ class DepthSensor:
         return None, "NO_DATA", True
         
     def _calculate_depth(self, pressure_mbar):
-        """Basınçtan derinlik hesaplama"""
+        """Basınçtan derinlik hesaplama - Çalışan kodun mantığı"""
         if self.pressure_offset is None:
             return None
             
-        # Derinlik hesaplama: h = (P - P0) * 100 / (ρ * g)
-        # P, P0: mbar → Pa için *100, ρ: kg/m³, g: m/s²
-        pressure_diff_pa = (pressure_mbar - self.pressure_offset) * 100.0
-        depth = pressure_diff_pa / (self.water_density * self.gravity)
+        # Çalışan kodun exact derinlik hesaplama mantığı:
+        # hPa'dan Pa'ya çevir (pressure_mbar aslında hPa)
+        pa = pressure_mbar * 100.0
         
-        return max(0.0, depth)  # Negatif derinlik olmasın
+        # Çalışan kodun exact mantığı: dp = max(0.0, pa - SEA_LEVEL_PRESSURE_PA)
+        dp = max(0.0, pa - D300_SEA_LEVEL_PRESSURE_PA)
+        
+        # Çalışan kodun exact derinlik hesaplaması: dp / (FLUID_DENSITY * G)
+        depth = dp / (self.water_density * self.gravity)
+        
+        return depth
     
     def get_depth(self):
         """Derinlik ölçümü (metre) - Standart versiyon"""
