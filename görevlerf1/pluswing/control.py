@@ -500,7 +500,7 @@ class StabilizationController:
         return self.turn_to_heading_u_turn_mode(target_yaw_deg, timeout)
     
     def turn_to_heading_u_turn_mode(self, target_heading_deg, timeout=150):
-        """Özel U dönüş modu ile heading'e dön"""
+        """Özel U dönüş modu ile heading'e dön - TAMAMEN AYRI STABİLİZASYON"""
         self.logger.info(f"🔄 ÖZEL U DÖNÜŞ: {target_heading_deg:.1f}°'ye dönülüyor...")
         
         start_time = time.time()
@@ -515,6 +515,11 @@ class StabilizationController:
         
         current_yaw_deg = attitude['yaw_relative_deg']
         
+        # NORMAL STABİLİZASYONU TAMAMEN KAPAT
+        old_stabilization_state = self.stabilization_active
+        self.disable_stabilization()
+        self.logger.info("🚫 Normal stabilizasyon TAMAMEN kapatıldı - U dönüş modu aktif")
+        
         # Özel U dönüş modunu başlat
         self.start_u_turn_mode(current_yaw_deg)
         
@@ -524,8 +529,8 @@ class StabilizationController:
         tolerance = 15.0  # U dönüş için daha geniş tolerans
         
         while time.time() - start_time < timeout:
-            # Stabilizasyonu güncelle (U dönüş modu aktif)
-            if not self.update_stabilization():
+            # ÖZEL U DÖNÜŞ KONTROLÜ (normal stabilizasyon değil!)
+            if not self._update_u_turn_only():
                 continue
                 
             # Mevcut yaw'ı kontrol et
@@ -555,6 +560,11 @@ class StabilizationController:
         # U dönüş modunu durdur
         self.stop_u_turn_mode()
         
+        # NORMAL STABİLİZASYONU YENİDEN AKTİF ET
+        if old_stabilization_state:
+            self.enable_stabilization()
+            self.logger.info("✅ Normal stabilizasyon yeniden aktif edildi")
+        
         # Son kontrol
         final_sensor_data = self.sensors.get_all_sensor_data()
         final_attitude = final_sensor_data['attitude']
@@ -572,6 +582,43 @@ class StabilizationController:
                 return True  # Kısmen başarılı da kabul et
         
         return True
+    
+    def _update_u_turn_only(self):
+        """Sadece U dönüş kontrolü - normal stabilizasyon YOK"""
+        # Sensör verilerini al
+        sensor_data = self.sensors.get_all_sensor_data()
+        
+        attitude = sensor_data['attitude']
+        depth_data = sensor_data['depth']
+        
+        if not attitude:
+            self.logger.warning("Attitude verisi alınamadı")
+            return False
+        
+        current_depth = depth_data['depth_m'] if depth_data['is_valid'] else None
+        current_yaw_deg = attitude.get('yaw_relative_deg', 0.0)
+        
+        # Sadece U dönüş komutları hesapla
+        u_up, u_down, u_right, u_left = self.calculate_u_turn_commands(current_yaw_deg)
+        
+        # Sadece derinlik kontrolü (pitch düzeltmesi)
+        depth_correction = self.calculate_depth_correction(current_depth)
+        pitch_up_depth, pitch_down_depth = self.calculate_pitch_commands(0, depth_correction)
+        
+        # Final komutlar: Sadece U dönüş + derinlik
+        final_up = u_up + pitch_up_depth
+        final_down = u_down + pitch_down_depth
+        final_right = u_right
+        final_left = u_left
+        
+        # Servo komutlarını gönder
+        success = True
+        success &= self.servo_controller.set_servo(SERVO_UP, to_pwm(final_up))
+        success &= self.servo_controller.set_servo(SERVO_DOWN, to_pwm(final_down))
+        success &= self.servo_controller.set_servo(SERVO_RIGHT, to_pwm(final_right))
+        success &= self.servo_controller.set_servo(SERVO_LEFT, to_pwm(final_left))
+        
+        return success
         
     def surface_control(self, duration=10):
         """Yüzeye çıkış kontrolü"""
