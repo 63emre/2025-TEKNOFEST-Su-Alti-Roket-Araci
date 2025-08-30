@@ -166,7 +166,7 @@ class Mission1Controller:
         else:
             self.logger.warning("GPIO mevcut değil, buzzer/LED simüle edilecek")
         
-        countdown_seconds = 90
+        countdown_seconds = 10
         
         while countdown_seconds > 0:
             # Buton kontrolü - acil durdurma
