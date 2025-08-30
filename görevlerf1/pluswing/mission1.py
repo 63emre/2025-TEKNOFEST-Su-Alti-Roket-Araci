@@ -356,6 +356,11 @@ class Mission1Controller:
         
         self.current_speed_pwm = speed_pwm
         
+        # Stabilizasyonu aktif et (güvenlik kontrolü)
+        if not self.stabilizer.stabilization_active:
+            self.stabilizer.enable_stabilization()
+            self.logger.info("⚠️ Faz 2'de stabilizasyon yeniden aktif edildi")
+        
         # Hızı artır
         self.motion.forward(speed_pwm)
         
@@ -461,6 +466,11 @@ class Mission1Controller:
             self.stabilizer.set_target_depth(self.initial_depth)
         
         self.current_speed_pwm = speed_pwm
+        
+        # Stabilizasyonu aktif et (U dönüş sonrası güvenlik kontrolü)
+        if not self.stabilizer.stabilization_active:
+            self.stabilizer.enable_stabilization()
+            self.logger.info("✅ Faz 4'te stabilizasyon yeniden aktif edildi (U dönüş sonrası)")
         
         self.logger.info(f"Geri dönüş hedefi: {return_distance}m")
         

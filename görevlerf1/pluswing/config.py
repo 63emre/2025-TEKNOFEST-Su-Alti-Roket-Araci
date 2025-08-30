@@ -205,8 +205,8 @@ def get_speed_for_phase(phase):
 def get_target_depth_for_phase(phase):
     """Faza göre hedef derinlik döndür"""
     if phase == MissionPhase.PHASE_1:
-        return TARGET_DEPTH_FIRST_10M
+        return TARGET_DEPTH_DEFAULT  # 2.25m
     elif phase in [MissionPhase.PHASE_2, MissionPhase.RETURN]:
-        return TARGET_DEPTH_MAIN
+        return TARGET_DEPTH_DEFAULT  # 2.25m (aynı derinlikte)
     else:
-        return TARGET_DEPTH_MAIN
+        return TARGET_DEPTH_DEFAULT
