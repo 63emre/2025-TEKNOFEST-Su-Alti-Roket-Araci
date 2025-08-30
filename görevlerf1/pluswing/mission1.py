@@ -433,10 +433,10 @@ class Mission1Controller:
         
         # Motoru yavaşlat/durdur
         self.motion.stop()
-        time.sleep(2)  # Duraklaması için bekle
+        time.sleep(4)  # 4 saniye duraklaması için bekle
         
         # 180° U dönüşü yap
-        success = self.stabilizer.turn_180_degrees(timeout=45)
+        success = self.stabilizer.turn_180_degrees(timeout=150)
         
         if success:
             self.logger.info("✓ U dönüşü tamamlandı")
@@ -509,11 +509,13 @@ class Mission1Controller:
                 depth_str = f"{current_depth:.1f}m" if current_depth else f"~{self.initial_depth:.1f}m"
                 status_indicator = "⚠️" if fallback_used else "✅"
                 
-                # Son 2 metre kontrolü
+                # Son 6-7 metre kontrolü - kademeli yüzeye çıkış
                 remaining = return_distance - return_distance_traveled
-                if remaining <= 2.0 and not self.surface_approach_started:
-                    self.logger.info("🌊 Son 2 metre! Kontrollü yüzeye çıkış hazırlığı...")
+                if remaining <= 7.0 and not self.surface_approach_started:
+                    self.logger.info("🌊 Son 7 metre! Kademeli yüzeye çıkış başlıyor...")
                     self.surface_approach_started = True
+                    # Kademeli yüzeye çıkış başlat
+                    self._start_gradual_surface_approach(remaining)
                 
                 self.logger.info(f"Geri dönüş - Mesafe: {return_distance_traveled:.1f}m/{return_distance}m, "
                                f"Kalan: {remaining:.1f}m, "
@@ -535,6 +537,50 @@ class Mission1Controller:
             time.sleep(0.02)  # 50Hz
             
         return True
+    
+    def _start_gradual_surface_approach(self, remaining_distance):
+        """Son 6-7m kala kademeli yüzeye çıkış başlat"""
+        try:
+            self.logger.info(f"🔄 Kademeli yüzeye çıkış başlatılıyor - Kalan mesafe: {remaining_distance:.1f}m")
+            
+            # Motor gücünü kademeli azalt
+            if remaining_distance <= 7.0:
+                # 7m kaldığında motor gücünü %80'e düşür
+                reduced_power = int(SPEED_FAST * 0.8)
+                self.motion.forward(reduced_power)
+                self.logger.info(f"Motor gücü %80'e düşürüldü: {reduced_power}")
+                
+            if remaining_distance <= 5.0:
+                # 5m kaldığında motor gücünü %60'a düşür ve pitch ver
+                reduced_power = int(SPEED_FAST * 0.6)
+                self.motion.forward(reduced_power)
+                self._apply_gradual_pitch_up(0.1)  # Hafif pitch yukarı
+                self.logger.info(f"Motor gücü %60'a düşürüldü ve hafif pitch verildi")
+                
+            if remaining_distance <= 3.0:
+                # 3m kaldığında motor gücünü %40'a düşür ve daha fazla pitch
+                reduced_power = int(SPEED_FAST * 0.4)
+                self.motion.forward(reduced_power)
+                self._apply_gradual_pitch_up(0.2)  # Daha fazla pitch yukarı
+                self.logger.info(f"Motor gücü %40'a düşürüldü ve pitch artırıldı")
+                
+        except Exception as e:
+            self.logger.error(f"Kademeli yüzeye çıkış hatası: {e}")
+    
+    def _apply_gradual_pitch_up(self, pitch_adjustment):
+        """Kademeli pitch yukarı uygula"""
+        try:
+            # Mevcut hedef derinliği al
+            current_target = getattr(self.stabilizer, 'target_depth', self.initial_depth)
+            
+            # Hedef derinliği kademeli azalt (yüzeye doğru)
+            new_target = max(0.5, current_target - pitch_adjustment)
+            self.stabilizer.set_target_depth(new_target)
+            
+            self.logger.info(f"Hedef derinlik: {current_target:.2f}m -> {new_target:.2f}m")
+            
+        except Exception as e:
+            self.logger.warning(f"Pitch ayarlama hatası: {e}")
         
     def _execute_controlled_surfacing(self):
         """Faz 5: Son 2m kala kontrollü yüzeye çıkış"""

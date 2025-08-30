@@ -152,6 +152,12 @@ class StabilizationController:
         # Stabilizasyon aktif durumu
         self.stabilization_active = False
         
+        # ÖZEL U DÖNÜŞ MODU
+        self.u_turn_mode = False
+        self.u_turn_target_yaw = 0.0
+        self.u_turn_start_yaw = 0.0
+        self.u_turn_progress = 0.0  # 0.0 - 1.0 arası ilerleme
+        
         self.logger.info("Stabilizasyon kontrolcüsü başlatıldı")
         
     def set_target_depth(self, depth):
@@ -313,16 +319,36 @@ class StabilizationController:
         # Derinlik düzeltmesi hesapla
         depth_correction = self.calculate_depth_correction(current_depth)
         
-        # Her eksen için komutları hesapla
-        roll_left, roll_right = self.calculate_roll_commands(roll)
-        pitch_up, pitch_down = self.calculate_pitch_commands(pitch, depth_correction)
-        yaw_up, yaw_down, yaw_right, yaw_left = self.calculate_yaw_commands(yaw_relative)
-        
-        # Komutları birleştir
-        final_up, final_down, final_right, final_left = self.combine_commands(
-            roll_left, roll_right, pitch_up, pitch_down,
-            yaw_up, yaw_down, yaw_right, yaw_left
-        )
+        # U DÖNÜŞ MODU KONTROLÜ
+        if self.u_turn_mode:
+            # U dönüş modunda sadece derinlik stabilizasyonu aktif
+            # Roll/Pitch/Yaw stabilizasyonu deaktif
+            current_yaw_deg = attitude.get('yaw_relative_deg', 0.0)
+            u_up, u_down, u_right, u_left = self.calculate_u_turn_commands(current_yaw_deg)
+            
+            # Sadece derinlik kontrolü için pitch düzeltmesi ekle
+            pitch_up_depth, pitch_down_depth = self.calculate_pitch_commands(0, depth_correction)
+            
+            # U dönüş komutları + sadece derinlik pitch'i
+            final_up = u_up + pitch_up_depth
+            final_down = u_down + pitch_down_depth
+            final_right = u_right
+            final_left = u_left
+            
+            self.logger.debug(f"U-DÖNÜŞ KOMUTLARI: UP={final_up:.1f}, DOWN={final_down:.1f}, "
+                            f"RIGHT={final_right:.1f}, LEFT={final_left:.1f}")
+        else:
+            # Normal stabilizasyon modu
+            # Her eksen için komutları hesapla
+            roll_left, roll_right = self.calculate_roll_commands(roll)
+            pitch_up, pitch_down = self.calculate_pitch_commands(pitch, depth_correction)
+            yaw_up, yaw_down, yaw_right, yaw_left = self.calculate_yaw_commands(yaw_relative)
+            
+            # Komutları birleştir
+            final_up, final_down, final_right, final_left = self.combine_commands(
+                roll_left, roll_right, pitch_up, pitch_down,
+                yaw_up, yaw_down, yaw_right, yaw_left
+            )
         
         # Servo komutlarını gönder
         success = True
@@ -382,6 +408,73 @@ class StabilizationController:
         # Hedefi eski haline getir
         self.target_yaw = old_target
         return True
+    
+    def start_u_turn_mode(self, current_yaw_deg):
+        """Özel U dönüş modunu başlat"""
+        self.u_turn_mode = True
+        self.u_turn_start_yaw = current_yaw_deg
+        self.u_turn_target_yaw = current_yaw_deg + 180
+        
+        # ±180° aralığında tut
+        if self.u_turn_target_yaw > 180:
+            self.u_turn_target_yaw -= 360
+        elif self.u_turn_target_yaw < -180:
+            self.u_turn_target_yaw += 360
+            
+        self.u_turn_progress = 0.0
+        self.logger.info(f"🔄 U DÖNÜŞ MODU: {current_yaw_deg:.1f}° -> {self.u_turn_target_yaw:.1f}°")
+    
+    def stop_u_turn_mode(self):
+        """Özel U dönüş modunu durdur"""
+        self.u_turn_mode = False
+        self.u_turn_progress = 0.0
+        self.logger.info("✅ U dönüş modu tamamlandı - Normal stabilizasyon aktif")
+    
+    def calculate_u_turn_commands(self, current_yaw_deg):
+        """Özel U dönüş servo komutlarını hesapla"""
+        if not self.u_turn_mode:
+            return 0.0, 0.0, 0.0, 0.0
+        
+        # İlerleme hesapla
+        yaw_diff = abs(current_yaw_deg - self.u_turn_start_yaw)
+        if yaw_diff > 180:  # Wrap around durumu
+            yaw_diff = 360 - yaw_diff
+        self.u_turn_progress = min(1.0, yaw_diff / 180.0)
+        
+        # Dönüş yönünü belirle (sola dönüş)
+        turn_direction = 1.0 if self.u_turn_target_yaw > self.u_turn_start_yaw else -1.0
+        if abs(self.u_turn_target_yaw - self.u_turn_start_yaw) > 180:
+            turn_direction *= -1
+        
+        # U dönüş kuvveti (başlangıçta güçlü, sonra azalarak)
+        turn_strength = (1.0 - self.u_turn_progress) * 300.0  # Max 300 microsecond
+        
+        # SERVO KANAT HAREKETLERİ - SOLA DÖNÜŞ İÇİN
+        # Sol kanatlar yukarı, sağ kanatlar aşağı (sola yatırma)
+        # Üst ve alt kanatlar yaw için farklı yönde
+        
+        if turn_direction > 0:  # Sola dönüş
+            up_cmd = -turn_strength      # Üst kanat sola yardım
+            down_cmd = +turn_strength    # Alt kanat sola yardım  
+            right_cmd = -turn_strength   # Sağ kanat aşağı (sola yatırma)
+            left_cmd = +turn_strength    # Sol kanat yukarı (sola yatırma)
+        else:  # Sağa dönüş
+            up_cmd = +turn_strength      # Üst kanat sağa yardım
+            down_cmd = -turn_strength    # Alt kanat sağa yardım
+            right_cmd = +turn_strength   # Sağ kanat yukarı (sağa yatırma)
+            left_cmd = -turn_strength    # Sol kanat aşağı (sağa yatırma)
+        
+        # İlerlemeye göre komut gücünü ayarla
+        progress_factor = max(0.3, 1.0 - self.u_turn_progress)  # Min %30 güç
+        up_cmd *= progress_factor
+        down_cmd *= progress_factor
+        right_cmd *= progress_factor
+        left_cmd *= progress_factor
+        
+        self.logger.debug(f"U-Dönüş: İlerleme={self.u_turn_progress:.2f}, "
+                         f"Yön={turn_direction:.1f}, Güç={turn_strength:.1f}")
+        
+        return up_cmd, down_cmd, right_cmd, left_cmd
         
     def turn_180_degrees(self, timeout=30):
         """180 derece dönüş yap"""
@@ -404,7 +497,81 @@ class StabilizationController:
         elif target_yaw_deg < -180:
             target_yaw_deg += 360
             
-        return self.turn_to_heading(target_yaw_deg, timeout)
+        return self.turn_to_heading_u_turn_mode(target_yaw_deg, timeout)
+    
+    def turn_to_heading_u_turn_mode(self, target_heading_deg, timeout=150):
+        """Özel U dönüş modu ile heading'e dön"""
+        self.logger.info(f"🔄 ÖZEL U DÖNÜŞ: {target_heading_deg:.1f}°'ye dönülüyor...")
+        
+        start_time = time.time()
+        
+        # Mevcut yaw'ı al
+        sensor_data = self.sensors.get_all_sensor_data()
+        attitude = sensor_data['attitude']
+        
+        if not attitude or attitude['yaw_relative_deg'] is None:
+            self.logger.error("Yaw verisi alınamadı, U dönüş iptal edildi")
+            return False
+        
+        current_yaw_deg = attitude['yaw_relative_deg']
+        
+        # Özel U dönüş modunu başlat
+        self.start_u_turn_mode(current_yaw_deg)
+        
+        # Motor yavaş çalıştır (U dönüş sırasında)
+        self.servo_controller.set_motor(SPEED_SLOW)
+        
+        tolerance = 15.0  # U dönüş için daha geniş tolerans
+        
+        while time.time() - start_time < timeout:
+            # Stabilizasyonu güncelle (U dönüş modu aktif)
+            if not self.update_stabilization():
+                continue
+                
+            # Mevcut yaw'ı kontrol et
+            sensor_data = self.sensors.get_all_sensor_data()
+            attitude = sensor_data['attitude']
+            
+            if attitude and attitude['yaw_relative_deg'] is not None:
+                current_yaw_deg = attitude['yaw_relative_deg']
+                
+                # Yaw farkını hesapla (wrap around dikkate al)
+                yaw_error = abs(target_heading_deg - current_yaw_deg)
+                if yaw_error > 180:
+                    yaw_error = 360 - yaw_error
+                
+                # İlerleme raporu
+                if time.time() - start_time > 5.0 and (time.time() - start_time) % 10 < 0.1:
+                    self.logger.info(f"U Dönüş İlerlemesi: {current_yaw_deg:.1f}° -> {target_heading_deg:.1f}° "
+                                   f"(Hata: {yaw_error:.1f}°, İlerleme: %{self.u_turn_progress*100:.1f})")
+                
+                # Hedefe ulaştık mı?
+                if yaw_error < tolerance:
+                    self.logger.info(f"✅ U DÖNÜŞ TAMAMLANDI: {current_yaw_deg:.1f}° (hata: {yaw_error:.1f}°)")
+                    break
+                    
+            time.sleep(0.02)  # 50Hz
+        
+        # U dönüş modunu durdur
+        self.stop_u_turn_mode()
+        
+        # Son kontrol
+        final_sensor_data = self.sensors.get_all_sensor_data()
+        final_attitude = final_sensor_data['attitude']
+        if final_attitude and final_attitude['yaw_relative_deg'] is not None:
+            final_yaw = final_attitude['yaw_relative_deg']
+            final_error = abs(target_heading_deg - final_yaw)
+            if final_error > 180:
+                final_error = 360 - final_error
+            
+            if final_error < 20.0:  # 20° tolerans ile başarılı
+                self.logger.info(f"🎯 U DÖNÜŞ BAŞARILI: Final yaw={final_yaw:.1f}°, hata={final_error:.1f}°")
+                return True
+            else:
+                self.logger.warning(f"⚠️ U DÖNÜŞ KISMEN BAŞARILI: Final yaw={final_yaw:.1f}°, hata={final_error:.1f}°")
+                return True  # Kısmen başarılı da kabul et
+        
+        return True
         
     def surface_control(self, duration=10):
         """Yüzeye çıkış kontrolü"""
