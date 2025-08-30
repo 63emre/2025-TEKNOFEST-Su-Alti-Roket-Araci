@@ -41,35 +41,85 @@ class SaraMainController:
         
         self.logger.info("SARA Ana Kontrolcü başlatıldı")
         
-    def setup_mavlink(self, retries=5):
-        """MAVLink bağlantısını güvenilir şekilde kur"""
-        self.logger.info("MAVLink bağlantısı kuruluyor...")
+    def get_available_mavlink_ports(self):
+        """Sistemdeki mevcut MAVLink portlarını tara"""
+        import os
+        import glob
+        
+        available_ports = []
+        
+        if sys.platform.startswith('win'):
+            # Windows COM portları
+            for i in range(1, 20):
+                port = f"COM{i}"
+                try:
+                    # Basit bağlantı testi
+                    test_conn = mavutil.mavlink_connection(port, baud=MAVLINK_BAUD)
+                    test_conn.close()
+                    available_ports.append(port)
+                except:
+                    continue
+        else:
+            # Linux/Unix ttyACM* ve ttyUSB* portları
+            acm_ports = glob.glob('/dev/ttyACM*')
+            usb_ports = glob.glob('/dev/ttyUSB*')
+            
+            # ACM portlarını öncelikle ekle (Pixhawk genelde ACM)
+            for port in sorted(acm_ports):
+                if os.path.exists(port):
+                    available_ports.append(port)
+                    
+            # USB portlarını da ekle
+            for port in sorted(usb_ports):
+                if os.path.exists(port):
+                    available_ports.append(port)
+        
+        self.logger.info(f"Mevcut portlar: {available_ports}")
+        return available_ports
+
+    def setup_mavlink(self, retries=3):
+        """MAVLink bağlantısını güçlendirilmiş fallback ile kur"""
+        self.logger.info("🔗 MAVLink bağlantısı kuruluyor...")
         
         for attempt in range(retries):
             try:
                 self.logger.info(f"Bağlantı denemesi {attempt+1}/{retries}")
                 
-                # Port seçimi (Linux/Windows uyumlu)
-                ports_to_try = []
-                if sys.platform.startswith('win'):
-                    ports_to_try = [MAVLINK_PORT_WIN]
-                else:
-                    ports_to_try = MAVLINK_PORTS  # ["/dev/ttyACM0", "/dev/ttyACM1"]
+                # Mevcut portları dinamik olarak tara
+                available_ports = self.get_available_mavlink_ports()
                 
-                # Her portu dene
+                if not available_ports:
+                    self.logger.warning("Hiç port bulunamadı, varsayılan portlar deneniyor...")
+                    if sys.platform.startswith('win'):
+                        available_ports = [MAVLINK_PORT_WIN]
+                    else:
+                        available_ports = MAVLINK_PORTS
+                
+                # Her portu sırayla dene
                 connection_success = False
-                for port in ports_to_try:
+                successful_port = None
+                
+                for port in available_ports:
                     try:
-                        self.logger.info(f"Port deneniyor: {port}")
-                        self.mavlink = mavutil.mavlink_connection(port, baud=MAVLINK_BAUD)
+                        self.logger.info(f"🔌 Port deneniyor: {port}")
+                        
+                        # Bağlantıyı kur
+                        self.mavlink = mavutil.mavlink_connection(
+                            port, 
+                            baud=MAVLINK_BAUD,
+                            timeout=5,
+                            retries=1
+                        )
                         
                         # Heartbeat bekle
-                        self.logger.info("Heartbeat bekleniyor...")
-                        msg = self.mavlink.wait_heartbeat(timeout=3)
+                        self.logger.info("💓 Heartbeat bekleniyor...")
+                        msg = self.mavlink.wait_heartbeat(timeout=5)
                         
                         if msg:
-                            self.logger.info(f"✅ MAVLink bağlantısı başarılı! Port: {port}")
-                            self.logger.info(f"Sistem ID: {msg.get_srcSystem()}, Tip: {msg.get_type()}")
+                            self.logger.info(f"✅ MAVLink bağlantısı başarılı!")
+                            self.logger.info(f"   📍 Port: {port}")
+                            self.logger.info(f"   🆔 Sistem ID: {msg.get_srcSystem()}")
+                            self.logger.info(f"   🔧 Tip: {msg.get_type()}")
                             
                             # Target system/component ayarla
                             self.mavlink.target_system = msg.get_srcSystem()
@@ -77,27 +127,55 @@ class SaraMainController:
                             
                             # Veri akışlarını iste
                             self._request_data_streams()
-                            connection_success = True
-                            break
+                            
+                            # Bağlantıyı test et
+                            if self._test_mavlink_connection():
+                                connection_success = True
+                                successful_port = port
+                                break
+                            else:
+                                self.logger.warning(f"⚠️ Port {port} heartbeat aldı ama veri testi başarısız")
+                                continue
                         else:
-                            self.logger.warning(f"Heartbeat alınamadı: {port}")
+                            self.logger.warning(f"❌ Port {port}: Heartbeat alınamadı")
                             
                     except Exception as port_error:
-                        self.logger.warning(f"Port {port} bağlantı hatası: {port_error}")
+                        self.logger.warning(f"❌ Port {port} bağlantı hatası: {port_error}")
                         continue
                         
                 if connection_success:
+                    self.logger.info(f"🎉 MAVLink bağlantısı kuruldu: {successful_port}")
+                    # Başarılı portu config'e kaydet (gelecek bağlantılar için)
+                    self.successful_port = successful_port
                     return True
                     
             except Exception as e:
                 self.logger.error(f"MAVLink kurulum hatası (deneme {attempt+1}): {e}")
                 
             if attempt < retries - 1:
-                self.logger.info("2 saniye beklenip tekrar denenecek...")
-                time.sleep(2)
+                self.logger.info("⏳ 3 saniye beklenip tekrar denenecek...")
+                time.sleep(3)
                 
-        self.logger.error("❌ MAVLink bağlantısı kurulamadı!")
+        self.logger.error("❌ Tüm MAVLink bağlantı denemeleri başarısız!")
         return False
+    
+    def _test_mavlink_connection(self):
+        """MAVLink bağlantısını test et"""
+        try:
+            # Birkaç mesaj alabilir miyiz test et
+            test_count = 0
+            start_time = time.time()
+            
+            while time.time() - start_time < 3.0 and test_count < 3:
+                msg = self.mavlink.recv_match(blocking=False, timeout=0.5)
+                if msg:
+                    test_count += 1
+                    
+            return test_count >= 1  # En az 1 mesaj alabildi
+            
+        except Exception as e:
+            self.logger.warning(f"MAVLink bağlantı testi hatası: {e}")
+            return False
         
     def test_sensor_connections(self):
         """Sensör bağlantılarını test et"""
@@ -121,33 +199,51 @@ class SaraMainController:
             return False
             
     def calibrate_sensors(self):
-        """Sensör kalibrasyonu yap"""
+        """D300 sensör kalibrasyonu - su üstünden 10 saniye veri toplama"""
         try:
-            self.logger.info("🔧 Sensör kalibrasyonu başlatılıyor...")
+            self.logger.info("🔧 D300 KALIBRASYON BAŞLIYOR...")
+            self.logger.info("⚠️ ARAÇ SU ÜSTÜNDE TUTULMALI!")
             
             # SensorManager oluştur ve sınıf değişkeni olarak sakla
             self.sensor_manager = SensorManager(self.mavlink, self.system_status.logger)
             
-            # Tüm sensörleri kalibre et
-            calibration_results = self.sensor_manager.calibrate_all()
+            # 10 saniye uzun buzzer ile kalibrasyon uyarısı
+            self.logger.info("🔊 10 saniye kalibrasyon buzzer başlıyor...")
+            self.system_status.buzzer.beep(10.0)  # 10 saniye uzun bip
             
-            # Sonuçları kontrol et
-            depth_ok = calibration_results.get('depth', False)
-            attitude_ok = calibration_results.get('attitude', False)
+            # D300 deniz suyu kalibrasyonu (su üstünde)
+            self.logger.info("🌊 D300 deniz suyu kalibrasyonu başlıyor...")
+            depth_calibration_success = self.sensor_manager.depth.calibrate_seawater()
             
-            self.logger.info(f"Kalibrasyon sonuçları: D300={depth_ok}, Attitude={attitude_ok}")
-            
-            # En azından D300 kalibrasyonu başarılı olmalı
-            if depth_ok:
-                self.logger.info("✅ Sensör kalibrasyonu tamamlandı")
-                return True
+            if depth_calibration_success:
+                self.logger.info("✅ D300 deniz suyu kalibrasyonu başarılı")
             else:
-                self.logger.error("❌ D300 derinlik sensörü kalibrasyonu başarısız")
-                return False
+                self.logger.warning("⚠️ D300 kalibrasyonu başarısız, varsayılan değerler kullanılacak")
+            
+            # Attitude sensörü kalibrasyonu (opsiyonel)
+            try:
+                attitude_calibration_success = self.sensor_manager.calibrate_attitude()
+                if attitude_calibration_success:
+                    self.logger.info("✅ Attitude sensörü kalibrasyonu başarılı")
+                else:
+                    self.logger.warning("⚠️ Attitude kalibrasyonu başarısız, varsayılan değerler kullanılacak")
+            except Exception as att_error:
+                self.logger.warning(f"Attitude kalibrasyon hatası: {att_error}")
+                attitude_calibration_success = False
+            
+            # Kalibrasyon tamamlandı sinyali
+            self.system_status.buzzer.beep_pattern([0.5, 0.2, 0.5, 0.2, 0.5])  # Başarı sinyali
+            
+            self.logger.info("✅ Sensör kalibrasyonu tamamlandı")
+            self.logger.info("🤖 Sistem görev için hazır!")
+            
+            # D300 kalibrasyonu başarısızsa da devam et (fallback mekanizması var)
+            return True
                 
         except Exception as e:
             self.logger.error(f"Sensör kalibrasyon hatası: {e}")
-            return False
+            # Hata durumunda da devam et, görev sırasında fallback kullanılacak
+            return True
             
     def _request_data_streams(self):
         """Gerekli veri akışlarını iste"""

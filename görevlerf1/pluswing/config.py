@@ -6,9 +6,15 @@ Deneme.txt belgesine göre hazırlanmıştır.
 """
 
 # ---- MAVLink Bağlantı Ayarları ----
-MAVLINK_PORTS = ["/dev/ttyACM0", "/dev/ttyACM1"]  # Pixhawk USB bağlantısı (Linux) - fallback ile
+# Linux/Unix portları - dinamik tarama yapılacak ama fallback için
+MAVLINK_PORTS = ["/dev/ttyACM0", "/dev/ttyACM1", "/dev/ttyACM2", "/dev/ttyUSB0", "/dev/ttyUSB1"]
 MAVLINK_PORT_WIN = "COM5"      # Windows için alternatif
 MAVLINK_BAUD = 115200
+
+# MAVLink bağlantı fallback ayarları
+MAVLINK_CONNECTION_TIMEOUT = 5    # Bağlantı timeout (saniye)
+MAVLINK_HEARTBEAT_TIMEOUT = 5     # Heartbeat timeout (saniye)
+MAVLINK_RECONNECT_ATTEMPTS = 3    # Yeniden bağlantı denemeleri
 
 # ---- Servo ve Motor Kanalları ----
 # ArduSub'da: MAIN1-8 = kanal 1-8, AUX1 = kanal 9, AUX2 = kanal 10, vs.
@@ -53,14 +59,18 @@ D300_CALIB_DURATION_FRESHWATER = 6 # Tatlı su kalibrasyonu süresi (saniye)
 D300_USE_WATER_SURFACE_CALIB = False  # True: Su yüzeyinde tut, False: Havada kalibre et
 
 # ---- Güvenlik Zamanları ----
-ARMING_DELAY_SECONDS = 90    # 90 saniye arming gecikmesi
+ARMING_DELAY_SECONDS = 90    # 90 saniye arming gecikmesi (buton sonrası)
 MISSION_TIMEOUT_SECONDS = 600  # 10 dakika maksimum görev süresi
+D300_CALIBRATION_DURATION = 10  # 10 saniye D300 kalibrasyon süresi
 
 # ---- Görev 1 Parametreleri ----
-TARGET_DEPTH_FIRST_10M = 2.0    # İlk 10 metre için 2m derinlik
-TARGET_DEPTH_MAIN = 3.0         # Ana seyir için 3m derinlik  
-MISSION_DISTANCE = 50.0         # Minimum 50 metre mesafe
+TARGET_DEPTH_RANGE_MIN = 2.0    # Minimum seyir derinliği
+TARGET_DEPTH_RANGE_MAX = 2.5    # Maksimum seyir derinliği
+TARGET_DEPTH_DEFAULT = 2.25     # Varsayılan seyir derinliği (2-2.5m ortası)
+MISSION_DISTANCE = 50.0         # İleri gidiş mesafesi (10m + 40m)
+RETURN_DISTANCE = 50.0          # Geri dönüş mesafesi
 FIRST_PHASE_DISTANCE = 10.0     # İlk faz 10 metre
+SECOND_PHASE_DISTANCE = 40.0    # İkinci faz 40 metre
 
 # ---- Stabilizasyon Parametreleri ----
 # Roll Kontrolü
@@ -126,14 +136,16 @@ SPEED_MEDIUM = 1700    # Orta hız
 SPEED_FAST = 1800      # Hızlı hız
 
 # ---- Buzzer Sinyalleri ----
-# 90 saniye = 10 x 9 saniye (9 kısa bip + 1 uzun bip)
-BUZZER_STARTUP = [0.5, 0.2, 0.5, 0.2, 0.5]  # Başlangıç sinyali
+BUZZER_STARTUP = [0.5, 0.2, 0.5, 0.2, 0.5]  # Sistem başlangıç sinyali
+BUZZER_CALIBRATION_LONG = 10.0               # D300 kalibrasyon uzun bip (10 saniye)
+BUZZER_CALIBRATION_SUCCESS = [0.5, 0.2, 0.5, 0.2, 0.5]  # Kalibrasyon başarı
 BUZZER_COUNTDOWN_SHORT = 0.1    # Kısa bip süresi  
 BUZZER_COUNTDOWN_LONG = 0.5     # Uzun bip süresi
 BUZZER_COUNTDOWN_PAUSE = 0.9    # Bip arası bekleme
 BUZZER_MISSION_START = [0.2, 0.1] * 5        # Görev başlangıcı (5 saniye)
 BUZZER_MISSION_END = [1.0, 0.5] * 3          # Görev bitişi (3 saniyede 1)
 BUZZER_EMERGENCY = [0.1, 0.1] * 10           # Acil durum
+BUZZER_90_SEC_COMPLETE = [0.5, 0.5, 0.5, 0.5, 0.5]  # 90 saniye tamamlandı
 
 # ---- Hız Hesaplama Sabitleri ----
 ESTIMATED_SPEED_SLOW = 1.0      # m/s

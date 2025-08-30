@@ -24,12 +24,17 @@ class DepthSensor:
     
     def __init__(self, mavlink_connection, logger=None, src=None):
         self.mavlink = mavlink_connection
-        self.src = src or D300_SOURCE
-        self.msg_name = self.MSG_NAME_BY_SRC[self.src]
-        self.msg_id = self.MSG_ID_BY_SRC[self.src]
+        self.primary_src = src or D300_SOURCE
+        self.logger = logger or Logger()
+        
+        # Çoklu D300 kaynak fallback sistemi
+        self.available_sources = [2, 3]  # SCALED_PRESSURE2 ve SCALED_PRESSURE3
+        self.current_src = self.primary_src
+        self.tried_sources = set()
+        
+        self._update_source_config()
         
         self.pressure_offset = None  # Yüzey basıncı (P0)
-        self.logger = logger or Logger()
         
         # Derinlik hesaplama parametreleri (DENİZ SUYU - GÖREVLER DENİZDE)
         self.water_density = D300_SEAWATER_DENSITY  # kg/m³ (deniz suyu)
@@ -44,17 +49,28 @@ class DepthSensor:
         self.temp_min = -5.0        # °C
         self.temp_max = 60.0        # °C
         
-        # FALLBACK SİSTEMİ
+        # GÜÇLENDİRİLMİŞ FALLBACK SİSTEMİ
         self.last_valid_depth = None
         self.last_valid_pressure = None
         self.last_valid_time = None
         self.connection_lost_time = None
         self.is_connected = True
         self.consecutive_failures = 0
-        self.max_failures_before_disconnect = 10  # 10 başarısız okuma sonrası bağlantı kesildi kabul et
+        self.max_failures_before_disconnect = 15  # 15 başarısız okuma sonrası bağlantı kesildi
+        self.max_failures_before_source_switch = 5   # 5 başarısız okuma sonrası kaynak değiştir
+        
+        # Yeniden bağlantı denemeleri
+        self.reconnect_attempts = 0
+        self.max_reconnect_attempts = 10
+        self.last_reconnect_attempt = 0
         
         self._request_data_stream()
-        self.logger.info(f"D300 sensörü MAVLink {self.msg_name} üzerinden başlatıldı")
+        self.logger.info(f"D300 sensörü MAVLink {self.msg_name} üzerinden başlatıldı (Kaynak: {self.current_src})")
+    
+    def _update_source_config(self):
+        """Mevcut kaynak konfigürasyonunu güncelle"""
+        self.msg_name = self.MSG_NAME_BY_SRC[self.current_src]
+        self.msg_id = self.MSG_ID_BY_SRC[self.current_src]
         
     def _request_data_stream(self):
         """D300 veri akışını iste"""
@@ -111,11 +127,81 @@ class DepthSensor:
             
     def _check_connection_status(self):
         """Bağlantı durumunu kontrol et ve güncelle"""
-        if self.consecutive_failures >= self.max_failures_before_disconnect:
-            if self.is_connected:
-                self.is_connected = False
-                self.connection_lost_time = time.time()
-                self.logger.error(f"❌ D300 sensör bağlantısı kesildi! ({self.consecutive_failures} başarısız okuma)")
+        # Kaynak değiştirme kontrolü
+        if self.consecutive_failures >= self.max_failures_before_source_switch:
+            if not self._try_switch_source():
+                # Kaynak değiştirme başarısızsa bağlantı kesildi olarak işaretle
+                if self.consecutive_failures >= self.max_failures_before_disconnect:
+                    if self.is_connected:
+                        self.is_connected = False
+                        self.connection_lost_time = time.time()
+                        self.logger.error(f"❌ D300 sensör bağlantısı kesildi! ({self.consecutive_failures} başarısız okuma)")
+    
+    def _try_switch_source(self):
+        """Alternatif D300 kaynağına geçmeyi dene"""
+        for src in self.available_sources:
+            if src != self.current_src and src not in self.tried_sources:
+                old_src = self.current_src
+                self.current_src = src
+                self._update_source_config()
+                self.tried_sources.add(old_src)
+                
+                self.logger.warning(f"🔄 D300 kaynak değiştiriliyor: {old_src} -> {src} ({self.msg_name})")
+                
+                # Yeni kaynak için veri akışı iste
+                self._request_data_stream()
+                
+                # Kısa test yap
+                time.sleep(0.5)
+                test_pressure, _ = self.read_raw_data()
+                
+                if test_pressure is not None:
+                    self.consecutive_failures = 0
+                    self.logger.info(f"✅ D300 kaynak değişimi başarılı: {self.msg_name}")
+                    return True
+                else:
+                    self.logger.warning(f"⚠️ D300 kaynak {src} de çalışmıyor")
+                    continue
+        
+        # Tüm kaynaklar denendi, sıfırla
+        if len(self.tried_sources) >= len(self.available_sources):
+            self.tried_sources.clear()
+            self.logger.warning("🔄 Tüm D300 kaynakları denendi, sıfırlanıyor")
+        
+        return False
+    
+    def reconnect_attempt(self):
+        """D300 yeniden bağlantı denemesi"""
+        current_time = time.time()
+        
+        # Çok sık deneme yapma (en az 2 saniye ara)
+        if current_time - self.last_reconnect_attempt < 2.0:
+            return False
+            
+        self.last_reconnect_attempt = current_time
+        self.reconnect_attempts += 1
+        
+        if self.reconnect_attempts > self.max_reconnect_attempts:
+            return False
+            
+        self.logger.info(f"🔄 D300 yeniden bağlantı denemesi {self.reconnect_attempts}/{self.max_reconnect_attempts}")
+        
+        # Mevcut kaynağı tekrar dene
+        self._request_data_stream()
+        time.sleep(0.5)
+        
+        test_pressure, _ = self.read_raw_data()
+        if test_pressure is not None:
+            self.logger.info("✅ D300 yeniden bağlantı başarılı!")
+            self.consecutive_failures = 0
+            self.reconnect_attempts = 0
+            if not self.is_connected:
+                self.is_connected = True
+                self.connection_lost_time = None
+            return True
+        
+        # Mevcut kaynak çalışmıyorsa alternatif dene
+        return self._try_switch_source()
                 
     def get_depth_safe(self, mission_phase=None):
         """Güvenli derinlik ölçümü - fallback mekanizmalı
