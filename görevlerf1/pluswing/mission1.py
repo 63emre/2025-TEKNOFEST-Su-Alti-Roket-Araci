@@ -48,6 +48,9 @@ class Mission1Controller:
         self.stabilizer = StabilizationController(mavlink_connection, self.sensors, logger)
         self.motion = MotionController(self.stabilizer, logger)
         
+        # PWM sinyalleri etkinleştir (90 saniye tamamlandı)
+        self.stabilizer.servo_controller.enable_pwm_signals()
+        
         # Görev durumu
         self.mission_timer = Timer()
         self.phase_timer = Timer()

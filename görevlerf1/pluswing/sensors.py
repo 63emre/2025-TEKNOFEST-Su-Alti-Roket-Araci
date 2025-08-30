@@ -77,10 +77,20 @@ class DepthSensor:
         self.logger.info(f"D300 sensörü MAVLink {self.msg_name} üzerinden başlatıldı (Kaynak: {self.current_src})")
     
     def to_depth_m(self, press_hpa: float) -> float:
-        """Çalışan kodun exact derinlik hesaplama fonksiyonu"""
+        """Çalışan kodun exact derinlik hesaplama fonksiyonu - KALİBRASYONSUZ"""
         pa = press_hpa * 100.0
         dp = max(0.0, pa - D300_SEA_LEVEL_PRESSURE_PA)
         return dp / (self.water_density * self.gravity)
+    
+    def get_depth_no_calibration(self):
+        """Kalibrasyon olmadan direkt derinlik ölçümü - Çalışan kodun mantığı"""
+        pressure, _ = self.read_raw_data()
+        
+        if pressure is None:
+            return None
+            
+        # Çalışan kodun exact mantığı - kalibrasyon yok
+        return self.to_depth_m(pressure)
     
     def _update_source_config(self):
         """Mevcut kaynak konfigürasyonunu güncelle"""

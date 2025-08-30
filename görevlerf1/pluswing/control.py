@@ -76,9 +76,30 @@ class ServoController:
         self.mavlink = mavlink_connection
         self.logger = logger or Logger()
         
+        # 90 SANİYE PWM GÜVENLİK KONTROLLERİ
+        self.pwm_allowed = False  # Başlangıçta PWM yollamak yasak
+        self.pwm_allowed_start_time = None
+        
+    def enable_pwm_signals(self):
+        """90 saniye sonra PWM sinyallerini etkinleştir"""
+        self.pwm_allowed = True
+        self.pwm_allowed_start_time = time.time()
+        self.logger.info("🚀 PWM sinyalleri etkinleştirildi!")
+    
+    def disable_pwm_signals(self):
+        """PWM sinyallerini devre dışı bırak"""
+        self.pwm_allowed = False
+        self.pwm_allowed_start_time = None
+        self.logger.info("🚫 PWM sinyalleri devre dışı bırakıldı!")
+    
     def set_servo(self, channel, pwm_value):
         """Servo PWM değeri ayarla"""
         try:
+            # 90 SANİYE PWM GÜVENLİK KONTROLÜ
+            if not self.pwm_allowed:
+                self.logger.warning(f"🚫 PWM sinyali engellendi! 90 saniye tamamlanmadan PWM yollanamaz (Kanal:{channel})")
+                return False
+            
             # Güvenlik kontrolleri
             if channel is None:
                 self.logger.error("Servo channel None!")

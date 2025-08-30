@@ -354,9 +354,14 @@ class SaraMainController:
         return False
         
     def countdown_90_seconds(self):
-        """90 saniye güvenlik geri sayımı"""
+        """90 saniye güvenlik geri sayımı - SENSÖR VERİLERİ İLE"""
         self.logger.info("⏱️ 90 saniye güvenlik geri sayımı başlıyor...")
+        self.logger.info("🚫 90 SANİYE BOYUNCA HİÇBİR PWM SİNYALİ YOLLANMAYACAK")
         self.system_status.set_phase(MissionPhase.WAITING)
+        
+        # Sensör manager'ı hazırla (kalibrasyon YOK)
+        if not hasattr(self, 'sensor_manager'):
+            self.sensor_manager = SensorManager(self.mavlink, self.logger)
         
         # 90 saniye = 10 x (9 kısa bip + 1 uzun bip)
         for group in range(10):
@@ -370,6 +375,31 @@ class SaraMainController:
                 if button_action == "restart":
                     self.logger.info("🛑 Geri sayım iptal edildi! Yeniden buton bekleniyor...")
                     return "restart"  # İptal sinyali
+                
+                # SENSÖR VERİLERİNİ GÖSTER
+                try:
+                    # D300 derinlik (kalibrasyon yok)
+                    depth = self.sensor_manager.depth.get_depth_no_calibration()
+                    depth_str = f"{depth:.2f}m" if depth is not None else "N/A"
+                    
+                    # Attitude verileri
+                    attitude = self.sensor_manager.attitude.get_attitude(timeout=0.1)
+                    if attitude:
+                        roll_deg = attitude['roll_deg']
+                        pitch_deg = attitude['pitch_deg'] 
+                        yaw_deg = attitude['yaw_raw_deg']
+                        attitude_str = f"R:{roll_deg:.1f}° P:{pitch_deg:.1f}° Y:{yaw_deg:.1f}°"
+                    else:
+                        attitude_str = "N/A"
+                    
+                    # Geri sayım süresi
+                    remaining_seconds = (9 - group) * 9 + (9 - short_beep)
+                    
+                    self.logger.info(f"⏱️ T-{remaining_seconds:02d}s | Derinlik:{depth_str} | {attitude_str}")
+                    
+                except Exception as e:
+                    remaining_seconds = (9 - group) * 9 + (9 - short_beep)
+                    self.logger.warning(f"⏱️ T-{remaining_seconds:02d}s | Sensör okuma hatası: {e}")
                     
                 self.system_status.buzzer.beep(BUZZER_COUNTDOWN_SHORT)
                 time.sleep(BUZZER_COUNTDOWN_PAUSE)
@@ -381,6 +411,12 @@ class SaraMainController:
                 self.logger.info(f"⏱️ Geri sayım: {remaining_groups * 9} saniye kaldı")
                 
         self.logger.info("✅ 90 saniye güvenlik gecikmesi tamamlandı!")
+        self.logger.info("🚀 Artık PWM sinyalleri yollanabilir!")
+        
+        # PWM sinyallerini etkinleştir
+        if hasattr(self, 'sensor_manager') and hasattr(self.sensor_manager, 'servo_controller'):
+            self.sensor_manager.servo_controller.enable_pwm_signals()
+        
         self.system_status.buzzer.beep_pattern(BUZZER_MISSION_START)
         return True
         
@@ -474,10 +510,10 @@ class SaraMainController:
                 self.logger.error("Sensör bağlantıları başarısız, çıkılıyor")
                 return False
                 
-            # 3. Sensör kalibrasyonu
-            if not self.calibrate_sensors():
-                self.logger.error("Sensör kalibrasyonu başarısız, çıkılıyor")
-                return False
+            # 3. Sensör manager'ı hazırla (KALİBRASYON YOK)
+            self.logger.info("🔧 Sensör manager hazırlanıyor (kalibrasyon YOK)...")
+            self.sensor_manager = SensorManager(self.mavlink, self.logger)
+            self.logger.info("✅ Sensör manager hazır - D300 direkt veri okuma modu")
                 
             # 4-5. Buton bekle ve 90 saniye döngüsü
             while True:

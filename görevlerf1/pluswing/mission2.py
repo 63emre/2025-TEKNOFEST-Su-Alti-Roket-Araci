@@ -98,6 +98,9 @@ class Mission2Controller:
         self.motion = MotionController(self.stabilizer, logger)
         self.rocket = RocketController(logger)
         
+        # PWM sinyalleri etkinleştir (90 saniye tamamlandı)
+        self.stabilizer.servo_controller.enable_pwm_signals()
+        
         # Görev durumu
         self.mission_timer = Timer()
         self.phase_timer = Timer()
