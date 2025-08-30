@@ -67,7 +67,7 @@ D300_USE_WATER_SURFACE_CALIB = False  # True: Su yüzeyinde tut, False: Havada k
 
 # ---- Güvenlik Zamanları ----
 ARMING_DELAY_SECONDS = 90    # 90 saniye arming gecikmesi (buton sonrası)
-MISSION_TIMEOUT_SECONDS = 600  # 10 dakika maksimum görev süresi
+MISSION_TIMEOUT_SECONDS = 180  # 3 dakika maksimum görev süresi
 D300_CALIBRATION_DURATION = 10  # 10 saniye D300 kalibrasyon süresi
 
 # ---- Görev 1 Parametreleri ----

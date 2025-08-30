@@ -499,7 +499,7 @@ class StabilizationController:
             
         return self.turn_to_heading_u_turn_mode(target_yaw_deg, timeout)
     
-    def turn_to_heading_u_turn_mode(self, target_heading_deg, timeout=150):
+    def turn_to_heading_u_turn_mode(self, target_heading_deg, timeout=30):
         """Özel U dönüş modu ile heading'e dön - TAMAMEN AYRI STABİLİZASYON"""
         self.logger.info(f"🔄 ÖZEL U DÖNÜŞ: {target_heading_deg:.1f}°'ye dönülüyor...")
         

@@ -330,10 +330,10 @@ class Mission1Controller:
                 self.logger.info(f"✓ Faz 1 tamamlandı: {self.phase1_distance:.1f}m")
                 break
                 
-            # Zaman aşımı kontrolü
-            if self.phase_timer.elapsed() > 60:  # 1 dakika maksimum
-                self.logger.warning("Faz 1 zaman aşımı!")
-                break
+            # Global görev timeout kontrolü (sadece bu)
+            if self.mission_timer.elapsed() > MISSION_TIMEOUT_SECONDS:
+                self.logger.error(f"🚨 GLOBAL TIMEOUT! Sistem 180s sonra otomatik kapanıyor")
+                return False
                 
             time.sleep(0.02)  # 50Hz
             
@@ -421,10 +421,10 @@ class Mission1Controller:
                 self.logger.info(f"✓ Faz 2 tamamlandı: {self.phase2_distance:.1f}m (Toplam ileri: {total_forward:.1f}m)")
                 break
                 
-            # Zaman aşımı kontrolü
-            if self.phase_timer.elapsed() > 120:  # 2 dakika maksimum
-                self.logger.warning("Faz 2 zaman aşımı!")
-                break
+            # Global görev timeout kontrolü (sadece bu)
+            if self.mission_timer.elapsed() > MISSION_TIMEOUT_SECONDS:
+                self.logger.error(f"🚨 GLOBAL TIMEOUT! Sistem 180s sonra otomatik kapanıyor")
+                return False
                 
             time.sleep(0.02)  # 50Hz
             
@@ -441,7 +441,7 @@ class Mission1Controller:
         time.sleep(4)  # 4 saniye duraklaması için bekle
         
         # 180° U dönüşü yap
-        success = self.stabilizer.turn_180_degrees(timeout=150)
+        success = self.stabilizer.turn_180_degrees(timeout=30)
         
         if success:
             self.logger.info("✓ U dönüşü tamamlandı")
@@ -539,10 +539,10 @@ class Mission1Controller:
                 self.logger.info(f"✓ Geri dönüş tamamlandı: {self.return_distance:.1f}m")
                 break
                 
-            # Zaman aşımı kontrolü
-            if self.phase_timer.elapsed() > 150:  # 2.5 dakika maksimum
-                self.logger.warning("Geri dönüş zaman aşımı!")
-                break
+            # Global görev timeout kontrolü (sadece bu)
+            if self.mission_timer.elapsed() > MISSION_TIMEOUT_SECONDS:
+                self.logger.error(f"🚨 GLOBAL TIMEOUT! Sistem 180s sonra otomatik kapanıyor")
+                return False
                 
             time.sleep(0.02)  # 50Hz
             
@@ -670,10 +670,10 @@ class Mission1Controller:
             except:
                 current_depth = new_target  # Tahmin olarak kullan
             
-            # Zaman aşımı kontrolü
-            if self.phase_timer.elapsed() > 60:  # 1 dakika maksimum
-                self.logger.warning("Yüzeye çıkış zaman aşımı!")
-                break
+            # Global görev timeout kontrolü (sadece bu)
+            if self.mission_timer.elapsed() > MISSION_TIMEOUT_SECONDS:
+                self.logger.error(f"🚨 GLOBAL TIMEOUT! Sistem 180s sonra otomatik kapanıyor")
+                break  # Yüzeye çıkışta güvenlik için break
         
         # Son kontrol - yüzeye çıkış tamamlandı mı?
         if current_depth <= surface_threshold:
