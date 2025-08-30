@@ -67,7 +67,7 @@ D300_CALIB_DURATION_FRESHWATER = 6 # Tatlı su kalibrasyonu süresi (saniye)
 D300_USE_WATER_SURFACE_CALIB = False  # True: Su yüzeyinde tut, False: Havada kalibre et
 
 # ---- Güvenlik Zamanları ----
-ARMING_DELAY_SECONDS = 90    # 90 saniye arming gecikmesi (buton sonrası)
+ARMING_DELAY_SECONDS = 65    # 65 saniye arming gecikmesi (buton sonrası) - 90'dan 65'e düşürüldü
 MISSION_TIMEOUT_SECONDS = 180  # 3 dakika maksimum görev süresi
 D300_CALIBRATION_DURATION = 10  # 10 saniye D300 kalibrasyon süresi
 
@@ -153,7 +153,7 @@ BUZZER_COUNTDOWN_PAUSE = 0.9    # Bip arası bekleme
 BUZZER_MISSION_START = [0.2, 0.1] * 5        # Görev başlangıcı (5 saniye)
 BUZZER_MISSION_END = [1.0, 0.5] * 3          # Görev bitişi (3 saniyede 1)
 BUZZER_EMERGENCY = [0.1, 0.1] * 10           # Acil durum
-BUZZER_90_SEC_COMPLETE = [0.5, 0.5, 0.5, 0.5, 0.5]  # 90 saniye tamamlandı
+BUZZER_65_SEC_COMPLETE = [0.5, 0.5, 0.5, 0.5, 0.5]  # 65 saniye tamamlandı
 
 # ---- Hız Hesaplama Sabitleri ----
 ESTIMATED_SPEED_SLOW = 1.0      # m/s

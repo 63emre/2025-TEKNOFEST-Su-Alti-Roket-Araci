@@ -3,7 +3,7 @@
 """
 MAIN - Su Altı Roket Aracı (SARA) Ana Program
 Raspberry Pi'de otomatik olarak çalışacak ana dosya
-90 saniye güvenlik gecikmesi, görev yönetimi ve kontrol döngüsü
+65 saniye güvenlik gecikmesi, görev yönetimi ve kontrol döngüsü
 """
 
 import sys
@@ -353,20 +353,20 @@ class SaraMainController:
             
         return False
         
-    def countdown_90_seconds(self):
-        """90 saniye güvenlik geri sayımı - SENSÖR VERİLERİ İLE"""
-        self.logger.info("⏱️ 90 saniye güvenlik geri sayımı başlıyor...")
-        self.logger.info("🚫 90 SANİYE BOYUNCA HİÇBİR PWM SİNYALİ YOLLANMAYACAK")
+    def countdown_65_seconds(self):
+        """65 saniye güvenlik geri sayımı - SENSÖR VERİLERİ İLE + SON 10 SANİYE HIZLI BUZZER"""
+        self.logger.info("⏱️ 65 saniye güvenlik geri sayımı başlıyor...")
+        self.logger.info("🚫 65 SANİYE BOYUNCA HİÇBİR PWM SİNYALİ YOLLANMAYACAK")
         self.system_status.set_phase(MissionPhase.WAITING)
         
         # Sensör manager'ı hazırla (kalibrasyon YOK)
         if not hasattr(self, 'sensor_manager'):
             self.sensor_manager = SensorManager(self.mavlink, self.logger)
         
-        # 90 saniye = 10 x (9 kısa bip + 1 uzun bip)
-        for group in range(10):
-            # 9 kısa bip
-            for short_beep in range(9):
+        # 65 saniye = 6 x (10 kısa bip + 1 uzun bip) + 5 saniye
+        for group in range(6):
+            # 10 kısa bip
+            for short_beep in range(10):
                 if not self.system_running:
                     return False
                     
@@ -393,24 +393,47 @@ class SaraMainController:
                         attitude_str = "N/A"
                     
                     # Geri sayım süresi
-                    remaining_seconds = (9 - group) * 9 + (9 - short_beep)
+                    remaining_seconds = (5 - group) * 10 + (10 - short_beep)
                     
-                    self.logger.info(f"⏱️ T-{remaining_seconds:02d}s | Derinlik:{depth_str} | {attitude_str}")
+                    # SON 10 SANİYE HIZLI BUZZER
+                    if remaining_seconds <= 10:
+                        self.logger.info(f"🚨 SON {remaining_seconds} SANİYE! HIZLI BUZZER!")
+                        # Hızlı buzzer (0.1s açık, 0.1s kapalı)
+                        self.system_status.buzzer.beep(0.1)
+                        time.sleep(0.1)
+                    else:
+                        self.logger.info(f"⏱️ T-{remaining_seconds:02d}s | Derinlik:{depth_str} | {attitude_str}")
+                        # Normal buzzer
+                        self.system_status.buzzer.beep(BUZZER_COUNTDOWN_SHORT)
+                        time.sleep(BUZZER_COUNTDOWN_PAUSE)
                     
                 except Exception as e:
-                    remaining_seconds = (9 - group) * 9 + (9 - short_beep)
+                    remaining_seconds = (5 - group) * 10 + (10 - short_beep)
                     self.logger.warning(f"⏱️ T-{remaining_seconds:02d}s | Sensör okuma hatası: {e}")
-                    
-                self.system_status.buzzer.beep(BUZZER_COUNTDOWN_SHORT)
-                time.sleep(BUZZER_COUNTDOWN_PAUSE)
+                    # Hata durumunda da normal buzzer
+                    self.system_status.buzzer.beep(BUZZER_COUNTDOWN_SHORT)
+                    time.sleep(BUZZER_COUNTDOWN_PAUSE)
                 
-            # 1 uzun bip
-            if self.system_running:
+            # 1 uzun bip (grup sonunda)
+            if self.system_running and group < 5:  # Son grupta uzun bip yok
                 self.system_status.buzzer.beep(BUZZER_COUNTDOWN_LONG)
-                remaining_groups = 9 - group
-                self.logger.info(f"⏱️ Geri sayım: {remaining_groups * 9} saniye kaldı")
+                remaining_groups = 5 - group
+                self.logger.info(f"⏱️ Geri sayım: {remaining_groups * 10} saniye kaldı")
+        
+        # Son 5 saniye için ekstra hızlı buzzer
+        self.logger.info("🚨 SON 5 SANİYE! ÇOK HIZLI BUZZER!")
+        for i in range(5):
+            if not self.system_running:
+                return False
                 
-        self.logger.info("✅ 90 saniye güvenlik gecikmesi tamamlandı!")
+            remaining = 5 - i
+            self.logger.info(f"🚨 T-{remaining:02d}s - ÇOK HIZLI BUZZER!")
+            
+            # Çok hızlı buzzer (0.05s açık, 0.05s kapalı)
+            self.system_status.buzzer.beep(0.05)
+            time.sleep(0.1)  # Toplam 0.1s per saniye
+        
+        self.logger.info("✅ 65 saniye güvenlik gecikmesi tamamlandı!")
         self.logger.info("🚀 Artık PWM sinyalleri yollanabilir!")
         
         # PWM sinyallerini etkinleştir
@@ -515,15 +538,15 @@ class SaraMainController:
             self.sensor_manager = SensorManager(self.mavlink, self.logger)
             self.logger.info("✅ Sensör manager hazır - D300 direkt veri okuma modu")
                 
-            # 4-5. Buton bekle ve 90 saniye döngüsü
+                            # 4-5. Buton bekle ve 65 saniye döngüsü
             while True:
                 # 4. Başlatma butonu bekle
                 if not self.wait_for_start_button():
                     self.logger.info("Başlatma iptal edildi")
                     return False
                     
-                # 5. 90 saniye güvenlik gecikmesi
-                countdown_result = self.countdown_90_seconds()
+                # 5. 65 saniye güvenlik gecikmesi
+                countdown_result = self.countdown_65_seconds()
                 
                 if countdown_result == True:
                     # 90 saniye tamamlandı, görev başlayabilir
