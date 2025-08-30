@@ -278,13 +278,97 @@ class Timer:
         return self.start_time is not None and self.pause_time is None
 
 class Logger:
-    """Gelişmiş loglama sınıfı - Raspberry Pi bağlantı durumuna göre loglama"""
+    """Gelişmiş loglama sınıfı - HER ZAMAN dosyaya yaz + Raspberry Pi bağlantı durumuna göre loglama"""
     
     def __init__(self, log_file=None):
         self.log_file = log_file
         self.buffer = []  # Bağlantı yokken kritik logları buffer'a ekle
         self.max_buffer_size = 100
         self.connected = self._check_pi_connection()
+        
+        # KAPSAMLI LOG DOSYASI SİSTEMİ
+        self.setup_comprehensive_logging()
+    
+    def setup_comprehensive_logging(self):
+        """Kapsamlı loglama sistemi kurulumu"""
+        import os
+        from datetime import datetime
+        
+        # Log klasörü oluştur
+        self.log_dir = "logs"
+        if not os.path.exists(self.log_dir):
+            os.makedirs(self.log_dir)
+        
+        # Tarih-saat bazlı log dosyası isimleri
+        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+        
+        # Ana log dosyası (TÜM loglar)
+        self.main_log_file = os.path.join(self.log_dir, f"sara_mission_{timestamp}.log")
+        
+        # Kategori bazlı log dosyaları
+        self.sensor_log_file = os.path.join(self.log_dir, f"sensors_{timestamp}.log")
+        self.control_log_file = os.path.join(self.log_dir, f"control_{timestamp}.log")
+        self.mission_log_file = os.path.join(self.log_dir, f"mission_{timestamp}.log")
+        self.error_log_file = os.path.join(self.log_dir, f"errors_{timestamp}.log")
+        
+        # Son log dosyası linklerini oluştur (en güncel loglar için)
+        self.create_latest_links()
+        
+        # Başlangıç logu
+        self.write_startup_header()
+    
+    def create_latest_links(self):
+        """En güncel log dosyalarına linkler oluştur"""
+        import os
+        
+        latest_links = {
+            "latest_main.log": self.main_log_file,
+            "latest_sensors.log": self.sensor_log_file, 
+            "latest_control.log": self.control_log_file,
+            "latest_mission.log": self.mission_log_file,
+            "latest_errors.log": self.error_log_file
+        }
+        
+        for link_name, target_file in latest_links.items():
+            link_path = os.path.join(self.log_dir, link_name)
+            try:
+                # Eski linki sil
+                if os.path.exists(link_path):
+                    os.remove(link_path)
+                # Windows'ta copy, Linux'ta symlink
+                if os.name == 'nt':
+                    import shutil
+                    shutil.copy2(target_file, link_path)
+                else:
+                    os.symlink(os.path.basename(target_file), link_path)
+            except Exception as e:
+                print(f"Latest link oluşturma hatası {link_name}: {e}")
+    
+    def write_startup_header(self):
+        """Başlangıç header'ı yaz"""
+        from datetime import datetime
+        import platform
+        import sys
+        import os
+        
+        header = f"""
+{'='*80}
+SARA (Su Altı Roket Aracı) - Görev Log Dosyası
+{'='*80}
+Başlatılma Zamanı: {datetime.now().strftime("%Y-%m-%d %H:%M:%S")}
+Platform: {platform.system()} {platform.release()}
+Python: {sys.version.split()[0]}
+Çalışma Dizini: {os.getcwd()}
+Log Dizini: {self.log_dir}
+{'='*80}
+"""
+        
+        # Ana log dosyasına header yaz
+        try:
+            with open(self.main_log_file, "w", encoding="utf-8") as f:
+                f.write(header + "\n")
+        except Exception as e:
+            print(f"Header yazma hatası: {e}")
         
     def _check_pi_connection(self):
         """Raspberry Pi bağlantı durumunu kontrol et"""
@@ -307,13 +391,18 @@ class Logger:
             if len(self.buffer) > self.max_buffer_size:
                 self.buffer.pop(0)  # En eski kaydı sil
         
-    def log(self, message, level="INFO"):
-        """Log mesajı yazdır"""
+    def log(self, message, level="INFO", category=None):
+        """Log mesajı yazdır - KAPSAMLI DOSYA YAZMA"""
         timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
         log_message = f"[{timestamp}] [{level}] {message}"
         
+        # Konsola yazdır (mevcut format korundu)
         print(log_message)
         
+        # HER ZAMAN dosyaya yaz (Pi bağlantısı olmasın)
+        self.write_to_log_files(log_message, level, category, timestamp)
+        
+        # Eski sistem (Pi bağlantısı varsa eski log dosyasına da yaz)
         if self.connected and self.log_file:
             try:
                 with open(self.log_file, "a", encoding="utf-8") as f:
@@ -327,11 +416,74 @@ class Logger:
                     self.buffer.clear()
                     
             except Exception as e:
-                print(f"Log yazma hatası: {e}")
+                print(f"Eski log yazma hatası: {e}")
                 self._add_to_buffer(message, level)
         else:
             # Bağlantı yoksa kritik mesajları buffer'a ekle
             self._add_to_buffer(message, level)
+    
+    def write_to_log_files(self, log_message, level, category, timestamp):
+        """Tüm log dosyalarına yaz"""
+        try:
+            # 1. Ana log dosyasına HER ZAMAN yaz
+            with open(self.main_log_file, "a", encoding="utf-8") as f:
+                f.write(log_message + "\n")
+            
+            # 2. Kategori bazlı log dosyalarına yaz
+            category_file = self.get_category_log_file(category, level)
+            if category_file:
+                with open(category_file, "a", encoding="utf-8") as f:
+                    f.write(log_message + "\n")
+            
+            # 3. Error logları ayrı dosyaya
+            if level in ["ERROR", "CRITICAL", "WARNING"]:
+                with open(self.error_log_file, "a", encoding="utf-8") as f:
+                    f.write(log_message + "\n")
+            
+            # 4. Latest linkleri güncelle (dosyalar büyüdükçe)
+            self.update_latest_links()
+            
+        except Exception as e:
+            print(f"Kapsamlı log yazma hatası: {e}")
+            # En azından buffer'a ekle
+            self._add_to_buffer(log_message, level)
+    
+    def get_category_log_file(self, category, level):
+        """Kategori veya seviyeye göre log dosyası döndür"""
+        if category:
+            category_lower = category.lower()
+            if "sensor" in category_lower or "d300" in category_lower or "attitude" in category_lower:
+                return self.sensor_log_file
+            elif "control" in category_lower or "servo" in category_lower or "motor" in category_lower or "pwm" in category_lower:
+                return self.control_log_file
+            elif "mission" in category_lower or "phase" in category_lower or "görev" in category_lower:
+                return self.mission_log_file
+        
+        # Mesaj içeriğine göre kategori tahmin et
+        message_lower = str(level).lower()
+        if any(keyword in message_lower for keyword in ["sensor", "d300", "attitude", "derinlik", "basınç"]):
+            return self.sensor_log_file
+        elif any(keyword in message_lower for keyword in ["servo", "motor", "pwm", "control", "stabiliz"]):
+            return self.control_log_file
+        elif any(keyword in message_lower for keyword in ["mission", "phase", "görev", "faz"]):
+            return self.mission_log_file
+        
+        return None
+    
+    def update_latest_links(self):
+        """Latest linklerini güncelle (sadece gerektiğinde)"""
+        # Bu fonksiyon çok sık çağrılmasın diye basit bir kontrol
+        import time
+        if not hasattr(self, '_last_link_update'):
+            self._last_link_update = 0
+        
+        current_time = time.time()
+        if current_time - self._last_link_update > 60:  # 60 saniyede bir güncelle
+            try:
+                self.create_latest_links()
+                self._last_link_update = current_time
+            except Exception as e:
+                pass  # Sessizce geç, çok kritik değil
                 
     def info(self, message):
         """Info seviyesi log"""
@@ -360,6 +512,63 @@ class Logger:
             'buffer_size': len(self.buffer),
             'max_buffer_size': self.max_buffer_size
         }
+    
+    # KATEGORİ BAZLI LOGLAMA FONKSİYONLARI
+    def sensor_log(self, message, level="INFO"):
+        """Sensör logları için"""
+        self.log(message, level, category="SENSOR")
+    
+    def control_log(self, message, level="INFO"):
+        """Kontrol sistemi logları için"""
+        self.log(message, level, category="CONTROL")
+    
+    def mission_log(self, message, level="INFO"):
+        """Görev logları için"""
+        self.log(message, level, category="MISSION")
+    
+    def d300_log(self, message, level="INFO"):
+        """D300 sensörü logları için"""
+        self.log(message, level, category="D300_SENSOR")
+    
+    def get_log_summary(self):
+        """Log dosyası özeti"""
+        import os
+        summary = {
+            'log_directory': self.log_dir,
+            'main_log': self.main_log_file,
+            'files': {}
+        }
+        
+        log_files = {
+            'main': self.main_log_file,
+            'sensors': self.sensor_log_file,
+            'control': self.control_log_file,
+            'mission': self.mission_log_file,
+            'errors': self.error_log_file
+        }
+        
+        for name, filepath in log_files.items():
+            try:
+                if os.path.exists(filepath):
+                    size = os.path.getsize(filepath)
+                    summary['files'][name] = {
+                        'path': filepath,
+                        'size_bytes': size,
+                        'size_kb': round(size / 1024, 2),
+                        'exists': True
+                    }
+                else:
+                    summary['files'][name] = {
+                        'path': filepath,
+                        'exists': False
+                    }
+            except Exception as e:
+                summary['files'][name] = {
+                    'path': filepath,
+                    'error': str(e)
+                }
+        
+        return summary
 
 class SystemStatus:
     """Sistem durumu takip sınıfı"""
