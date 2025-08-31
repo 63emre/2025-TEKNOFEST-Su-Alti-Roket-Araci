@@ -62,7 +62,7 @@ class Mission1Controller:
         self.mission_completed = False
         self.mission_success = False
         
-        # 90 saniye bekleme için
+        # 65 saniye bekleme için (90'dan 65'e düşürüldü)
         self.waiting_timer = Timer()
         self.waiting_completed = False
         
@@ -219,11 +219,7 @@ class Mission1Controller:
         countdown_seconds = 10
         
         while countdown_seconds > 0:
-            # Buton kontrolü - acil durdurma
-            button_action = self.system_status.check_start_button()
-            if button_action == "stop":
-                self.logger.info("Bekleme fazı kullanıcı tarafından durduruldu")
-                return False
+            # Buton kontrolü KALDIRILDI - otomatik çalışma
             
             # Her 10 saniyede bir durum raporu
             if countdown_seconds % 10 == 0:
@@ -261,7 +257,7 @@ class Mission1Controller:
             countdown_seconds -= 1
         
         # Bekleme tamamlandı sinyali
-        self.logger.info("✅ 90 saniye bekleme tamamlandı!")
+        self.logger.info("✅ 65 saniye bekleme tamamlandı!")
         if GPIO_AVAILABLE:
             try:
                 for _ in range(3):
@@ -328,10 +324,7 @@ class Mission1Controller:
         
         while True:
             # Buton kontrolü
-            button_action = self.system_status.check_start_button()
-            if button_action == "stop":
-                self.logger.info("Faz 1 kullanıcı tarafından durduruldu")
-                return False
+            # Buton kontrolü KALDIRILDI - otomatik çalışma
                 
             # Stabilizasyonu güncelle
             try:
