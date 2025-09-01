@@ -483,20 +483,20 @@ class StabilizationController:
         # U dönüş kuvveti (başlangıçta güçlü, sonra azalarak)
         turn_strength = (1.0 - self.u_turn_progress) * 300.0  # Max 300 microsecond
         
-        # SERVO KANAT HAREKETLERİ - SOLA DÖNÜŞ İÇİN
-        # Sol kanatlar yukarı, sağ kanatlar aşağı (sola yatırma)
-        # Üst ve alt kanatlar yaw için farklı yönde
-        
-        if turn_direction > 0:  # Sola dönüş
-            up_cmd = -turn_strength      # Üst kanat sola yardım
-            down_cmd = +turn_strength    # Alt kanat sola yardım  
-            right_cmd = -turn_strength   # Sağ kanat aşağı (sola yatırma)
-            left_cmd = +turn_strength    # Sol kanat yukarı (sola yatırma)
-        else:  # Sağa dönüş
-            up_cmd = +turn_strength      # Üst kanat sağa yardım
-            down_cmd = -turn_strength    # Alt kanat sağa yardım
-            right_cmd = +turn_strength   # Sağ kanat yukarı (sağa yatırma)
-            left_cmd = -turn_strength    # Sol kanat aşağı (sağa yatırma)
+        # SERVO KANAT HAREKETLERİ - DÜZELTİLMİŞ U DÖNÜŞ ALGORİTMASI
+        # Kullanıcı isteğine göre: Her iki kanat da aynı yönde dönecek
+        # Üst ve alt kanatlar simetrik olarak farklı yönde dönecek
+
+        if turn_direction > 0:  # Sola dönüş - SAĞ SERVO SAAT YÖNÜ
+            up_cmd = -turn_strength      # Üst kanat saat yönünün tersi
+            down_cmd = +turn_strength    # Alt kanat saat yönü (simetrik)
+            right_cmd = +turn_strength   # Sağ kanat saat yönü (DÜZELTİLDİ!)
+            left_cmd = +turn_strength    # Sol kanat saat yönü (DÜZELTİLDİ!)
+        else:  # Sağa dönüş - SOL SERVO SAAT YÖNÜ
+            up_cmd = +turn_strength      # Üst kanat saat yönü
+            down_cmd = -turn_strength    # Alt kanat saat yönünün tersi (simetrik)
+            right_cmd = -turn_strength   # Sağ kanat saat yönünün tersi
+            left_cmd = -turn_strength    # Sol kanat saat yönünün tersi
         
         # İlerlemeye göre komut gücünü ayarla
         progress_factor = max(0.3, 1.0 - self.u_turn_progress)  # Min %30 güç

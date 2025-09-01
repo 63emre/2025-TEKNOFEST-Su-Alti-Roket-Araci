@@ -731,6 +731,20 @@ def estimate_distance(speed_pwm, elapsed_time):
     Returns:
         Tahmini mesafe (metre)
     """
+    if DISTANCE_CALC_MODE == "ADVANCED":
+        return estimate_distance_advanced(speed_pwm, elapsed_time)
+    else:
+        # Eski basit yöntem (geriye uyumluluk için)
+        return estimate_distance_simple(speed_pwm, elapsed_time)
+
+def estimate_distance_simple(speed_pwm, elapsed_time):
+    """Basit hız hesaplama (eski yöntem)
+    Args:
+        speed_pwm: Motor PWM değeri
+        elapsed_time: Geçen süre (saniye)
+    Returns:
+        Tahmini mesafe (metre)
+    """
     # PWM değerine göre hız tahmini
     if speed_pwm <= MOTOR_STOP:
         estimated_speed = 0
@@ -740,8 +754,194 @@ def estimate_distance(speed_pwm, elapsed_time):
         estimated_speed = ESTIMATED_SPEED_MEDIUM
     else:
         estimated_speed = ESTIMATED_SPEED_FAST
-        
+
     return estimated_speed * elapsed_time
+
+class AdvancedDistanceCalculator:
+    """Gelişmiş mesafe hesaplayıcı sınıfı"""
+
+    def __init__(self):
+        self.last_speed = 0.0
+        self.last_pwm = MOTOR_STOP
+        self.speed_history = []
+        self.time_history = []
+        self.max_history_size = 50  # Son 50 ölçümü tut
+
+    def get_speed_from_pwm_curve(self, pwm_value):
+        """PWM değerini hız karakteristik eğrisinden hesapla (doğrusal interpolasyon)
+        Args:
+            pwm_value: PWM değeri
+        Returns:
+            Hız (m/s)
+        """
+        if pwm_value <= MOTOR_STOP:
+            return 0.0
+
+        # PWM değerlerini ve karşılık gelen hızları sıralı listeye çevir
+        pwm_points = sorted(MOTOR_SPEED_CURVE.keys())
+        speed_points = [MOTOR_SPEED_CURVE[pwm] for pwm in pwm_points]
+
+        # PWM değeri hangi aralıkta?
+        for i in range(len(pwm_points) - 1):
+            if pwm_points[i] <= pwm_value <= pwm_points[i + 1]:
+                # Doğrusal interpolasyon
+                pwm1, pwm2 = pwm_points[i], pwm_points[i + 1]
+                speed1, speed2 = speed_points[i], speed_points[i + 1]
+
+                # İnterpolasyon formülü: y = y1 + (x - x1) * (y2 - y1) / (x2 - x1)
+                if pwm2 != pwm1:
+                    speed = speed1 + (pwm_value - pwm1) * (speed2 - speed1) / (pwm2 - pwm1)
+                else:
+                    speed = speed1
+
+                return speed
+
+        # PWM değeri maksimumdan büyükse maksimum hızı döndür
+        return max(speed_points)
+
+    def apply_motor_dynamics(self, target_speed, elapsed_time):
+        """Motor dinamiklerini uygula (hızlanma/yavaşlama)
+        Args:
+            target_speed: Hedef hız (m/s)
+            elapsed_time: Geçen süre (saniye)
+        Returns:
+            Gerçekleşen hız (m/s)
+        """
+        # Motor başlangıç gecikmesini kontrol et
+        if elapsed_time < MOTOR_STARTUP_DELAY:
+            return 0.0
+
+        # Hız farkı
+        speed_diff = target_speed - self.last_speed
+
+        if speed_diff > 0:
+            # Hızlanma
+            max_speed_change = elapsed_time / MOTOR_ACCELERATION_TIME * target_speed
+            actual_speed_change = min(speed_diff, max_speed_change)
+        else:
+            # Yavaşlama
+            max_speed_change = elapsed_time / MOTOR_DECELERATION_TIME * abs(target_speed)
+            actual_speed_change = max(speed_diff, -max_speed_change)
+
+        current_speed = self.last_speed + actual_speed_change
+
+        # Hızı sınırla (negatif olamaz)
+        current_speed = max(0.0, current_speed)
+
+        return current_speed
+
+    def apply_environmental_factors(self, speed, elapsed_time):
+        """Çevresel faktörleri uygula (su direnci, sürtünme)
+        Args:
+            speed: Temiz hız (m/s)
+            elapsed_time: Geçen süre (saniye)
+        Returns:
+            Düzeltilmiş hız (m/s)
+        """
+        if speed <= 0:
+            return 0.0
+
+        # Su direnci etkisi (kuvvet = 0.5 * ρ * v² * Cd * A)
+        # Basitleştirilmiş: hız karesi ile orantılı direnç
+        drag_force = WATER_DRAG_COEFFICIENT * speed * speed
+
+        # Sürtünme etkisi
+        friction_force = FRICTION_COEFFICIENT * speed
+
+        # Toplam direnç
+        total_resistance = drag_force + friction_force
+
+        # Direnç faktörünü hesapla (basitleştirilmiş model)
+        resistance_factor = max(0.1, 1.0 - total_resistance / 10.0)  # Min %10 verim
+
+        return speed * resistance_factor
+
+    def smooth_speed(self, new_speed):
+        """Hız değerini yumuşat (noise azaltma)
+        Args:
+            new_speed: Yeni hız değeri
+        Returns:
+            Yumuşatılmış hız
+        """
+        if not self.speed_history:
+            self.speed_history.append(new_speed)
+            return new_speed
+
+        # Üstel hareketli ortalama
+        smoothed = (SPEED_SMOOTHING_FACTOR * new_speed +
+                   (1 - SPEED_SMOOTHING_FACTOR) * self.speed_history[-1])
+
+        self.speed_history.append(smoothed)
+
+        # Geçmiş boyutu kontrolü
+        if len(self.speed_history) > self.max_history_size:
+            self.speed_history.pop(0)
+
+        return smoothed
+
+    def calculate_distance(self, pwm_value, elapsed_time):
+        """Tam gelişmiş mesafe hesaplaması
+        Args:
+            pwm_value: Motor PWM değeri
+            elapsed_time: Geçen süre (saniye)
+        Returns:
+            Tahmini mesafe (metre)
+        """
+        # 1. PWM'den hedef hızı al (karakteristik eğri)
+        target_speed = self.get_speed_from_pwm_curve(pwm_value)
+
+        # 2. Motor dinamiklerini uygula
+        actual_speed = self.apply_motor_dynamics(target_speed, elapsed_time)
+
+        # 3. Çevresel faktörleri uygula
+        corrected_speed = self.apply_environmental_factors(actual_speed, elapsed_time)
+
+        # 4. Hızı yumuşat
+        smoothed_speed = self.smooth_speed(corrected_speed)
+
+        # 5. Mesafeyi hesapla (ortalama hız * süre)
+        distance = smoothed_speed * elapsed_time
+
+        # Hızı güncelle (bir sonraki hesaplama için)
+        self.last_speed = smoothed_speed
+        self.last_pwm = pwm_value
+
+        return distance
+
+    def reset(self):
+        """Hesaplayıcıyı sıfırla"""
+        self.last_speed = 0.0
+        self.last_pwm = MOTOR_STOP
+        self.speed_history.clear()
+        self.time_history.clear()
+
+# Global gelişmiş hesaplayıcı örneği
+_advanced_calculator = AdvancedDistanceCalculator()
+
+def estimate_distance_advanced(speed_pwm, elapsed_time):
+    """Gelişmiş mesafe hesaplaması
+    Args:
+        speed_pwm: Motor PWM değeri
+        elapsed_time: Geçen süre (saniye)
+    Returns:
+        Tahmini mesafe (metre)
+    """
+    global _advanced_calculator
+
+    # PWM değeri kontrolü
+    if speed_pwm is None or elapsed_time is None or elapsed_time <= 0:
+        return 0.0
+
+    # PWM değerini sınırla
+    pwm_clamped = clamp(speed_pwm, MOTOR_STOP, MOTOR_FORWARD_MAX)
+
+    try:
+        distance = _advanced_calculator.calculate_distance(pwm_clamped, elapsed_time)
+        return max(0.0, distance)  # Negatif mesafe olamaz
+    except Exception as e:
+        # Hata durumunda basit yöntem fallback
+        print(f"Gelişmiş mesafe hesaplaması hatası: {e}")
+        return estimate_distance_simple(speed_pwm, elapsed_time)
 
 def format_time(seconds):
     """Saniyeyi mm:ss formatına çevir"""

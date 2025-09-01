@@ -17,7 +17,7 @@ Yeni görev tanımı:
 import time
 import math
 from config import *
-from utils import Timer, estimate_distance, format_time
+from utils import Timer, estimate_distance, format_time, _advanced_calculator
 from sensors import SensorManager
 from control import StabilizationController, MotionController
 
@@ -308,6 +308,11 @@ class Mission1Controller:
         self.current_phase = MissionPhase.PHASE_1
         self.system_status.set_phase(MissionPhase.PHASE_1)
         self.phase_timer.start()
+
+        # GELİŞMİŞ MESAFE HESAPLAYICIYI SIFIRLA
+        _advanced_calculator.reset()
+        self.logger.info("🔄 Gelişmiş mesafe hesaplayıcı sıfırlandı - Faz 1")
+        self.logger.info(f"🎯 Hedef: 10m, Hız: {SPEED_MEDIUM} PWM, Mod: {DISTANCE_CALC_MODE}")
         
         # Hedef değerler
         target_distance = 10.0  # İlk 10 metre
@@ -341,14 +346,29 @@ class Mission1Controller:
                 self.logger.error(f"Faz 1 stabilizasyon hatası: {stab_error}")
                 return False
                 
-            # Mesafe hesaplama
+            # GELİŞMİŞ MESAFE HESAPLAMA
             current_time = time.time()
             if current_time - last_distance_check >= 1.0:  # Her saniye
                 phase_time = self.phase_timer.elapsed()
                 if speed_pwm is not None and phase_time is not None:
+                    # Gelişmiş mesafe hesaplaması
                     estimated_distance = estimate_distance(speed_pwm, phase_time)
+
+                    # Hız bilgilerini al (gelişmiş moddaysa)
+                    current_speed = 0.0
+                    if DISTANCE_CALC_MODE == "ADVANCED":
+                        try:
+                            current_speed = _advanced_calculator.last_speed
+                        except:
+                            current_speed = 0.0
+
                     self.phase_distance = estimated_distance
                     self.total_distance_traveled = estimated_distance
+
+                    # Detaylı mesafe logu
+                    self.logger.info(f"📏 Faz 1 Mesafe: {estimated_distance:.2f}m/{target_distance}m, "
+                                   f"Hız: {current_speed:.1f}m/s, Süre: {phase_time:.1f}s, "
+                                   f"PWM: {speed_pwm}")
                 else:
                     estimated_distance = 0.0
                     self.logger.warning("Mesafe hesaplama için gerekli veriler eksik")
@@ -395,6 +415,11 @@ class Mission1Controller:
         self.current_phase = MissionPhase.PHASE_2
         self.system_status.set_phase(MissionPhase.PHASE_2)
         self.phase_timer.start()
+
+        # GELİŞMİŞ MESAFE HESAPLAYICIYI SIFIRLA (Faz 2 için yeni hız profili)
+        _advanced_calculator.reset()
+        self.logger.info("🔄 Gelişmiş mesafe hesaplayıcı sıfırlandı - Faz 2")
+        self.logger.info(f"🎯 Hedef: 40m, Hız: {SPEED_FAST} PWM, Mod: {DISTANCE_CALC_MODE}")
         
         # Hedef değerler
         target_distance = 40.0  # 40 metre daha
@@ -428,14 +453,31 @@ class Mission1Controller:
             if not self.stabilizer.update_stabilization():
                 self.logger.warning("Stabilizasyon güncellenemedi")
                 
-            # Mesafe hesaplama
+            # GELİŞMİŞ MESAFE HESAPLAMA
             current_time = time.time()
             if current_time - last_distance_check >= 1.0:  # Her saniye
                 phase_time = self.phase_timer.elapsed()
                 if speed_pwm is not None and phase_time is not None:
+                    # Gelişmiş mesafe hesaplaması
                     estimated_distance = estimate_distance(speed_pwm, phase_time)
+
+                    # Hız bilgilerini al (gelişmiş moddaysa)
+                    current_speed = 0.0
+                    if DISTANCE_CALC_MODE == "ADVANCED":
+                        try:
+                            current_speed = _advanced_calculator.last_speed
+                        except:
+                            current_speed = 0.0
+
                     phase_2_distance = estimated_distance
                     self.total_distance_traveled = self.phase1_distance + phase_2_distance
+
+                    # Detaylı mesafe logu
+                    total_forward = self.phase1_distance + phase_2_distance
+                    self.logger.info(f"📏 Faz 2 Mesafe: {phase_2_distance:.2f}m/{target_distance}m, "
+                                   f"Toplam: {total_forward:.2f}m/50m, "
+                                   f"Hız: {current_speed:.1f}m/s, Süre: {phase_time:.1f}s, "
+                                   f"PWM: {speed_pwm}")
                 else:
                     estimated_distance = 0.0
                     phase_2_distance = 0.0
@@ -506,6 +548,11 @@ class Mission1Controller:
         self.current_phase = MissionPhase.RETURN
         self.system_status.set_phase(MissionPhase.RETURN)
         self.phase_timer.start()
+
+        # GELİŞMİŞ MESAFE HESAPLAYICIYI SIFIRLA (Geri dönüş için)
+        _advanced_calculator.reset()
+        self.logger.info("🔄 Gelişmiş mesafe hesaplayıcı sıfırlandı - Geri Dönüş")
+        self.logger.info(f"🎯 Hedef: 50m, Hız: {SPEED_FAST} PWM, Mod: {DISTANCE_CALC_MODE}")
         
         # Hedef değerler - tam olarak 50 metre geri
         return_distance = 50.0  # Sabit 50 metre
@@ -541,13 +588,30 @@ class Mission1Controller:
             if not self.stabilizer.update_stabilization():
                 self.logger.warning("Stabilizasyon güncellenemedi")
                 
-            # Mesafe hesaplama
+            # GELİŞMİŞ MESAFE HESAPLAMA
             current_time = time.time()
             if current_time - last_distance_check >= 1.0:  # Her saniye
                 phase_time = self.phase_timer.elapsed()
                 if speed_pwm is not None and phase_time is not None:
+                    # Gelişmiş mesafe hesaplaması
                     estimated_distance = estimate_distance(speed_pwm, phase_time)
+
+                    # Hız bilgilerini al (gelişmiş moddaysa)
+                    current_speed = 0.0
+                    if DISTANCE_CALC_MODE == "ADVANCED":
+                        try:
+                            current_speed = _advanced_calculator.last_speed
+                        except:
+                            current_speed = 0.0
+
                     return_distance_traveled = estimated_distance
+
+                    # Detaylı mesafe logu
+                    remaining = return_distance - return_distance_traveled
+                    self.logger.info(f"📏 Geri Dönüş: {return_distance_traveled:.2f}m/{return_distance}m, "
+                                   f"Kalan: {remaining:.2f}m, "
+                                   f"Hız: {current_speed:.1f}m/s, Süre: {phase_time:.1f}s, "
+                                   f"PWM: {speed_pwm}")
                 else:
                     estimated_distance = 0.0
                     return_distance_traveled = 0.0

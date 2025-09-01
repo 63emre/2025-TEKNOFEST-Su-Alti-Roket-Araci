@@ -156,9 +156,37 @@ BUZZER_EMERGENCY = [0.1, 0.1] * 10           # Acil durum
 BUZZER_65_SEC_COMPLETE = [0.5, 0.5, 0.5, 0.5, 0.5]  # 65 saniye tamamlandı
 
 # ---- Hız Hesaplama Sabitleri ----
+# Eski basit hız sabitleri (geriye uyumluluk için)
 ESTIMATED_SPEED_SLOW = 1.0      # m/s
 ESTIMATED_SPEED_MEDIUM = 1.5    # m/s
 ESTIMATED_SPEED_FAST = 2.0      # m/s
+
+# ---- GELİŞMİŞ HIZ HESAPLAMA SİSTEMİ ----
+# PWM-Hız Karakteristik Eğrisi (doğrusal interpolasyon için)
+MOTOR_SPEED_CURVE = {
+    MOTOR_STOP: 0.0,           # 1500 PWM -> 0 m/s
+    MOTOR_FORWARD_MIN: 0.2,    # 1550 PWM -> 0.2 m/s (başlangıç hızı)
+    SPEED_SLOW: 1.0,           # 1600 PWM -> 1.0 m/s
+    SPEED_MEDIUM: 1.5,         # 1700 PWM -> 1.5 m/s
+    SPEED_FAST: 2.0,           # 1800 PWM -> 2.0 m/s
+    MOTOR_FORWARD_MAX: 2.5     # 1900 PWM -> 2.5 m/s (maksimum)
+}
+
+# Motor Dinamik Özellikleri
+MOTOR_STARTUP_DELAY = 0.5       # Motor başlangıç gecikmesi (saniye)
+MOTOR_ACCELERATION_TIME = 2.0   # Hızlanma süresi (saniye)
+MOTOR_DECELERATION_TIME = 1.5   # Yavaşlama süresi (saniye)
+
+# Su Direnci ve Sürtünme
+WATER_DRAG_COEFFICIENT = 0.3    # Su direnç katsayısı
+FRICTION_COEFFICIENT = 0.1      # Sürtünme katsayısı
+
+# Mesafe Hesaplama Modu
+DISTANCE_CALC_MODE = "ADVANCED"  # "SIMPLE" veya "ADVANCED"
+
+# Hız Ölçüm ve Takip
+SPEED_UPDATE_INTERVAL = 0.1     # Hız güncelleme aralığı (saniye)
+SPEED_SMOOTHING_FACTOR = 0.3    # Hız yumuşatma faktörü (0-1)
 
 # ---- Tolerans Değerleri ----
 YAW_TURN_TOLERANCE = 10.0       # 180° dönüş için tolerans (derece)
