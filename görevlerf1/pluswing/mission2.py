@@ -205,11 +205,7 @@ class Mission2Controller:
         last_distance_check = time.time()
         
         while True:
-            # Buton kontrolü
-            button_action = self.system_status.check_start_button()
-            if button_action == "stop":
-                self.logger.info("Yaklaşma kullanıcı tarafından durduruldu")
-                return False
+            # Buton kontrolü KALDIRILDI - otomatik çalışma
                 
             # Stabilizasyonu güncelle
             if not self.stabilizer.update_stabilization():
@@ -276,10 +272,7 @@ class Mission2Controller:
         
         while time.time() - start_time < positioning_time:
             # Buton kontrolü
-            button_action = self.system_status.check_start_button()
-            if button_action == "stop":
-                self.logger.info("Roket hazırlık kullanıcı tarafından durduruldu")
-                return False
+            # Buton kontrolü KALDIRILDI - otomatik çalışma
                 
             # Stabilizasyonu güncelle
             if not self.stabilizer.update_stabilization():
@@ -318,10 +311,7 @@ class Mission2Controller:
             self.logger.info(f"Fırlatma {countdown} saniye...")
             
             # Buton kontrolü
-            button_action = self.system_status.check_start_button()
-            if button_action == "stop":
-                self.logger.info("Roket fırlatma iptal edildi!")
-                return False
+            # Buton kontrolü KALDIRILDI - otomatik çalışma
                 
             # Stabilizasyonu sürdür
             self.stabilizer.update_stabilization()
@@ -366,10 +356,7 @@ class Mission2Controller:
         
         while True:
             # Buton kontrolü
-            button_action = self.system_status.check_start_button()
-            if button_action == "stop":
-                self.logger.info("Geri çekilme kullanıcı tarafından durduruldu")
-                break
+            # Buton kontrolü KALDIRILDI - otomatik çalışma
                 
             # Stabilizasyonu güncelle
             if not self.stabilizer.update_stabilization():

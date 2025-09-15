@@ -76,12 +76,12 @@ class ServoController:
         self.mavlink = mavlink_connection
         self.logger = logger or Logger()
         
-        # 90 SANİYE PWM GÜVENLİK KONTROLLERİ
+        # 65 SANİYE PWM GÜVENLİK KONTROLLERİ
         self.pwm_allowed = False  # Başlangıçta PWM yollamak yasak
         self.pwm_allowed_start_time = None
         
     def enable_pwm_signals(self):
-        """90 saniye sonra PWM sinyallerini etkinleştir"""
+        """65 saniye sonra PWM sinyallerini etkinleştir"""
         self.pwm_allowed = True
         self.pwm_allowed_start_time = time.time()
         self.logger.info("🚀 PWM sinyalleri etkinleştirildi!")

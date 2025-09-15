@@ -3,7 +3,7 @@
 """
 MAIN - Su Altı Roket Aracı (SARA) Ana Program
 Raspberry Pi'de otomatik olarak çalışacak ana dosya
-65 saniye güvenlik gecikmesi, görev yönetimi ve kontrol döngüsü
+Otomatik başlatma + 65 saniye güvenlik gecikmesi, görev yönetimi ve kontrol döngüsü
 """
 
 import sys
@@ -331,27 +331,7 @@ class SaraMainController:
         except Exception as e:
             self.logger.warning(f"Veri akışı istek hatası: {e}")
             
-    def wait_for_start_button(self):
-        """Başlatma butonu için bekle"""
-        self.logger.info("🔘 Başlatma butonu bekleniyor...")
-        self.system_status.set_phase(MissionPhase.WAITING)
-        
-        # LED yanıp sönsün (bekleme modunda)
-        self.system_status.led.blink(0.5)
-        
-        while self.system_running:
-            button_action = self.system_status.check_start_button()
-            
-            if button_action == "restart":
-                self.logger.info("✅ Başlatma butonu basıldı!")
-                self.system_status.led.turn_on()
-                self.system_status.buzzer.beep_pattern(BUZZER_STARTUP)
-                time.sleep(2)  # Buton bouncing önlemi
-                return True
-                
-            time.sleep(0.1)
-            
-        return False
+    # wait_for_start_button KALDIRILDI - Otomatik başlatma
         
     def countdown_65_seconds(self):
         """65 saniye güvenlik geri sayımı - SENSÖR VERİLERİ İLE + SON 10 SANİYE HIZLI BUZZER"""
@@ -370,11 +350,7 @@ class SaraMainController:
                 if not self.system_running:
                     return False
                     
-                # Buton kontrolü - iptal için
-                button_action = self.system_status.check_start_button()
-                if button_action == "restart":
-                    self.logger.info("🛑 Geri sayım iptal edildi! Yeniden buton bekleniyor...")
-                    return "restart"  # İptal sinyali
+                # Buton kontrolü KALDIRILDI - otomatik çalışma
                 
                 # SENSÖR VERİLERİNİ GÖSTER
                 try:
@@ -538,27 +514,24 @@ class SaraMainController:
             self.sensor_manager = SensorManager(self.mavlink, self.logger)
             self.logger.info("✅ Sensör manager hazır - D300 direkt veri okuma modu")
                 
-                            # 4-5. Buton bekle ve 65 saniye döngüsü
-            while True:
-                # 4. Başlatma butonu bekle
-                if not self.wait_for_start_button():
-                    self.logger.info("Başlatma iptal edildi")
-                    return False
-                    
-                # 5. 65 saniye güvenlik gecikmesi
-                countdown_result = self.countdown_65_seconds()
-                
-                if countdown_result == True:
-                    # 90 saniye tamamlandı, görev başlayabilir
-                    break
-                elif countdown_result == "restart":
-                    # Buton basıldı, yeniden buton bekle
-                    self.logger.info("🔄 Geri sayım iptal edildi, yeniden buton bekleniyor...")
-                    continue
-                else:
-                    # Hata durumu
-                    self.logger.error("Geri sayım hatası")
-                    return False
+                            # 4. Otomatik başlatma sistemi (BUTON YOK)
+            self.logger.info("🚀 SİSTEM HAZIR! OTOMATIK BAŞLATMA...")
+            self.logger.info("🎯 Buton bekleme kaldırıldı - sistem hazır olduğunda otomatik başlayacak")
+            
+            # LED'i açık tut (hazır durumu)
+            self.system_status.led.turn_on()
+            self.system_status.buzzer.beep_pattern(BUZZER_STARTUP)
+            
+            # 2 saniye bekle (sistem stabilizasyonu için)
+            time.sleep(2.0)
+            
+            # 5. 65 saniye güvenlik gecikmesi
+            self.logger.info("⏱️ Otomatik 65 saniye güvenlik gecikmesi başlıyor...")
+            countdown_result = self.countdown_65_seconds()
+            
+            if countdown_result != True:
+                self.logger.error("Geri sayım hatası")
+                return False
                 
             # 6. Görevi çalıştır
             success = self.run_mission(mission_type)
