@@ -187,4 +187,4 @@ api_keys/
 # Development tools
 .coverage
 .pytest_cache/
-.mypy_cache/ 
+.mypy_cache/ .DS_Store
